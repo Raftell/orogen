@@ -1,0 +1,17 @@
+{
+  "name": "orogen",
+  "version": "0.1.0",
+  "description": "Node-based GPU terrain generator for Unreal Engine landscapes",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "electron": "^44.7.0",
+    "typescript": "^7.0.2",
+    "webgpu": "^0.6.2"
+  }
+}

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: npm
+
+      # Hosted runners have no GPU. Windows ships a software D3D12 adapter (WARP);
+      # Linux needs Mesa's software Vulkan driver.
+      - name: Install software Vulkan (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+
+      - run: npm ci
+
+      - name: Type-check
+        run: npx tsc -p .
+
+      - name: GPU compute smoke test
+        run: node spikes/dawn-spike.ts --size=512
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: output-${{ matrix.os }}
+          path: test-output/
+          if-no-files-found: ignore
