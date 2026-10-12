@@ -1312,6 +1312,12 @@ type; that error is reported first.
 6. A kernel in `kernels` reads the seed (its code or an included library mentions `frame.seed` or `seedFor(`) and the node has no `seed` param.
 7. `version > 1` without `migrate`; `uses` names an unknown setting.
 
+It throws the same error for an empty `title` or `description`, and for a
+definition that does not have the declared types at all, which only untyped
+code can pass: no `evaluate`, a member that is not a list, an unknown
+`category`, port type, role, `kind` or `unit`, an entry of `kernels` or
+`cpuTasks` that is no kernel or task.
+
 A node file's module scope builds definitions and nothing else: no GPU work, no
 I/O, no mutable state.
 
@@ -1480,9 +1486,9 @@ heavy runs outside a loop, so that cancellation can take effect.
 | Method | Semantics | Failure |
 | --- | --- | --- |
 | `lut(data, type)` | An immutable table for kernels (4.9). Synchronous | `RangeError` for a bad length |
-| `read(field, rows?)` | The field's contents as `Float32Array`, row-major, tightly packed, 1, 2 or 4 floats per texel by the kind's channel count, converted to float32 whatever the format. `rows = [y0, y1]` reads rows `y0 ≤ y < y1` only. Waits for all earlier work | Rejects with the abort reason when cancelled |
+| `read(field, rows?)` | The field's contents as `Float32Array`, row-major, tightly packed, 1, 2 or 4 floats per texel by the kind's channel count, converted to float32 whatever the format. `rows = [y0, y1]` reads rows `y0 ≤ y < y1` only. Waits for all earlier work. Until the promise has settled the field cannot be changed: `clear`, `write`, `release` and a run that writes it throw | Rejects with the abort reason when cancelled. `RangeError` for rows the field does not have |
 | `write(field, data, rows?)` | Replaces the contents (or the given rows) with `data`, in the layout of `read`. Takes effect after all earlier runs. Synchronous | `FieldAccessError` when read-only or released; `RangeError` when `data.length` is not `width × rowCount × channels` |
-| `stats(field)` | Minimum, maximum and mean over the finite texels of a 1-channel field, and the count of non-finite texels, computed on the GPU. Waits for all earlier work | Rejects with the abort reason when cancelled |
+| `stats(field)` | Minimum, maximum and mean over the finite texels of a 1-channel field, and the count of non-finite texels, computed on the GPU. All three are 0 when no texel is finite. Waits for all earlier work | Rejects with the abort reason when cancelled |
 
 A full `read` of a build-resolution field is 264 MB per channel. Read whole
 fields only to hand them to a CPU task, and release the array when done.

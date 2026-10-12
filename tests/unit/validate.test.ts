@@ -1,13 +1,19 @@
 // Graph validity (runtime.md 4.3) and the view after a selection (7.4).
+//
+// Every graph in this file is written out by hand and has a handful of edges, so a failing deepEqual prints a
+// short diff. The graphs of 20 000 nodes are built and measured in validate.worker.ts, under a heap limit and a
+// deadline, and only their counts are compared here.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createsCycle, inputEdge, invalidEdges } from '../../src/core/graph/validate.ts';
+import { Worker } from 'node:worker_threads';
+import { createsCycle, cycleNodes, endpointProblem, hasCycle, inputEdge, invalidEdges, reaches, usedEdges } from '../../src/core/graph/validate.ts';
 import {
   newDoc, outputKind, validateConnection, viewAfterSelect,
   type Edge, type GraphDoc, type NodeInstance, type PortRef, type ViewBinding,
 } from '../../src/core/runtime.ts';
 import { registry } from './graph-fixtures.ts';
+import type { Counts, WorkerReport } from './validate.worker.ts';
 
 const ref = (text: string): PortRef => {
   const [node, port] = text.split('.') as [string, string];
@@ -142,17 +148,116 @@ test('invalidEdges: an edge the evaluator ignores closes no cycle', () => {
   assert.deepEqual(invalidEdges(d, registry).map((p) => [p.edgeId, p.rule]), [['e1', 2], ['e2', 1]]);
 });
 
-test('invalidEdges handles a long chain without recursion', () => {
-  const count = 20000;
-  const nodes: Record<string, string> = {};
-  const edges: string[] = [];
-  for (let i = 0; i < count; i++) {
-    nodes[`n${i}`] = 'ref/soften';
-    if (i > 0) edges.push(`n${i - 1}.out -> n${i}.in`);
-  }
-  const d = doc(nodes, edges);
+test('invalidEdges: a graph without a cycle has no edge on one', () => {
+  // The edges of a tree, of a diamond and of a chain are used and lie on no cycle.
+  const d = doc({ g: 'ref/gen', a: 'ref/soften', b: 'ref/soften', c: 'ref/combine', tail: 'ref/soften' },
+    ['g.out -> a.in', 'g.out -> b.in', 'a.out -> c.a', 'b.out -> c.b', 'g.out -> c.mask', 'c.out -> tail.in']);
   assert.deepEqual(invalidEdges(d, registry), []);
-  assert.equal(check(d, `n${count - 1}.out`, 'n0.in'), 'The connection would create a cycle');
+  assert.deepEqual([...cycleNodes(d, registry)], []);
+  assert.equal(usedEdges(d, registry).length, 6);
+});
+
+test('usedEdges: the edges the evaluator uses, in record order', () => {
+  const d = doc({ g: 'ref/gen', h: 'ref/gen', s: 'ref/soften', ghost: 'legacy/unknown' },
+    ['ghost.out -> s.in', 'h.out -> s.in', 'g.out -> s.in', 'g.out -> s.mask', 'g.out -> ghost.in', 's.out -> s.mask']);
+  assert.deepEqual(usedEdges(d, registry).map((e) => e.id), ['e1', 'e3']);
+  assert.deepEqual(usedEdges(doc({ g: 'ref/gen' }), registry), []);
+});
+
+test('cycleNodes: the nodes on a cycle of used edges, and no node beside it', () => {
+  const nodes = Object.fromEntries(['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((id) => [id, 'ref/combine']));
+  const d = doc(nodes, [
+    'a.out -> b.a',   // cycle a b c
+    'b.out -> c.a',
+    'c.out -> a.a',
+    'c.out -> d.a',   // d lies between the cycles, on neither
+    'd.out -> e.a',   // cycle e f
+    'e.out -> f.a',
+    'f.out -> e.b',
+    'f.out -> g.a',   // g hangs off a cycle
+  ]);
+  assert.deepEqual([...cycleNodes(d, registry)].sort(), ['a', 'b', 'c', 'e', 'f']);
+  // A cycle that closes only through an edge the evaluator ignores is none.
+  const open = doc({ g: 'ref/gen', a: 'ref/soften', b: 'ref/soften' }, ['g.out -> a.in', 'a.out -> b.in', 'b.out -> a.in']);
+  assert.deepEqual([...cycleNodes(open, registry)], []);
+  assert.deepEqual(invalidEdges(open, registry).map((p) => [p.edgeId, p.rule]), [['e2', 2]]);
+});
+
+test('reaches and hasCycle work on a list of edges alone', () => {
+  const edges = Object.values(doc({}, ['a.out -> b.in', 'b.out -> c.in', 'a.out -> c.mask', 'x.out -> y.in']).edges);
+  assert.equal(reaches(edges, 'a', 'c'), true);
+  assert.equal(reaches(edges, 'c', 'a'), false);
+  assert.equal(reaches(edges, 'a', 'y'), false);
+  assert.equal(reaches(edges, 'a', 'a'), true);          // a node reaches itself
+  assert.equal(reaches(edges, 'nowhere', 'a'), false);
+  assert.equal(reaches([], 'a', 'b'), false);
+  assert.equal(hasCycle(edges), false);
+  assert.equal(hasCycle([]), false);
+  assert.equal(hasCycle([...edges, ...Object.values(doc({}, ['c.out -> a.in']).edges)]), true);
+  assert.equal(hasCycle(Object.values(doc({}, ['a.out -> a.in']).edges)), true);
+  // Two edges between the same two nodes, in one direction, are no cycle.
+  assert.equal(hasCycle(Object.values(doc({}, ['a.out -> b.a', 'a.out -> b.b']).edges)), false);
+});
+
+test('endpointProblem is rule 1 alone: it knows no cycle and no occupied input', () => {
+  const d = doc({ a: 'ref/soften', b: 'ref/soften' }, ['a.out -> b.in']);
+  assert.equal(endpointProblem(d, registry, ref('b.out'), ref('a.in')), null);
+  assert.equal(endpointProblem(d, registry, ref('a.out'), ref('b.in')), null);
+  assert.equal(endpointProblem(d, registry, ref('a.out'), ref('a.in')), 'A node cannot be connected to itself');
+  assert.equal(check(d, 'b.out', 'a.in'), 'The connection would create a cycle');
+});
+
+// ---- graphs of 20 000 nodes -------------------------------------------------------------------------------------
+
+const NODES = 20_000;
+const HEAP_LIMIT_MB = 256;
+/** A backstop, not a measurement: the five graphs together take well under a second. */
+const DEADLINE_MS = 30_000;
+
+/** Runs validate.worker.ts and returns the counts of each case. Rejects when the worker dies, exceeds its heap limit or misses the deadline. */
+function measureLargeGraphs(): Promise<Map<string, Counts>> {
+  return new Promise((resolve, reject) => {
+    const counts = new Map<string, Counts>();
+    const worker = new Worker(new URL('./validate.worker.ts', import.meta.url), {
+      workerData: { nodes: NODES },
+      resourceLimits: { maxOldGenerationSizeMb: HEAP_LIMIT_MB },
+    });
+    const settle = (finish: () => void): void => {
+      clearTimeout(timer);
+      void worker.terminate();
+      finish();
+    };
+    const timer = setTimeout(() => settle(() => {
+      reject(new Error(`the graph functions did not finish within ${DEADLINE_MS} ms; finished: ${[...counts.keys()].join(', ') || 'none'}`));
+    }), DEADLINE_MS);
+    worker.on('message', (report: WorkerReport) => {
+      if ('done' in report) settle(() => resolve(counts));
+      else counts.set(report.name, report.counts);
+    });
+    worker.on('error', (error) => settle(() => reject(error)));
+    worker.on('exit', (code) => settle(() => reject(new Error(`the worker stopped with code ${code} before it reported`))));
+  });
+}
+
+test('graphs of 20 000 nodes: every traversal ends, within a heap limit, and reports only the edges on a cycle', async () => {
+  const counts = await measureLargeGraphs();
+  // Compared member by member: a wrong count fails with two numbers, never with a diff of a long list.
+  const expect = (name: string, expected: Counts): void => {
+    const actual = counts.get(name);
+    assert.ok(actual, `the case "${name}" did not report`);
+    assert.deepEqual(Object.keys(actual).sort(), Object.keys(expected).sort(), name);
+    for (const [member, value] of Object.entries(expected)) assert.equal(actual[member], value, `${name}.${member}`);
+  };
+  expect('chain', {
+    edges: NODES, used: NODES, rule1: 0, rule2: 0, rule3: 0, cycleNodes: 0,
+    closing: 'The connection would create a cycle', onward: null, kind: 'field',
+  });
+  expect('ring', { edges: NODES, used: NODES, rule1: 0, rule2: 0, rule3: NODES, cycleNodes: NODES, kind: null, outside: null });
+  // 19 999 chain edges, 19 997 skip edges and 200 edges back; 200 blocks of 8 nodes with 7 + 5 + 1 edges inside.
+  expect('braid', { edges: 40_196, used: 40_196, rule1: 0, rule2: 0, rule3: 2600, cycleNodes: 1600 });
+  expect('ignored', { edges: NODES + 1, used: NODES, rule1: 0, rule2: 1, rule3: 0, cycleNodes: 0, along: 'The connection would create a cycle' });
+  expect('fan', { edges: NODES, used: NODES, rule1: 0, rule2: 0, rule3: 0, cycleNodes: 0 });
+  assert.equal(counts.size, 5);
 });
 
 test('inputEdge: the first edge in record order that does not break rule 1', () => {

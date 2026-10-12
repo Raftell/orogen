@@ -8,8 +8,8 @@ import { defineKernel, MASK_INPUT } from '../../../src/core/gpu/kernel.ts';
 import { defineLib } from '../../../src/core/gpu/lib.ts';
 import { mixSeed } from '../../../src/core/gpu/hash.ts';
 import { KernelCompileError } from '../../../src/core/gpu/pipelines.ts';
-import { noise } from '../../../src/core/wgsl/noise.ts';
 import { createRig, firstDifference, HEIGHT_RANGE, maxDifference, SEED, TERRAIN_SIZE, texel, texels } from './rig.ts';
+import { box3Kernels, fbm, relax, step } from './worked.ts';
 
 // ---- the kernels of this file ----------------------------------------------------------------------------------
 
@@ -82,26 +82,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }`,
 });
 
-const relax = defineKernel({
-  name: 'ref/relax.half',
-  mode: 'raw',
-  unsafeReadWrite: { g: 'field' },
-  raceFree: 'red-black: an invocation stores only where (x + y + parity) is even and loads only where it is odd',
-  params: { parity: 'u32' },
-  code: /* wgsl */ `
-@compute @workgroup_size(8, 8)
-fn main(@builtin(global_invocation_id) gid: vec3u) {
-  if (!beginPixel(gid)) { return; }
-  let px = pixel();
-  if (((u32(px.x) + u32(px.y) + P.parity) & 1u) != 0u) { return; }
-  let e = textureLoad(g, clampToGrid(px + vec2i(1, 0))).r;
-  let w = textureLoad(g, clampToGrid(px - vec2i(1, 0))).r;
-  let n = textureLoad(g, clampToGrid(px + vec2i(0, 1))).r;
-  let s = textureLoad(g, clampToGrid(px - vec2i(0, 1))).r;
-  textureStore(g, px, vec4f(0.25 * (e + w + n + s), 0.0, 0.0, 1.0));
-}`,
-});
-
 const lookup = defineKernel({
   name: 'test/lookup',
   outputs: { scalar: 'aux', colour: 'aux', item: 'aux' },
@@ -117,19 +97,6 @@ fn compute(px: vec2i, uv: vec2f) -> Out {
   );
 }`,
 });
-
-const box3 = (kind: 'field' | 'color') => defineKernel({
-  name: `ref/box3#${kind}`,
-  inputs: { src: kind, mask: MASK_INPUT },
-  outputs: { out: kind },
-  params: { dir: 'vec2i' },
-  code: /* wgsl */ `
-fn compute(px: vec2i, uv: vec2f) -> out_t {
-  let blurred = (src_at(px - P.dir) + src_at(px) + src_at(px + P.dir)) / 3.0;
-  return mix(src_at(px), blurred, mask_at(px));
-}`,
-});
-const box3Kernels = { field: box3('field'), color: box3('color') };
 
 const packed = defineKernel({
   name: 'test/packed',
@@ -158,47 +125,18 @@ fn compute(px: vec2i, uv: vec2f) -> Out {
 }`,
 });
 
-const fbm = defineKernel({
-  name: 'ref/fbm',
-  outputs: { out: 'field' },
-  params: { cells: 'f32', octaves: 'i32', gain: 'f32' },
-  includes: [noise],
+// engine.md 3.13, "Common trap": the resource names it calls usable, and the param names of 3.10 that are WGSL builtins.
+const usableNames = defineKernel({
+  name: 'test/usable-names',
+  inputs: { src: 'field', in: 'field', mask: MASK_INPUT, a: 'field', b: 'field', h: 'field', height: 'field', flow: 'field', water: 'field', sediment: 'field', deposit: 'field' },
+  outputs: { out: 'field', next: 'field' },
+  params: { min: 'f32', max: 'f32', step: 'f32', mix: 'f32', scale: 'f32', mode: 'u32' },
   code: /* wgsl */ `
-const SPREAD = 1.6;   // fixed normalisation constant; to calibrate against the generator range rule (1.7)
-
-fn compute(px: vec2i, uv: vec2f) -> f32 {
-  let n = noise_fbm(uv * P.cells, seedFor(0u), clamp(P.octaves, 1, 16), 2.0, P.gain);
-  return 0.5 + 0.5 * SPREAD * n;
-}`,
-});
-
-const step = defineKernel({
-  name: 'ref/talus.step',
-  inputs: { h: 'field' },          // current heights: read with neighbours
-  outputs: { next: 'field' },      // new heights: the other half of the ping-pong pair
-  inPlace: { moved: 'field' },     // accumulator: read and written at the own texel only
-  params: { talus: 'f32', rate: 'f32' },
-  code: /* wgsl */ `
-// Height this texel receives from neighbour q (negative: gives). The amount
-// depends only on the two heights, so both texels compute the same magnitude
-// with opposite sign and the total is conserved.
-fn exchange(hp: f32, q: vec2i, dist: f32) -> f32 {
-  if (!inGrid(q)) { return 0.0; }
-  let d = h_at(q) - hp;
-  return sign(d) * max(abs(d) - P.talus * dist, 0.0) * P.rate / dist;
-}
-
-fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
-  let hp = h_at(px);
-  var net = 0.0;
-  for (var j = -1; j <= 1; j++) {
-    for (var i = -1; i <= 1; i++) {
-      if (i != 0 || j != 0) {
-        net += exchange(hp, px + vec2i(i, j), length(vec2f(vec2i(i, j))));
-      }
-    }
-  }
-  return Out(hp + net, cur.moved + abs(net));
+fn compute(px: vec2i, uv: vec2f) -> Out {
+  let sum = src_at(px) + in_at(px) + a_at(px) + b_at(px) + h_at(px) + height_at(px) + flow_at(px) + water_at(px) + sediment_at(px) + deposit_at(px);
+  // The builtins are still the builtins beside the members of the same name.
+  let shaped = mix(P.min, P.max, step(P.step, sum * P.scale)) + P.mix + f32(P.mode);
+  return Out(min(sum, 100.0) * mask_at(px), max(shaped, -100.0));
 }`,
 });
 
@@ -211,7 +149,7 @@ const brokenInclude = defineKernel({ name: 'test/broken-include', outputs: { out
 const brokenSignature = defineKernel({ name: 'test/broken-signature', outputs: { out: 'field' }, code: 'fn compute(px: vec2i, uv: vec2f) -> vec4f { return vec4f(0.0); }' });
 
 const rig = await createRig();
-await rig.compile(shift, probe, saturated, resample, kinds, compact, checker, relax, lookup, box3Kernels.field, box3Kernels.color, packed, frameProbe, fbm, step);
+await rig.compile(shift, probe, saturated, resample, kinds, compact, checker, relax, lookup, box3Kernels.field, box3Kernels.color, packed, frameProbe, fbm, step, usableNames);
 
 const ramp = (n: number): Float32Array => texels(n, n, (x, y) => x + 100 * y);
 
@@ -469,6 +407,19 @@ test('params reach the shader at the offsets the WGSL compiler gives the struct'
   assert.deepEqual(texel(await rig.read(outputs.p1), 8, 3, 3, 4), [-7, 8, 16777215, 0xabcd]);
   assert.deepEqual(texel(await rig.read(outputs.p2), 8, 3, 3, 4), [0.25, 0.5, 0.75, 1]);
   assert.deepEqual(texel(await rig.read(outputs.p3), 8, 3, 3, 4), [-1, 65536, 10.5, -10.5]);
+});
+
+test('the resource names the contract calls usable, and params named like builtins, compile and run', async () => {
+  const n = 8;
+  const one = rig.field('field', n, 1);
+  const out = rig.field('field', n), next = rig.field('field', n);
+  rig.run(usableNames, {
+    in: { src: one, in: one, a: one, b: one, h: one, height: one, flow: one, water: one, sediment: one, deposit: one },
+    out: { out, next },
+    params: { min: 2, max: 6, step: 5, mix: 0.5, scale: 1, mode: 3 },
+  });
+  assert.ok((await rig.read(out)).every((v) => v === 10), 'ten inputs of 1, an unbound mask of 1');
+  assert.ok((await rig.read(next)).every((v) => v === 9.5), 'mix(2, 6, step(5, 10)) + 0.5 + 3');
 });
 
 test('params are captured when the run is made', async () => {

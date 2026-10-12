@@ -1,13 +1,26 @@
 import type { CpuRunner } from './cpu/runner.ts';
+import { createCache } from './eval/cache.ts';
 import type { FieldStats } from './eval/context.ts';
-import type { EvalTarget, EvaluateOptions, EvaluateResult } from './eval/evaluator.ts';
+import { convertKernels } from './eval/convert.ts';
+import { createEvaluator, type EvalTarget, type EvaluateOptions, type EvaluateResult } from './eval/evaluator.ts';
+import { poolTextureOf } from './eval/handles.ts';
 import type { EngineTestHooks } from './eval/hooks.ts';
-import type { Thumbnail } from './eval/thumbnails.ts';
-import type { GpuContext } from './gpu/device.ts';
-import type { FieldHandle, MemoryReport } from './gpu/pool.ts';
+import type { EngineParts } from './eval/parts.ts';
+import { fieldStats, statsKernels } from './eval/stats.ts';
+import { createThumbnails, thumbnailKernels, type Thumbnail } from './eval/thumbnails.ts';
+import { createDefaultTextures } from './gpu/defaults.ts';
+import { deviceLostError, type GpuContext } from './gpu/device.ts';
+import { FieldAccessError } from './gpu/errors.ts';
+import type { AnyKernel } from './gpu/kernel.ts';
+import { createPipelineCache } from './gpu/pipelines.ts';
+import { createPool, type FieldHandle, type ManagedPool, type MemoryReport } from './gpu/pool.ts';
+import { createReadback } from './gpu/readback.ts';
+import { sealDefinitions } from './gpu/seal.ts';
+import { createStream, type SliceService } from './gpu/stream.ts';
 import type { GraphDoc } from './graph/doc.ts';
 import type { NodeRegistry } from './graph/registry.ts';
 import type { FileSource } from './io/files.ts';
+import { opsKernels } from './ops/kernels.ts';
 
 export interface EngineOptions {
   readonly gpu: GpuContext;
@@ -16,14 +29,6 @@ export interface EngineOptions {
   readonly cpu: CpuRunner;               // 6.3
   readonly budgetBytes: number;          // 2.4
   readonly test?: EngineTestHooks;       // 5.14
-}
-
-/**
- * Resolves when the engine's own kernels are compiled; rejects when one fails.
- * The first call seals defineLib, defineKernel, defineCpuTask and defineNode (engine.md, Module scope).
- */
-export function createEngine(opts: EngineOptions): Promise<Engine> {
-  throw new Error('not implemented: createEngine');
 }
 
 export interface Engine {
@@ -52,4 +57,242 @@ export interface Engine {
   setFiles(files: FileSource): void;
   replaceDevice(gpu: GpuContext): Promise<void>;                 // 5.9
   dispose(): Promise<void>;
+}
+
+/** What lives on one device. */
+type DeviceParts = Omit<EngineParts, 'files'>;
+
+/**
+ * Resolves when the engine's own kernels are compiled; rejects when one fails.
+ * The first call seals defineLib, defineKernel, defineCpuTask and defineNode (engine.md, Module scope).
+ */
+export async function createEngine(opts: EngineOptions): Promise<Engine> {
+  sealDefinitions();
+  const { registry, cpu } = opts;
+  const hooks = opts.test ?? {};
+  const own: readonly AnyKernel[] = [...convertKernels(), ...statsKernels(), ...thumbnailKernels(), ...opsKernels()];
+  const ownSet = new Set<AnyKernel>(own);
+
+  let budgetBytes = opts.budgetBytes;
+  let files = opts.files;
+  let epoch = 1;
+  let disposed = false;
+  let device!: DeviceParts;
+  let parts!: EngineParts;
+
+  // The cache outlives a device; it reaches the pool of the day through this.
+  const cache = createCache({
+    retain: (texture) => device.pool.retain(texture),
+    drop: (texture) => device.pool.drop(texture),
+    references: (texture) => device.pool.references(texture),
+  });
+
+  /** One device's worth of engine, in the order the factories allow. `first` is false for a replacement device. */
+  function assemble(gpu: GpuContext, first: boolean): DeviceParts {
+    // The stream's ledger is the pool, and the pool needs the stream: the ledger is bound late.
+    const late: { pool?: ManagedPool } = {};
+    const reserve = (bytes: number, label: string): { release(): void } => late.pool!.reserve(bytes, label);
+    const stream = createStream({
+      gpu, reserve, hooks,
+      // The engine has no channel for an error that is no node's (runtime.md 3.5); the log is what remains.
+      onOverrun: (slice) => console.warn(
+        `[orogen] a slice of ${slice.nodeId ?? slice.service} took ${slice.measuredMs.toFixed(0)} ms, above the hard ceiling (kernels: ${slice.kernels.join(', ')})`,
+      ),
+    });
+    // failAllocAfter counts from the creation of the engine and fires once (5.14): not again on a replacement device.
+    const poolHooks = { ...(hooks.poisonRecycled ? { poisonRecycled: true } : {}), ...(first && hooks.failAllocAfter ? { failAllocAfter: hooks.failAllocAfter } : {}) };
+    const pool = createPool({ gpu, budgetBytes, stream, cache, hooks: poolHooks });
+    late.pool = pool;
+    return {
+      gpu, epoch, pool, stream, cpu,
+      pipelines: createPipelineCache(gpu),
+      defaults: createDefaultTextures(gpu, reserve),
+      readback: createReadback({ gpu, stream, reserve }),
+      device: { retired: false },
+      isEngineKernel: (kernel) => ownSet.has(kernel),
+    };
+  }
+
+  /** Destroys what lives on a device that is still there. A lost device is forgotten, not called (5.9 rule 3). */
+  function destroy(d: DeviceParts): void {
+    const alive = !d.gpu.lost;
+    d.device.retired = true;
+    if (!alive) return;
+    d.readback.dispose();
+    d.defaults.dispose();
+    d.pool.dispose();
+    d.stream.dispose();
+  }
+
+  device = assemble(opts.gpu, true);
+  parts = { ...device, files };
+  const thumbnails = createThumbnails(() => parts);
+
+  async function compileOwn(): Promise<void> {
+    try {
+      await Promise.all([...own.map((kernel) => parts.pipelines.compile(kernel)), thumbnails.prepare()]);
+    } catch (thrown) {
+      if (parts.gpu.lost) throw deviceLostError(parts.gpu);
+      throw thrown;
+    }
+  }
+
+  /** 5.9 rule 3: everything that lived on the lost device is forgotten, without calling into it. */
+  function forget(): void {
+    if (parts.device.retired) return;
+    parts.device.retired = true;
+    cache.forget();
+    thumbnails.forget();
+  }
+
+  const evaluator = createEvaluator({ registry, parts: () => parts, cache, thumbnails, onDeviceLost: forget });
+  /** For gpu.onLost. An evaluation that was running has forgotten the device itself, and knows which node it was at. */
+  const lost = (): void => void evaluator.exclusive(() => {
+    if (parts.device.retired) return;
+    evaluator.lostWhileIdle();
+    forget();
+  });
+  let unsubscribe = opts.gpu.onLost(lost);
+
+  try {
+    await compileOwn();
+  } catch (thrown) {
+    unsubscribe();
+    thumbnails.dispose();
+    destroy(device);
+    throw thrown;
+  }
+
+  const open = (): void => {
+    if (disposed) throw new Error('The engine is disposed');
+  };
+  /** For the calls that need the device. */
+  const live = (): EngineParts => {
+    open();
+    if (parts.gpu.lost || parts.device.retired) throw deviceLostError(parts.gpu);
+    return parts;
+  };
+
+  /** One engine service call that waits: its own owner, made current before anything is encoded. */
+  async function service<T>(name: SliceService, work: (p: EngineParts) => Promise<T>): Promise<T> {
+    const p = live();
+    const owner = p.stream.open({ nodeId: null, service: name, mode: 'preview' });
+    try {
+      p.stream.use(owner);
+      const value = await work(p);
+      await owner.settle();
+      return value;
+    } finally {
+      owner.close();
+    }
+  }
+
+  const engine: Engine = {
+    get gpu() { return parts.gpu; },
+    get epoch() { return epoch; },
+    registry,
+
+    evaluate(doc, targets, evalOpts) {
+      if (disposed) return Promise.reject(new Error('The engine is disposed'));
+      return evaluator.evaluate(doc, targets, evalOpts);
+    },
+
+    keys(doc) {
+      if (disposed) return Promise.reject(new Error('The engine is disposed'));
+      return evaluator.keys(doc);
+    },
+
+    async read(field, rows) {
+      live();
+      const texture = poolTextureOf(field);
+      return service('read', (p) => p.readback.read(texture, rows));
+    },
+
+    async stats(field) {
+      live();
+      const texture = poolTextureOf(field);
+      if (field.kind !== 'field') throw new FieldAccessError(`Engine.stats: the handle is a "${String(field.kind)}"; statistics need a field`);
+      return service('stats', (p) => fieldStats(p, texture));
+    },
+
+    reserve(bytes, label) {
+      return live().pool.reserve(bytes, label);
+    },
+
+    lastTiming(nodeId) {
+      return evaluator.lastTiming(nodeId);
+    },
+
+    onThumbnail(listener) {
+      return thumbnails.onThumbnail(listener);
+    },
+
+    memory() {
+      open();
+      // 5.9 rule 3: the ledger of a lost device is forgotten, and all byte counts are zero.
+      if (parts.gpu.lost || parts.device.retired) {
+        return { budgetBytes, workingBytes: 0, cacheBytes: 0, pinnedBytes: 0, freeBytes: 0, reservedBytes: 0, drainingBytes: 0 };
+      }
+      return parts.pool.report();
+    },
+
+    trim(trimOpts) {
+      open();
+      return evaluator.exclusive(async () => {
+        const p = live();
+        cache.evictExcept(trimOpts?.keepResolution);
+        await p.pool.trim(trimOpts);
+      });
+    },
+
+    setBudget(bytes) {
+      open();
+      if (!Number.isFinite(bytes) || bytes < 0) throw new RangeError(`Engine.setBudget: ${bytes} is not a byte count`);
+      budgetBytes = bytes;
+      if (!parts.device.retired) parts.pool.setBudget(bytes);
+    },
+
+    setFiles(next) {
+      open();
+      void evaluator.exclusive(() => {
+        files = next;
+        parts = { ...device, files };
+      });
+    },
+
+    replaceDevice(gpu) {
+      open();
+      return evaluator.exclusive(async () => {
+        open();
+        const old = device;
+        unsubscribe();
+        // What the old device held is dead: a lost one is forgotten, one that still works is emptied.
+        cache.forget();
+        if (old.gpu.lost) thumbnails.forget();
+        else thumbnails.dispose();
+        destroy(old);
+        epoch++;
+        device = assemble(gpu, false);
+        parts = { ...device, files };
+        unsubscribe = gpu.onLost(lost);
+        await compileOwn();
+      });
+    },
+
+    dispose() {
+      if (disposed) return evaluator.idle();
+      return evaluator.exclusive(async () => {
+        if (disposed) return;
+        // Thumbnails being read back are delivered first; the readback is bounded by the work already submitted.
+        await thumbnails.idle();
+        disposed = true;
+        unsubscribe();
+        cache.forget();
+        thumbnails.dispose();
+        destroy(device);
+        await cpu.dispose();
+      });
+    },
+  };
+  return engine;
 }

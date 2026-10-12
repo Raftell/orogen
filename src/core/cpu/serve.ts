@@ -38,7 +38,8 @@ function buffersOf(value: unknown): ArrayBuffer[] {
       // A SharedArrayBuffer is not transferable; it is cloned by reference.
       if (v.buffer instanceof ArrayBuffer) buffers.add(v.buffer);
     } else if (isPlain(v)) {
-      for (const child of Object.values(v)) stack.push(child);
+      // Only objects are worth a visit: a list of a million numbers adds nothing to the stack.
+      for (const child of Object.values(v)) if (typeof child === 'object' && child !== null) stack.push(child);
     }
   }
   return [...buffers];

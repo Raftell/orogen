@@ -425,6 +425,11 @@ entry's. Entries the running evaluation still needs hold a second reference
 entry's references and removes the entry; a texture that reaches zero becomes
 FREE and is then reused or destroyed by the loop of 2.5.
 
+Entries that name one texture (a pass-through, 5.6) keep each other from being
+evictable alone. When no entry is evictable and such a texture has no
+reference but cache entries', its entries are evicted in order until it is
+FREE.
+
 ### 2.8 Preview and build
 
 | | Preview evaluation (`mode: 'preview'`) | Build evaluation (`mode: 'build'`) |
@@ -510,11 +515,12 @@ estimate(dispatch) = work × rate[kernel]                        milliseconds
 that kernel name, kept per device epoch.
 
 1. A kernel that has not run on this device starts at `RATE_INITIAL = 1e-7` ms per unit (*to calibrate*). The value is pessimistic on purpose: measured costs on the GTX 1660 Ti are 6e-9 to 1.5e-8 ms per unit. A pessimistic start produces small first tiles, which cost nothing measurable.
-2. When a slice completes with measured duration `dt` (3.5) and estimate `est`, the rate of every kernel in the slice is multiplied by `clamp(dt / est, 0.5, 2)`.
+2. When a slice completes with measured duration `dt` (3.5) and estimate `est`, the rate of every kernel in the slice becomes the rate its dispatches in that slice were estimated with, multiplied by `clamp(dt / est, 0.5, 2)`. The factor applies to the rate behind `est`, not to the current one: with two slices in flight (3.6) the second is estimated before the first completes, and multiplying the current rate would apply one correction twice.
 3. When `dt` exceeds the hard ceiling (3.5), the clamp's upper bound does not apply for that update.
 4. The first slice that uses a new pipeline or a new texture measures several times too long. The clamp absorbs it; no sample is treated specially.
 5. Rates are not persisted and are reset when the device is replaced.
 6. `rate[kernel]` never exceeds `100 × RATE_INITIAL` except through rule 3 (*to calibrate*). The cap keeps a duration that is not the kernel's own (the completion latency of 3.5) from shrinking slices without bound.
+7. `rate[kernel]` never falls below `0.01 × RATE_INITIAL` (*to calibrate*). The floor keeps slices too short to be measured (a timestamp difference of zero, a node that waits after every small run) from halving a rate towards zero, which would let a later long run of the same kernel through as one slice.
 
 ### 3.4 Tiles
 
@@ -565,7 +571,7 @@ target then raises every rate on every slice. Without `caps.timestampQuery`
 therefore (both rules *to calibrate* on the target machine):
 
 1. `dt` is the wall time minus `latency`, floored at 0. `latency` is the completion time of the most recent barrier (2.6) or empty submission; the stream measures it again with an empty submission whenever it has been idle for 250 ms.
-2. A slice whose wall time is below `2 × latency` never raises a rate (3.3 rule 2).
+2. A slice whose wall time is below `2 × latency` is not resolved: its `dt` is unknown but at most its wall time. Such a slice never raises a rate, and lowers one by `clamp(wall / est, 0.5, 1)` in place of the factor of 3.3 rule 2. Measured on Dawn in Node: with `dt` floored at 0 for these slices, every kernel that runs in short slices fell to the floor of 3.3 rule 7 within seven slices.
 
 ### 3.6 Waiting
 
@@ -590,9 +596,10 @@ for i = 0 .. iterations − 1:
     if a slice was submitted since the last boundary, or i is the last iteration:
         batch boundary:
             submit the open slice
+            refresh preview loans (5.11)
             wait as the table says
             check cancellation, device loss, and the error scopes of completed slices
-            report progress (5.10); refresh preview loans (5.11)
+            report progress (5.10)
 ```
 
 1. This is the wait `engine.md` 4.7 describes for `ctx.loop`. With a limit of 2 the loop goes on encoding while one slice runs and waits only when a second is submitted; the queue never holds more than two slices, and a batch still ends with a real wait. With slices of 8 ms, waiting for each one before encoding the next was measured in Electron to cost 1.2 to 1.6 ms per iteration against 0.8 with two in flight.
@@ -776,8 +783,9 @@ declare function newDoc(): GraphDoc;       // the settings defaults of 4.2, no n
 declare function newId(): string;          // 10 characters of base 36 from crypto.getRandomValues; the only source of the ids the commands create
 ```
 
-An id is any non-empty string: `parseDoc` accepts the ids a file holds
-(`fbm`, `talus`), and the record key of a node, edge or group equals its `id`.
+An id is any non-empty string except `__proto__`: `parseDoc` accepts the ids a
+file holds (`fbm`, `talus`), and the record key of a node, edge or group equals
+its `id`.
 
 `parseDoc` throws `DocFormatError` when the text is not JSON, when `format` is
 not `'orogen'`, or when `version` is greater than 1 (`written by a newer version
@@ -791,6 +799,9 @@ of Orogen`). Otherwise it returns a document and a list of problems:
 | a node with `version` higher than `NodeDef.version` | unchanged | yes |
 | a param outside its hard limits | the normalised value | yes |
 | an edge that breaks 4.3 | unchanged | yes |
+| a collection (`nodes`, `edges`, `groups`, `ui`) missing or not an object | an empty one | yes |
+| an entry that is not an object of its collection's shape, or whose key cannot be an id | removed | yes |
+| a member of the wrong type in the document (`version`), a node, a group or `ui`; an `id` that differs from its record key | `version` 1, `position` (0, 0), `params` empty, a group's `title` empty, an optional member removed; the key | yes |
 
 `serializeDoc` returns `JSON.stringify(doc, null, 2)` plus a newline. Members
 keep the order in which the document holds them, so a node the loader left
@@ -903,7 +914,8 @@ and the session (section 7) all drive this one object.
 are engine services and take their place in the stream. `trim`, `setFiles`,
 `replaceDevice` and `dispose` wait until the running evaluation has settled.
 After `dispose()` has resolved, a new engine may be created on the same
-`GpuContext`.
+`GpuContext`. `dispose()` also disposes the `CpuRunner` the engine was given
+(6.3): the runner belongs to its engine.
 
 **Where a registry comes from.** There is one explicit model: a program builds
 its registry from a list of definitions with `createRegistry` and passes it to
@@ -969,6 +981,7 @@ interface EvaluateResult {
 2. One evaluation runs at a time. A call made while another runs starts when that one has settled. Pre-empting is the caller's job: abort, then call.
 3. `status`: `'device-lost'` when the device was lost; else `'aborted'` when the signal aborted before the last node finished; else `'errors'` when at least one node failed; else `'ok'`.
 4. The document is not retained after the promise settles.
+5. `timing.nodesRun` counts the nodes whose `evaluate()` ran and ended `node-done`, `timing.nodesCached` the nodes that were cache hits. A bypassed node is in neither.
 
 **Ownership of the result.** `fields[i]` is a handle retained for the caller,
 who calls `release()` on it exactly once, or `null`. It is `null` for a node
@@ -996,14 +1009,18 @@ being consumed.
 3. **Keys.** For every remaining node the key is computed (5.4), awaiting its `externalKey` at most once per call.
 4. **Wanted outputs**, by the `outputs` option.
 5. **Cache lookup** (preview). A node whose entry holds every wanted output is `cached`. The evaluation takes its references (2.2) on every published texture the plan will read.
-6. **Memory check** (build). The evaluator computes `outputPeakBytes`: the largest sum, over the steps of the plan, of the bytes of all wanted outputs, conversions and mask blends that are alive at that step, with each one alive from the step that produces it to the step of its last reader or its delivery. Aliases are counted as textures. When `outputPeakBytes + reservedBytes + pinnedBytes > budget`, no node runs, every target fails, and the node at whose step the peak occurs gets an error of kind `'budget'`. A node's own working memory is not in this sum. A node whose working state does not fit fails with kind `'budget'` when it allocates that state: before its first loop (`engine.md` 1.4), or, for a coarse-to-fine node, at its last refinement (`simulation.md` 1.5). The nodes before it in the plan have run by then.
+6. **Memory check** (build). The evaluator computes `outputPeakBytes`: the largest sum, over the steps of the plan, of the bytes of all wanted outputs, conversions and mask blends that are alive at that step, with each one alive from the step that produces it to the step of its last reader or its delivery. Aliases are counted as textures. When `outputPeakBytes + reservedBytes + pinnedBytes > budget`, no node runs, every target fails, and the node at whose step the peak occurs gets an error of kind `'budget'`. Every other node of the plan that could have run is skipped with reason `'upstream'`, naming that node, also when it is not downstream of it: the reason says which node stopped the build. A node's own working memory is not in this sum. A node whose working state does not fit fails with kind `'budget'` when it allocates that state: before its first loop (`engine.md` 1.4), or, for a coarse-to-fine node, at its last refinement (`simulation.md` 1.5). The nodes before it in the plan have run by then.
 7. **Compilation.** The kernels of all nodes that will run are compiled in parallel with `createComputePipelineAsync`, each once per device epoch. A node one of whose kernels fails joins the blocked nodes.
 8. `eval-start` is emitted, then the nodes run one at a time in plan order (5.5).
 
 ### 5.4 Keys and the cache
 
-A key is a canonical string. Keys are compared as whole strings (interned for
-speed); a truncated hash is never a key.
+A key is a canonical string. Keys are compared as whole strings; a truncated
+hash is never a key. Wherever a key or an `O` stands inside another key, its
+**token** stands for it: a number the engine gives to that string and to no
+other. Without tokens a key would repeat the keys of everything upstream, and
+double at every node that reads one source twice. Tokens belong to one engine
+and are not persisted, so a key is compared only with keys of the same engine.
 
 ```
 K(n)  = JSON.stringify([ KEY_VERSION, def.type, def.version, P, I, S, X ])          the node key
@@ -1025,6 +1042,13 @@ O(n, port)  = the content of an output; the first line that applies:
 
 contentKey(n) = JSON.stringify(O(n, outputs[0]))    for a node with outputs;  K(n) for a node without
 ```
+
+Inside `C`, `O(...)` is the token of `JSON.stringify(O(...))`; inside `O`,
+`K(n)` is the token of `K(n)`. The engine never forgets a token of the
+document it is keying; beyond 32 768 strings it forgets the least recently
+used of the others. A string whose token it has forgotten gets a new one,
+never one another string had: that costs cache misses downstream of it and
+nothing else.
 
 `KEY_VERSION` is an engine constant, raised when a change to the core alters
 the result of unchanged nodes.
@@ -1061,12 +1085,13 @@ rule 2 of 5.3. Computing all keys of a 150-node document was measured at 4 to
 4. Nothing from a node that failed or was cancelled is cached.
 5. The cache lives in GPU memory only. It is not written to disk, and it is emptied when the device is lost.
 6. A build evaluation keeps the same four kinds of content in a table of its own that lives for that evaluation; it neither reads nor writes the cache.
+7. The cache holds at most 8192 entries. Beyond that the first in eviction order (2.7) go, whether or not that frees a texture: the budget bounds the bytes of the cache, and an entry that only shares textures (5.6, pass-through) has none of its own.
 
 **Transient entries.** While a control is dragged the session evaluates with
 `cache: 'transient'` (7.3), and every tick would otherwise fill the cache with
 results nobody will ask for again.
 
-1. An entry created by a transient evaluation is a **transient entry** and takes that evaluation's `requestId` as its **generation**. A transient entry hit by a later transient evaluation takes the later `requestId`. An ordinary entry that a transient evaluation hits stays ordinary.
+1. An entry created by a transient evaluation is a **transient entry** and takes that evaluation's `requestId` as its **generation**. A transient entry hit by a later transient evaluation takes the later `requestId`. An ordinary entry that a transient evaluation hits, or replaces (rule 2 above), stays ordinary.
 2. When a transient evaluation settles with status `'ok'` or `'errors'`, every transient entry whose generation is lower than its `requestId` is dropped at once. Entries upstream of the edit are hit on every tick and so survive.
 3. An evaluation with `cache: 'keep'` turns every transient entry it hits into an ordinary one.
 4. Remaining transient entries are the first to be evicted (2.7).
@@ -1080,9 +1105,9 @@ For a node that is not cached and not blocked:
 
 1. The evaluator builds the `EvalContext`: read-only `Field`s over the published textures of the connected inputs (converted where needed), `ctx.params`, `ctx.wants`. It emits `node-start` and calls `def.evaluate(ctx)`.
 2. When `evaluate()` has resolved, the evaluator checks that every wanted output was given (otherwise the node fails: `output "<name>" was not produced`), submits the open slice, and waits until every slice of the node has completed and every error scope and texture creation of the node has reported (5.8). It then checks the signal and the device.
-3. It applies the mask blend when the node is `maskable` and `mask` is connected (5.6).
-4. **Publication** is atomic and happens only now. Every field given to `ctx.output()` becomes PUBLISHED; an output that is one of the node's inputs takes one more reference on that input's texture instead; every other field the node allocated returns to FREE; its LUT buffers are destroyed and its bind groups dropped. In preview the entry is stored. `node-done` is emitted.
-5. When anything fails before step 4 (an exception, a rejected promise, a missing output, an error scope, an abort, a lost device), every field the node allocated returns to FREE, including those given to `ctx.output()`, nothing is published, preview loans are withdrawn (5.11), and `node-error` or `node-skipped` is emitted.
+3. **Publication** is atomic and happens only now. Every field given to `ctx.output()` becomes PUBLISHED; an output that is one of the node's inputs takes one more reference on that input's texture instead; every other field the node allocated returns to FREE; its LUT buffers are destroyed and its bind groups dropped. In preview the entry is stored.
+4. It applies the mask blend when the node is `maskable`, `mask` is connected and `outputs[0]` is wanted (5.6), and makes the conversions of the targets that name the node (5.2). Then `node-done` is emitted. When the blend or a conversion fails, the node fails with kind `'internal'` (5.8) and what step 3 published stays in its entry: it is the node's own result, and correct.
+5. When anything fails before step 3 (an exception, a rejected promise, a missing output, an error scope, an abort, a lost device), every field the node allocated returns to FREE, including those given to `ctx.output()`, nothing is published, preview loans are withdrawn (5.11), and `node-error` or `node-skipped` is emitted.
 
 After `evaluate()` has settled, every method of its context throws.
 
@@ -1180,9 +1205,9 @@ interface NodeError {
 | `out-of-memory` | the GPU reports out of memory twice (below) | `Out of GPU memory at <res> × <res> (budget <b> MB). Lower the resolution or raise the GPU memory budget` |
 | `watchdog` | one dispatch of a kernel that cannot be tiled is estimated above the hard ceiling (3.4) | as given there |
 | `io` | `ctx.readFile` or `externalKey` fails with a `FileError` (6.1) | the error's message |
-| `node-exception` | `evaluate()` throws or rejects with anything else | the error's message |
+| `node-exception` | `evaluate()` or `externalKey` throws or rejects with anything else | the error's message |
 | `device-lost` | the node was running at two device losses in a row (5.9) | `The GPU was reset twice while this node was running` |
-| `internal` | a conversion, a mask blend or a constant fails | the error's message |
+| `internal` | a conversion, a mask blend or a constant fails. It is reported on the node it was made for: the reader of a converted input, the node whose output is blended, the node a converted target names | the error's message |
 
 **Isolation.** A failed node fails alone. Every node that reads it, directly or
 not, is skipped with `node-skipped`, reason `'upstream'`, naming the failed
@@ -1226,9 +1251,9 @@ did not check would finish the graph, cache dead textures and report success.
 1. `gpu.lost` is checked at every cancellation point (3.7). When it is set the context method or runtime call in progress throws `DeviceLostError`.
 2. The evaluation settles with status `'device-lost'`. Nothing from the running node is published. Unfinished nodes get `node-skipped` with reason `'device-lost'`.
 3. The engine then forgets everything that lived on the device, without calling into it: the cache, the pool's textures and ledger (all byte counts return to zero), pipelines, learned rates, the arena, the staging buffer and the thumbnail atlas. Existing `FieldHandle`s are dead (2.2).
-4. Until `replaceDevice`, `evaluate()` settles at once with `'device-lost'` and every other method throws `DeviceLostError`.
+4. Until `replaceDevice`, `evaluate()` settles at once with `'device-lost'`; `read`, `stats`, `reserve` and `trim` throw or reject with `DeviceLostError`; `memory()` reports the forgotten ledger, every byte count zero. `keys`, `lastTiming`, `onThumbnail`, `setBudget` and `setFiles` need no device and work as before, and `dispose()` ends the engine without calling into the lost device.
 5. `replaceDevice(gpu)` takes a context from a new `openGpu` call, increments `epoch`, compiles the engine's kernels and resolves. The document was never on the GPU, so nothing is lost but time.
-6. The engine records the node that was running when the device was lost. If the same node, with the same key, is running at the next loss as well, it is not run a third time: it fails with kind `'device-lost'` until its key changes. Before that second attempt its slice target and the hard ceiling are halved for that node.
+6. The engine records the node that was running when the device was lost. If the same node, with the same key, is running at the next loss as well, it is not run a third time: it fails with kind `'device-lost'` until its key changes. Before that second attempt its slice target and the hard ceiling are halved for that node. A loss at which another node, or none, was running ends the row.
 
 Recovery in the application (who opens the new device, how often) is in 7.8.
 
@@ -1253,9 +1278,9 @@ type EvalEvent =
 ```
 
 1. Events of one request arrive in order, begin with `eval-start`, end with `eval-end`, and none arrives after the promise has settled.
-2. Every node of the plan gets exactly one final event: `node-done`, `node-error` or `node-skipped`. Cached and bypassed nodes get `node-done` with `cached: true` and `wallMs: 0`.
+2. Every node of the plan gets exactly one final event: `node-done`, `node-error` or `node-skipped`. Cached and bypassed nodes get `node-done` with `cached: true` and `wallMs: 0`. In `eval-start`, `blocked` is a node that will not run: it failed a check of 5.3, reads one that did, or the evaluation cannot start at all (the memory check of a build, a lost device, a signal that has already aborted).
 3. `node-progress` is emitted at most 10 times per second per node, `eval-progress` at most 4 times per second. Fractions are in 0..1 and do not decrease.
-4. `wallMs` runs from `node-start` to publication. `gpuMs` is the sum of the measured GPU time of the node's slices, `null` without `timestamp-query`. `peakBytes` is the most pool memory the invocation held as WORKING.
+4. `wallMs` runs from `node-start` to `node-done`. `gpuMs` is the sum of the measured GPU time of the node's slices, `null` without `timestamp-query`. `peakBytes` is the most pool memory the invocation held as WORKING.
 5. Every event is plain data and can be structured-cloned.
 
 **Estimates.** There is no declared cost per node. All estimates come from
@@ -1278,10 +1303,10 @@ than the clock at first. It is shown as an estimate.
 A node inside `ctx.loop` can lend its working state to the viewer through
 `LoopOptions.preview` (`engine.md` 4.7).
 
-1. At every batch boundary (3.6) the evaluator calls `preview()` and records the returned fields as the node's **loans**, by output port. A loan is valid from that boundary until the next call of `body`: at a boundary everything encoded is submitted, so in queue order the lent texture holds a complete iteration. A key that is not an output port of the node fails the node with kind `'binding'`.
-2. When the loans changed, the evaluator calls `EvaluateOptions.onLoans(nodeId, loans)` (5.2) before the next call of `body`, with one `TextureRef` per lent port. When at least 100 ms have also passed since the last one, `node-preview` is emitted with the ports that have a loan.
+1. At every batch boundary (3.6), once the open slice is submitted and before the boundary waits, the evaluator calls `preview()` and records the returned fields as the node's **loans**, by output port. A loan is valid from then until the next call of `body`, which is the time the boundary waits and the viewer draws (7.5): everything encoded is submitted, so in queue order the lent texture holds a complete iteration. A key that is not an output port of the node fails the node with kind `'binding'`.
+2. When the loans changed, the evaluator calls `EvaluateOptions.onLoans(nodeId, loans)` (5.2) before it waits, with one `TextureRef` per lent port. When at least 100 ms have also passed since the last one, `node-preview` is emitted with the ports that have a loan.
 3. A viewer may draw a lent texture in frames it submits while the loan is valid. It reads by `uv`, so a loan of any size works: the coarse levels of a coarse-to-fine run are shown as they are.
-4. Loans end when the node settles. The evaluator withdraws them synchronously, with `onLoans(nodeId, null)`, before the fields return to the pool; the viewer is on the same thread and switches in that call (7.5).
+4. Loans end when the node settles, or earlier when it releases a field it has lent. The evaluator withdraws them synchronously, with `onLoans(nodeId, null)`, before the fields return to the pool; the viewer is on the same thread and switches in that call (7.5).
 5. Lent content is never cached, never gets a thumbnail and is not in the result. After an abort or an error the viewer shows what it showed before.
 
 ### 5.12 Thumbnails
@@ -1306,7 +1331,7 @@ interface Thumbnail {
 | `field`, role `data` | grey `(v − min) / (max − min)` over the 128² samples; 0.5 when they are equal |
 | `color` | `rgb` clamped to 0..1 and encoded to sRGB; alpha ignored |
 
-4. Thumbnails are written to cells of one `rgba8unorm` atlas of 2048 × 2048 (256 cells), which only stages them. The atlas is read back when an evaluation has ended and at most every 250 ms during one, or earlier when all cells are in use. The readback does not delay the evaluation's result. A row of 128 RGBA texels is 512 bytes, which needs no padding.
+4. Thumbnails are written to cells of one `rgba8unorm` atlas of 2048 × 2048 (256 cells), which only stages them. The atlas is read back when an evaluation has ended and at most every 250 ms during one, or earlier when all cells are in use. The readback does not delay the evaluation's result. A row of 128 RGBA texels is 512 bytes, which needs no padding. The atlas is made with the first thumbnail; under a budget it does not fit beside what is reserved, working and pinned, no thumbnail is made and the evaluation is not disturbed.
 5. Each thumbnail read back is delivered once to `onThumbnail` listeners, per node id. The engine keeps no pixels afterwards.
 
 ### 5.13 Guarantees in one place
@@ -1407,7 +1432,7 @@ interface FileSink {
 2. **Streaming.** `write(chunk)` appends exactly the bytes `[byteOffset, byteOffset + byteLength)` of the chunk and resolves when the operating system has accepted them. The caller may then reuse the buffer. A caller awaits each `write` before the next; that is the back-pressure. Producers use chunks of at most 64 MiB.
 3. **Atomic.** A writer writes to `<relPath>.partial`. `close()` flushes it and renames it to `relPath`, replacing an existing file. Until `close()` has resolved, `relPath` is either the previous file or absent, never a part. `abort()` deletes the partial file; it is idempotent and does nothing after `close()`. A `write` or a `close` that fails rejects with a `FileError`, deletes the partial file as `abort()` does, and every later `write` and `close` of that writer rejects with the same error.
 4. **One writer per path.** `create` for a path that this sink has open, or has already closed, rejects: two exporters that would write the same file are caught, and nothing is overwritten within one build. A path whose writer was aborted or has failed may be created again.
-5. **Cancellation.** A build that is cancelled or fails calls `abortAll()`. No partial file and no half-written set of files is left under a final name that the build had not completed.
+5. **Cancellation.** A build that is cancelled or fails calls `abortAll()`. No partial file and no half-written set of files is left under a final name that the build had not completed. A `create` that is still under way when `abortAll()` is called resolves with a writer that is already aborted, and `abortAll()` resolves only when that writer's partial file is gone as well.
 6. Implementations: `NodeFileSink(rootFolder: string): FileSink` in `src/platform/node/files.ts`, a function called without `new`, on `node:fs`; a memory-backed one for tests. No implementation crosses a process boundary, and file contents never travel through inter-process messages. Measured in Electron for 250 MB: 0.1 s written from the engine worker with `node:fs`; 0.9 s as one message through the preload bridge with a 0.5 s stall of the interface; 25 s as 8 MiB views of one buffer, because each view drags the whole buffer along.
 
 Which files a build writes, and their encoders, are in `export-unreal.md`.
@@ -2175,7 +2200,7 @@ Versions are exact. Adding or upgrading a dependency is the integrator's change
 | `@webgpu/types` | 0.1.74 | the WebGPU types of every tsconfig (8.4) | Types only |
 | `webgpu` | 0.6.2 | the headless device (1.5) | Never bundled into the application |
 | `fast-png` | 8.0.0 | decoding PNG in `src/core/io/` (`export-unreal.md` 4.7) | Runs in the CPU worker. On the `import-src` allow-list of `testing.md` section 4 |
-| `geotiff` | 3.0.5 | decoding TIFF in `src/core/io/` | As `fast-png`. Imported by `tiff.ts` alone, with the two workarounds of `export-unreal.md` 4.7 (rules 2 and 3), which an upgrade re-examines |
+| `geotiff` | 3.0.5 | decoding TIFF in `src/core/io/` | As `fast-png`. Imported by `tiff.ts` alone, with the two workarounds of `export-unreal.md` 4.7 (rules 2 and 3) and behind its predictor checks, which an upgrade re-examines |
 | `parse-exr` | 1.0.2 | decoding OpenEXR in `src/core/io/` | As `fast-png`. Imported by `exr.ts` alone, behind the checks of `export-unreal.md` 4.7 |
 | `ajv` | 8.20.0 | validating manifests against `MANIFEST_SCHEMA` in tests (`export-unreal.md` 6.1) | Tests only; never imported from `src/` |
 
@@ -2191,13 +2216,14 @@ src/
     export-decl.ts               declaration types of export nodes and builds (export-unreal.md section 1)
     globals.d.ts                 the ambient globals core may use (8.4)
     engine.ts                    createEngine
-    gpu/                         device.ts caps.ts pool.ts stream.ts tuning.ts readback.ts scopes.ts
+    gpu/                         device.ts caps.ts pool.ts stream.ts throughput.ts tuning.ts readback.ts texels.ts scopes.ts
                                  the kernel system (engine.md section 3): field.ts kernel.ts lib.ts uniforms.ts bindings.ts
                                  generate.ts pipelines.ts run.ts defaults.ts lut.ts hash.ts errors.ts seal.ts
+                                 shape.ts scan.ts wgsl-names.ts
     wgsl/                        stdlib.ts hash.ts noise.ts (engine.md 3.8, 3.9)
     ops/                         index.ts kernels.ts types.ts and one file per shared operation (engine.md section 5)
     eval/                        evaluator.ts plan.ts keys.ts cache.ts context.ts errors.ts events.ts thumbnails.ts
-                                 convert.ts stats.ts handles.ts progress.ts hooks.ts parts.ts
+                                 convert.ts stats.ts handles.ts progress.ts hooks.ts parts.ts service.ts
     graph/                       doc.ts settings.ts ladder.ts ports.ts param-types.ts canonical.ts params.ts curves.ts node.ts
                                  registry.ts commands.ts validate.ts serialize.ts migrate.ts view.ts lint.ts
     session/                     session.ts scheduler.ts protocol.ts events.ts viewport.ts budget.ts recovery.ts

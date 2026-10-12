@@ -13,13 +13,14 @@ interface PngHeader {
   readonly height: number;
   readonly depth: number;
   readonly colorType: number;
+  readonly interlaced: boolean;
   readonly transparency: boolean;      // a tRNS chunk is present
 }
 
 /** Walks the chunk list without decoding anything, so that a cut file and an oversized image are refused before the library allocates. */
 function readHeader(bytes: Uint8Array): PngHeader {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  let ihdr: { width: number; height: number; depth: number; colorType: number } | null = null;
+  let ihdr: { width: number; height: number; depth: number; colorType: number; interlaced: boolean } | null = null;
   let transparency = false;
   let hasData = false;
   for (let pos = 8; ; ) {
@@ -35,6 +36,7 @@ function readHeader(bytes: Uint8Array): PngHeader {
         height: view.getUint32(pos + 12),
         depth: bytes[pos + 16],
         colorType: bytes[pos + 17],
+        interlaced: bytes[pos + 20] !== 0,
       };
     } else if (type === 'tRNS') transparency = true;
     else if (type === 'IDAT') hasData = true;
@@ -50,6 +52,10 @@ function channelsOf(header: PngHeader): 1 | 3 | 4 {
   if (colorType === PALETTE) {
     if (depth !== 1 && depth !== 2 && depth !== 4 && depth !== 8) {
       throw new Error(`PNG palette image has ${depth} bits per pixel; 1, 2, 4 and 8 are valid`);
+    }
+    // The library takes every pixel of an interlaced pass for a whole byte.
+    if (header.interlaced && depth !== 8) {
+      throw new Error(`PNG is interlaced and its palette depth is ${depth}; an interlaced palette image is read at depth 8`);
     }
     return header.transparency ? 4 : 3;
   }

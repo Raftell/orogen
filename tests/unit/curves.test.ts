@@ -97,6 +97,14 @@ test('degenerate curves have a value', () => {
   assert.equal(evalCurve([{ x: 0, y: 0.25 }, { x: 1, y: 1 }], NaN), 0.25);
 });
 
+test('a point that does not advance in x is left out, so no sample is NaN', () => {
+  const valid: CurvePoint[] = [{ x: 0, y: 0 }, { x: 0.5, y: 0.2 }, { x: 1, y: 1 }];
+  const stalled: CurvePoint[] = [{ x: 0, y: 0 }, { x: 0.5, y: 0.2 }, { x: 0.5, y: 0.9 }, { x: 0.25, y: 0.7 }, { x: 1, y: 1 }, { x: NaN, y: 0 }];
+  for (const x of [0, 0.25, 0.5, 0.75, 1]) assert.equal(evalCurve(stalled, x), evalCurve(valid, x));
+  for (const y of bakeCurve(stalled, 33)) assert.ok(Number.isFinite(y));
+  assert.equal(evalCurve([{ x: 0.5, y: 0.25 }, { x: 0.5, y: 0.75 }], 0.5), 0.25);
+});
+
 test('bakeCurve: sample i is evalCurve(points, i / (n - 1)), 1024 samples by default', () => {
   const points: CurvePoint[] = [{ x: 0, y: 0 }, { x: 0.25, y: 0.75 }, { x: 1, y: 1 }];
   const lut = bakeCurve(points);

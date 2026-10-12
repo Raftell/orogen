@@ -11,7 +11,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { NodeDef } from '../../src/core/api.ts';
-import { lintCategory, lintNodes, lintTestLocations } from '../../src/core/graph/lint.ts';
+import { lintCategory, lintNodes, lintTestLocations, type LintProblem } from '../../src/core/graph/lint.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const CATEGORIES = ['generate', 'adjust', 'filter', 'simulate', 'select', 'color', 'surface', 'io', 'ref'] as const;
@@ -25,6 +25,16 @@ function textsOf(folder: string): Record<string, string> {
     if (entry.isFile()) texts[entry.name] = readFileSync(path.join(absolute, entry.name), 'utf8');
   }
   return texts;
+}
+
+/**
+ * Fails with the first messages when there is a problem. The count is compared, not the list: a product-wide
+ * list can be long, and the diff node:assert builds for a failed deepEqual grows with the square of its length.
+ */
+function noProblems(problems: readonly LintProblem[]): void {
+  const shown = problems.slice(0, 25).map((p) => p.message);
+  if (problems.length > shown.length) shown.push(`... and ${problems.length - shown.length} more`);
+  assert.equal(problems.length, 0, `${problems.length} lint problems:\n${shown.join('\n')}`);
 }
 
 const load = (file: string): Promise<Record<string, unknown>> => import(pathToFileURL(path.join(ROOT, file)).href);
@@ -46,7 +56,7 @@ for (const category of CATEGORIES) {
       if (file.endsWith('.ts') && file !== 'index.ts' && !file.startsWith('_')) defaults[file] = (await load(`${folder}/${file}`)).default;
     }
     const problems = lintCategory({ category, files, defaults, index, tests: textsOf(`tests/nodes/${category}`) });
-    assert.deepEqual(problems.map((p) => p.message), []);
+    noProblems(problems);
   });
 }
 
@@ -57,9 +67,9 @@ test('title-unique: no two nodes of the product have the same title', async () =
     const nodes = await load(`src/core/nodes/${category}/index.ts`).then((module) => module.nodes, () => []);
     if (Array.isArray(nodes)) all.push(...(nodes as NodeDef[]));
   }
-  assert.deepEqual(lintNodes(all).map((p) => p.message), []);
+  noProblems(lintNodes(all));
 });
 
 test('test-location: every test file is in a folder that a layer of testing.md 8.1 runs', () => {
-  assert.deepEqual(lintTestLocations(walk('tests')).map((p) => p.message), []);
+  noProblems(lintTestLocations(walk('tests')));
 });

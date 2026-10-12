@@ -1003,20 +1003,21 @@ name:
 | Format | First bytes | Decoded with | Accepted |
 | --- | --- | --- | --- |
 | PNG | `89 50 4E 47 0D 0A 1A 0A` | `fast-png` 8.0.0 | 8 and 16 bits per channel; grey, grey with alpha, RGB, RGBA, palette |
-| TIFF | `49 49 2A 00` or `4D 4D 00 2A` | `geotiff` 3.0.5 | the first image of the file; strips or tiles; 8-, 16- and 32-bit integers and 32-bit float; 1, 3 or 4 samples per pixel; uncompressed, PackBits, LZW or Deflate |
+| TIFF | `49 49 2A 00` or `4D 4D 00 2A` | `geotiff` 3.0.5 | the first image of the file; strips or tiles; 8-, 16- and 32-bit integers and 32-bit float; 1, 3 or 4 samples per pixel; uncompressed, PackBits, LZW or Deflate, with or without a predictor (horizontal differencing, floating point) |
 | OpenEXR | `76 2F 31 01` | `parse-exr` 1.0.2 | scan-line files with a `Y` channel, or `R`, `G`, `B` and optional `A`; the compressions the library reads |
 
-The decoder's tests pin the accepted sets with fixture files, among them one
-file written by each encoder of this section.
+The decoders' tests (`tests/unit/decoders.test.ts`) pin the accepted sets with
+files they generate, among them files in the exact layouts of 4.5 and 4.6. The
+tests of the encoders decode what each encoder writes (10.2).
 
 Within the accepted sets a decoder refuses what its library would decode to
 wrong values without an error:
 
 | Format | Also rejected |
 | --- | --- |
-| PNG | grey and RGB of 1, 2 or 4 bits per channel. A palette is read at every index depth; a `tRNS` colour key of a grey or RGB image is ignored |
-| TIFF | BigTIFF (not recognised); 2 samples per pixel; samples of one pixel that differ in size or type; 16- and 64-bit float; a PhotometricInterpretation other than WhiteIsZero, BlackIsZero and RGB (palette, CMYK, YCbCr, CIELab). Samples are returned as stored: WhiteIsZero is not inverted |
-| OpenEXR | tiled, deep and multi-part files; a file with a UINT channel or a subsampled channel; `Y`, `R`, `G`, `B` and `A` channels that mix HALF and FLOAT; B44 and B44A; decreasing line order together with a compression whose chunks hold several scan lines (ZIP, PIZ, PXR24, DWAA, DWAB). HALF samples are widened to float; other channels of the file are ignored |
+| PNG | grey and RGB of 1, 2 or 4 bits per channel; an interlaced palette image of 1, 2 or 4 bits per pixel. Without interlacing a palette is read at every index depth; a `tRNS` colour key of a grey or RGB image is ignored |
+| TIFF | BigTIFF (not recognised); 2 samples per pixel; samples of one pixel that differ in size or type; 16- and 64-bit float; a PhotometricInterpretation other than WhiteIsZero, BlackIsZero and RGB (palette, CMYK, YCbCr, CIELab); a Predictor other than 1, 2 and 3; a big-endian file with Predictor 3, or with Predictor 2 and samples of more than 8 bits. Samples are returned as stored: WhiteIsZero is not inverted |
+| OpenEXR | tiled, deep and multi-part files; a file with a UINT channel or a subsampled channel; `Y`, `R`, `G`, `B` and `A` channels that mix HALF and FLOAT; B44 and B44A; decreasing line order together with a compression whose chunks hold several scan lines (ZIP, PIZ, PXR24, DWAA, DWAB); a file whose chunks are not stored in the order its `lineOrder` states. HALF samples are widened to float; other channels of the file are ignored |
 
 All three libraries load and run inside a CPU-task thread without Node APIs.
 This is measured in a dedicated Web Worker of Electron 44 without Node
@@ -2170,7 +2171,7 @@ a GPU:
 | `planBuild` | Every problem code of 3.3 from a document made to provoke it; the order of items, layers and files |
 | The manifest | The example of 6.2 and every manifest a test build writes validate against `MANIFEST_SCHEMA` |
 | `unreal-test` | The pattern of 9.1 at 1009; `--check` accepts its own heightmap and reports a planted difference |
-| Decoders | Each accepted format of 4.7 from a fixture file; each rejection with its message |
+| Decoders | In `tests/unit/decoders.test.ts`, with the core code they belong to: each accepted format of 4.7 from a file the test generates; each rejection with its message |
 
 ### 10.3 GPU tests (`tests/export/`)
 

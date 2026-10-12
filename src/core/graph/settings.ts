@@ -1,5 +1,5 @@
 import type { ProjectSettings } from './doc.ts';
-import { isBuildResolution, ladderLevel } from './ladder.ts';
+import { isBuildResolution, ladderLevel, MAX_LEVEL } from './ladder.ts';
 
 /** The defaults of runtime.md 4.2. */
 export const DEFAULT_SETTINGS: ProjectSettings = {
@@ -50,9 +50,9 @@ function buildResolution(stored: Readonly<Record<string, unknown>>): Fix {
 function previewLevel(stored: Readonly<Record<string, unknown>>, build: number): Fix {
   const v = stored.previewLevel;
   const base: Fix = finite(v) ? { value: v, problem: null } : fallback('previewLevel', stored);
-  let value = Math.min(30, Math.max(0, Math.floor(base.value)));
-  // Level 0 is always defined, so the loop ends.
-  while (ladderLevel(build, value) === null) value--;
+  let value = Math.min(MAX_LEVEL, Math.max(0, Math.floor(base.value)));
+  // Level 0 of a build resolution is always defined; the loop stops there whatever `build` is.
+  while (value > 0 && ladderLevel(build, value) === null) value--;
   if (base.problem !== null || value === v) return { value, problem: base.problem };
   return {
     value,

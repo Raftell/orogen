@@ -8,7 +8,13 @@ interface Spline { readonly xs: readonly number[]; readonly ys: readonly number[
  * end; zero where the secants differ in sign or one is zero; then, per interval with secant d and a = m0 / d,
  * b = m1 / d, both tangents scaled by 3 / sqrt(a² + b²) when a² + b² > 9. Intervals are limited in order.
  */
-function spline(points: readonly CurvePoint[]): Spline {
+function spline(given: readonly CurvePoint[]): Spline {
+  // A valid curve has strictly increasing x (engine.md 4.3). A point that does not advance is left out, as
+  // normalizeParams drops it, so that no interval has width 0 and no sample is NaN.
+  const points: CurvePoint[] = [];
+  for (const p of given) {
+    if (Number.isFinite(p.x) && Number.isFinite(p.y) && (points.length === 0 || p.x > points[points.length - 1]!.x)) points.push(p);
+  }
   const n = points.length;
   const xs = points.map((p) => p.x);
   const ys = points.map((p) => p.y);
@@ -47,7 +53,7 @@ function evalSpline({ xs, ys, ms }: Spline, x: number): number {
   if (!(x > xs[0]!)) return ys[0]!;
   if (x >= xs[n - 1]!) return ys[n - 1]!;
   let k = 0;
-  while (x >= xs[k + 1]!) k++;
+  while (k + 2 < n && x >= xs[k + 1]!) k++;
   const h = xs[k + 1]! - xs[k]!;
   const t = (x - xs[k]!) / h;
   const t2 = t * t;

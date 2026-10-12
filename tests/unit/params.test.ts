@@ -28,6 +28,16 @@ test('every declared name is present, in declaration order, with defaults for mi
   assert.deepEqual(normalizeParams(gen, { hard: undefined }).problems, []);
 });
 
+test('stored params that are no object hold no value: every name takes its default', () => {
+  for (const stored of [undefined, null, [0.9], 'hard']) {
+    const result = normalizeParams(gen, stored as never);
+    assert.deepEqual(Object.keys(result.values), everyKind.map((p) => p.name));
+    assert.equal(result.values.hard, 0.5);
+    assert.deepEqual(result.problems, []);
+    assert.equal(normalizeStored(gen, stored as never).params, stored);
+  }
+});
+
 test('a stored name the node does not declare is ignored', () => {
   const result = normalizeParams(gen, { removed: 7, constructor: 'x' });
   assert.equal('removed' in result.values, false);

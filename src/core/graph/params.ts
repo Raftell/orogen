@@ -113,8 +113,9 @@ function normalizeOne(def: ParamDef, stored: unknown): One {
   }
 }
 
+/** Whether the stored params hold a value under `name`. Params that are no object hold none. */
 const present = (stored: Readonly<Record<string, unknown>>, name: string): boolean =>
-  Object.hasOwn(stored, name) && stored[name] !== undefined;
+  isPlainObject(stored) && Object.hasOwn(stored, name) && stored[name] !== undefined;
 
 /** Pure. The only implementation of the rules of runtime.md 4.4: the loader, setParam and the evaluator call it. */
 export function normalizeParams(def: NodeDef, stored: Readonly<Record<string, unknown>>): {

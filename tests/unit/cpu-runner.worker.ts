@@ -36,6 +36,11 @@ defineCpuTask({
 });
 
 defineCpuTask({
+  name: 'test/numbers',
+  run: (args: { count: number }): number[] => Array.from({ length: args.count }, (_, i) => i),
+});
+
+defineCpuTask({
   name: 'test/throw',
   run(args: { message: string }): never {
     throw new Error(args.message);
@@ -47,6 +52,23 @@ defineCpuTask({
   async run(args: { ms: number; tag: string }): Promise<{ tag: string; served: number }> {
     await new Promise((resolve) => { setTimeout(resolve, args.ms); });
     return { tag: args.tag, served: ++served };
+  },
+});
+
+defineCpuTask({
+  name: 'test/exit',
+  run(args: { code: number }): never {
+    // In a worker thread this ends the thread, not the process.
+    process.exit(args.code);
+  },
+});
+
+defineCpuTask({
+  name: 'test/crash',
+  run(args: { message: string }): Promise<never> {
+    // Thrown outside the task's own call: nothing answers the request, the thread dies of it.
+    setTimeout(() => { throw new Error(args.message); }, 1);
+    return new Promise(() => {});
   },
 });
 

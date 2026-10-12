@@ -55,15 +55,23 @@ export function createNodeCpuRunner(entry: URL = new URL('./cpu-worker.ts', impo
   function pump(): void {
     while (active === null && queue.length > 0) {
       const job = queue.shift()!;
+      if (worker === null) {
+        try {
+          worker = start();
+        } catch (error) {
+          // Rule 6: a worker that cannot start fails this task only; the next one tries again.
+          job.settle({ error: new Error(`The CPU worker failed: ${reasonOf(error)}`) });
+          continue;
+        }
+      }
       active = job;
       try {
-        worker ??= start();
         worker.ref();
         worker.postMessage(job.request, job.transfer);
       } catch (error) {
         // The arguments cannot be cloned, or a buffer of the transfer list is already detached.
         active = null;
-        worker?.unref();
+        worker.unref();
         job.settle({ error });
       }
     }

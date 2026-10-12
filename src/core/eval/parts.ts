@@ -22,6 +22,16 @@ export interface EngineParts {
   readonly readback: Readback;
   readonly files: FileSource;
   readonly cpu: CpuRunner;
+  /**
+   * Shared by every EngineParts of one device. `retired` is set when the engine has forgotten the device (it was
+   * lost or replaced) or was disposed: what lived on it, a FieldHandle for one, is dead from then on (runtime.md 5.9).
+   */
+  readonly device: { retired: boolean };
   /** True for the engine's own kernels: those of the shared ops and of the evaluator's services. ctx.run accepts them from any node. */
   isEngineKernel(kernel: AnyKernel): boolean;
+}
+
+/** Whether what lives on the device of `parts` can still be used. */
+export function deviceAlive(parts: EngineParts): boolean {
+  return !parts.gpu.lost && !parts.device.retired;
 }

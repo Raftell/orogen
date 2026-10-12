@@ -11,6 +11,8 @@ import type { NodeRegistry } from './registry.ts';
 export function migrateNode(def: NodeDef, node: NodeInstance): NodeInstance {
   const target = def.version ?? 1;
   if (!(node.version < target)) return node;
+  // The loop below makes one step per version: it must start at a whole version of at least 1.
+  if (!Number.isInteger(node.version) || node.version < 1) throw new RangeError(`${node.version} is not a version of a node`);
   // `migrate` works on a copy, so one that changes its argument and then throws leaves the instance as it was.
   let params: Record<string, unknown> = cloneJson(node.params);
   for (let from = node.version; from < target; from++) {

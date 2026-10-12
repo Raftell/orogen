@@ -84,6 +84,29 @@ test('PNG: a palette with transparency decodes to four channels, entries without
   expectImage(image, 3, 2, 4, indices.flatMap((i) => [...palette[i]!, alpha[i] ?? 255].map((v) => v / 255)));
 });
 
+test('PNG: an interlaced palette of 8 bits decodes; one of fewer bits is rejected', () => {
+  const palette: [number, number, number][] = [[10, 20, 30], [200, 210, 220]];
+  // 8 x 1: of the seven passes, the first, second, fourth and sixth have pixels, at x = 0; 4; 2, 6; 1, 3, 5, 7.
+  const indices = [1, 0, 1, 1, 0, 0, 1, 0];
+  const [a, b, c, d, e, f, g, h] = indices as [number, number, number, number, number, number, number, number];
+  const bytes = Uint8Array.of(0, a, 0, e, 0, c, g, 0, b, d, f, h);
+  const image = decodePng(buildPng({ width: 8, height: 1, depth: 8, colorType: 3, rows: bytes, palette, interlaced: true }));
+  expectImage(image, 8, 1, 3, indices.flatMap((i) => palette[i]!.map((v) => v / 255)));
+
+  // The same picture at one bit per pixel: every pass is one byte, filled from the high bit.
+  const bits = Uint8Array.of(0, a << 7, 0, e << 7, 0, (c << 7) | (g << 6), 0, (b << 7) | (d << 6) | (f << 5) | (h << 4));
+  assert.throws(() => decodePng(buildPng({ width: 8, height: 1, depth: 1, colorType: 3, rows: bits, palette, interlaced: true })), {
+    message: 'PNG is interlaced and its palette depth is 1; an interlaced palette image is read at depth 8',
+  });
+});
+
+test('PNG: the colour key of a grey or RGB image is ignored', () => {
+  const grey = [0, 50, 100, 255, 7, 50, 9, 50];
+  expectImage(decodePng(buildPng({ width: 4, height: 2, depth: 8, colorType: 0, rows: Uint8Array.from(grey), alpha: [0, 50] })), 4, 2, 1, grey.map((v) => v / 255));
+  const rgb = [1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 3];
+  expectImage(decodePng(buildPng({ width: 2, height: 2, depth: 8, colorType: 2, rows: Uint8Array.from(rgb), alpha: [0, 1, 0, 2, 0, 3] })), 2, 2, 3, rgb.map((v) => v / 255));
+});
+
 test('PNG: files outside the accepted set are rejected with a sentence that names the cause', () => {
   const grey = encode({ width: 4, height: 4, data: Uint8Array.from(ramp(16, 255)), depth: 8, channels: 1 });
   assert.throws(() => decodePng(grey.subarray(0, grey.length - 20)), { message: 'PNG file is truncated' });
@@ -196,6 +219,52 @@ test('TIFF: strips and tiles decode, uncompressed and with PackBits, LZW and Def
   expectImage(await decodeTiff(deflated), width, height, 1, floats);
 });
 
+test('TIFF: little-endian files with a predictor decode, integers and floats', async () => {
+  const width = 6;
+  const height = 5;
+  // Differences that carry from one byte into the next.
+  const values = Array.from({ length: width * height }, (_, i) => (i * 4099 + 300) % 65536);
+  for (const compression of [5, 8]) {
+    for (const bits of [8, 16, 32]) {
+      const max = 2 ** bits - 1;
+      const samples = values.map((v) => (bits === 8 ? v & 255 : bits === 16 ? v : v * 65537));
+      const bytes = buildTiff({ width, height, samples: 1, bits, format: 1, values: samples, compression, predictor: 2, rowsPerStrip: 2 });
+      expectImage(await decodeTiff(bytes), width, height, 1, samples.map((v) => v / max));
+    }
+    const floats = values.map((v) => v / 16 - 1000);
+    const bytes = buildTiff({ width, height, samples: 1, bits: 32, format: 3, values: floats, compression, predictor: 3, tile: 16 });
+    expectImage(await decodeTiff(bytes), width, height, 1, floats);
+  }
+  const rgb = Array.from({ length: width * height * 3 }, (_, i) => (i * 4099 + 300) % 65536);
+  for (const planar of [1, 2] as const) {
+    const bytes = buildTiff({ width, height, samples: 3, bits: 16, format: 1, values: rgb, compression: 8, predictor: 2, planar });
+    expectImage(await decodeTiff(bytes), width, height, 3, rgb.map((v) => v / 65535));
+  }
+});
+
+test('TIFF: a big-endian file with a predictor decodes at 8 bits and is rejected above, as is an unknown predictor', async () => {
+  const width = 6;
+  const height = 5;
+  const values = Array.from({ length: width * height }, (_, i) => (i * 4099 + 300) % 65536);
+  const base = { width, height, samples: 1, format: 1, compression: 8, littleEndian: false } as const;
+
+  const bytes8 = values.map((v) => v & 255);
+  expectImage(await decodeTiff(buildTiff({ ...base, bits: 8, values: bytes8, predictor: 2 })), width, height, 1, bytes8.map((v) => v / 255));
+
+  await assert.rejects(decodeTiff(buildTiff({ ...base, bits: 16, values, predictor: 2 })), {
+    message: 'TIFF is big-endian and uses predictor 2 on 16-bit samples; that is read in little-endian files only',
+  });
+  await assert.rejects(decodeTiff(buildTiff({ ...base, bits: 32, values, predictor: 2 })), {
+    message: 'TIFF is big-endian and uses predictor 2 on 32-bit samples; that is read in little-endian files only',
+  });
+  await assert.rejects(decodeTiff(buildTiff({ ...base, bits: 32, format: 3, values, predictor: 3 })), {
+    message: 'TIFF is big-endian and uses predictor 3 on 32-bit samples; that is read in little-endian files only',
+  });
+  await assert.rejects(decodeTiff(buildTiff({ ...base, littleEndian: true, bits: 16, values, predictor: 34892 as 2 })), {
+    message: 'TIFF predictor 34892 is not supported; horizontal differencing and the floating-point predictor are read',
+  });
+});
+
 test('TIFF: files outside the accepted set are rejected with a sentence that names the cause', async () => {
   const base = { width: 4, height: 4, samples: 1, bits: 16, format: 1, values: ramp(16, 65535) } as const;
   const rejects = (bytes: Uint8Array, message: string | RegExp): Promise<void> =>
@@ -214,6 +283,9 @@ test('TIFF: files outside the accepted set are rejected with a sentence that nam
   // The general writer has its directory last: cutting the end removes it.
   const tail = buildTiff(base);
   await rejects(tail.subarray(0, tail.length - 20), 'TIFF file is truncated');
+  // Strips that are shorter than their rows, with a table that says so.
+  await rejects(buildTiff({ ...base, rowsPerStrip: 2, shortBlocks: 3 }), 'TIFF file is truncated');
+  await rejects(buildTiff({ ...base, rowsPerStrip: 2, compression: 8, shortBlocks: 3 }), /^Error: TIFF file cannot be decoded: /);
 });
 
 // ---- OpenEXR -----------------------------------------------------------------------------------------------
@@ -290,6 +362,9 @@ test('OpenEXR: files outside the accepted set are rejected with a sentence that 
   rejects(buildExr({ ...base, channels: [y, { name: 'RY', type: 2, values, sampling: 2 }] }), 'OpenEXR file has subsampled channels; full-resolution channels are read');
   rejects(buildExr({ ...base, declaredCompression: 6 }), 'OpenEXR compression B44 is not supported');
   rejects(buildExr({ ...base, compression: 3, lineOrder: 1 }), 'OpenEXR file stores its scan lines in decreasing or random order with this compression; increasing order is read');
+  rejects(buildExr({ ...base, lineOrder: 0, storedOrder: 1 }), 'OpenEXR file stores its scan lines in another order than its header states');
+  rejects(buildExr({ ...base, lineOrder: 1, storedOrder: 0 }), 'OpenEXR file stores its scan lines in another order than its header states');
+  rejects(buildExr({ ...base, compression: 3, storedOrder: 1 }), 'OpenEXR file stores its scan lines in another order than its header states');
   rejects(buildExr({ ...base, declaredSize: [10812, 10812] }), 'image is 10812 x 10812; the largest side is 8192');
 
   const whole = buildExr(base);

@@ -57,6 +57,10 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+export function isPortRef(value: unknown): value is PortRef {
+  return isPlainObject(value) && typeof value.node === 'string' && typeof value.port === 'string';
+}
+
 /** A record's own member. An id is any string (4.5), so `record[id]` alone would find `constructor` on the prototype. */
 export function own<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
   return Object.hasOwn(record, key) ? record[key] : undefined;

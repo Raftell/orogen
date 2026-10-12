@@ -323,6 +323,46 @@ test('runner: aborting a task that waits rejects it alone; the executing task an
   });
 });
 
+test('runner: terminating the worker of an aborted task loses no waiting task and none of its buffers', async () => {
+  await withRunner(async (runner) => {
+    const abort = new AbortController();
+    const spinning = runner.run('test/spin', null, [], { signal: abort.signal, onProgress(): void {} });
+    const data = Float32Array.of(1, 2, 3);
+    const waiting = runner.run('test/double', { data }, [data.buffer], quiet) as Promise<{ data: Float32Array; inputBytes: number }>;
+    // A buffer moves when its task is posted: while the task waits, it is still the caller's.
+    assert.equal(data.byteLength, 12);
+    await new Promise((resolve) => { setTimeout(resolve, 100); });
+    assert.equal(data.byteLength, 12);
+
+    abort.abort();
+    await assert.rejects(spinning, { name: 'AbortError' });
+    const result = await waiting;
+    assert.equal(result.inputBytes, 12);
+    assert.deepEqual(result.data, Float32Array.of(2, 4, 6));
+    assert.equal(data.byteLength, 0);
+  });
+});
+
+test('runner: a worker that dies rejects the task in progress with the reason, and the next call starts a new one', async () => {
+  await withRunner(async (runner) => {
+    const first = await thread(runner);
+    const behind = runner.run('test/exit', { code: 3 }, [], quiet);
+    const next = thread(runner);
+    await assert.rejects(behind, { message: 'The CPU worker failed: it exited with code 3' });
+    // The task that waited runs on a new worker.
+    const second = await next;
+    assert.notEqual(second.threadId, first.threadId);
+    assert.equal(second.served, 1);
+
+    await assert.rejects(runner.run('test/crash', { message: 'heap of the router is corrupt' }, [], quiet), {
+      message: 'The CPU worker failed: heap of the router is corrupt',
+    });
+    const third = await thread(runner);
+    assert.notEqual(third.threadId, second.threadId);
+    assert.equal(third.served, 1);
+  });
+});
+
 test('runner: dispose rejects what is pending, stops the worker and is idempotent', async () => {
   const runner = createNodeCpuRunner(TEST_WORKER);
   await thread(runner);
@@ -343,6 +383,25 @@ test('runner: a worker that cannot start rejects the task with the reason', asyn
     await assert.rejects(thread(runner), /^Error: The CPU worker failed: /);
     await assert.rejects(thread(runner), /^Error: The CPU worker failed: /);
   }, new URL('./no-such-worker.ts', import.meta.url));
+});
+
+test('runner: a worker whose creation throws rejects that task alike, and the tasks behind it', async () => {
+  // Not a file: the Worker constructor itself refuses it.
+  await withRunner(async (runner) => {
+    const outcomes = await Promise.allSettled([thread(runner), thread(runner)]);
+    for (const outcome of outcomes) {
+      assert.equal(outcome.status, 'rejected');
+      assert.match(String((outcome as PromiseRejectedResult).reason), /^Error: The CPU worker failed: /);
+    }
+  }, new URL('http://localhost/cpu-worker.js'));
+});
+
+test('runner: a result of plain numbers, however many, comes back whole', async () => {
+  await withRunner(async (runner) => {
+    const list = await runner.run('test/numbers', { count: 200_000 }, [], quiet) as number[];
+    assert.equal(list.length, 200_000);
+    assert.equal(list[199_999], 199_999);
+  });
 });
 
 test('runner: a task in progress keeps the process alive, an idle worker does not', () => {

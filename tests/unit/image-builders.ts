@@ -35,7 +35,9 @@ export interface PngSpec {
   /** The unfiltered rows, one after another, each padded to whole bytes. Empty: a file without image data. */
   readonly rows: Uint8Array;
   readonly palette?: readonly (readonly [number, number, number])[];
-  readonly alpha?: readonly number[];                      // tRNS: the alpha of the first palette entries
+  readonly alpha?: readonly number[];                      // tRNS: the alpha of the first palette entries, or the colour key of a grey or RGB image
+  /** Adam7. `rows` is then the scanlines of the seven passes one after another, each with its filter byte. */
+  readonly interlaced?: boolean;
 }
 
 export function buildPng(spec: PngSpec): Uint8Array<ArrayBuffer> {
@@ -45,10 +47,12 @@ export function buildPng(spec: PngSpec): Uint8Array<ArrayBuffer> {
   view.setUint32(4, spec.height);
   ihdr[8] = spec.depth;
   ihdr[9] = spec.colorType;
+  ihdr[12] = spec.interlaced ? 1 : 0;
   const chunks = [Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a), pngChunk('IHDR', ihdr)];
   if (spec.palette) chunks.push(pngChunk('PLTE', Uint8Array.from(spec.palette.flat())));
   if (spec.alpha) chunks.push(pngChunk('tRNS', Uint8Array.from(spec.alpha)));
-  if (spec.rows.length > 0) {
+  if (spec.interlaced) chunks.push(pngChunk('IDAT', zlib.deflateSync(spec.rows)));
+  else if (spec.rows.length > 0) {
     const line = spec.rows.length / spec.height;
     const filtered = new Uint8Array(spec.height * (line + 1));          // filter type 0 before every row
     for (let y = 0; y < spec.height; y++) filtered.set(spec.rows.subarray(y * line, (y + 1) * line), y * (line + 1) + 1);
@@ -74,6 +78,8 @@ export interface TiffSpec {
   readonly planar?: 1 | 2;                                 // default 1, samples interleaved
   readonly photometric?: number;                           // default 1, or 2 for three and four samples
   readonly declaredSize?: readonly [width: number, height: number];   // ImageWidth and ImageLength, when they shall differ from the data
+  readonly predictor?: 2 | 3;                              // horizontal differencing of integers, or of the bytes of floats
+  readonly shortBlocks?: number;                           // every strip or tile is stored and declared this many bytes shorter
 }
 
 function packBits(data: Uint8Array): Uint8Array {
@@ -137,7 +143,29 @@ export function buildTiff(spec: TiffSpec): Uint8Array<ArrayBuffer> {
         }
       }
     }
-    return compress(out, compression);
+    const row = w * which.length;                          // samples per row of the block
+    for (let r = 0; r < h && spec.predictor; r++) {
+      const at0 = r * row * size;
+      if (spec.predictor === 2) {
+        // Each sample minus the one a pixel to its left, in the sample's own width and byte order.
+        const mask = 2 ** bits;
+        const get = (i: number): number => (bits === 8 ? view.getUint8(at0 + i) : bits === 16 ? view.getUint16(at0 + i * 2, le) : view.getUint32(at0 + i * 4, le));
+        for (let i = row - 1; i >= which.length; i--) {
+          const d = (get(i) - get(i - which.length) + mask) % mask;
+          if (bits === 8) view.setUint8(at0 + i, d);
+          else if (bits === 16) view.setUint16(at0 + i * 2, d, le);
+          else view.setUint32(at0 + i * 4, d, le);
+        }
+      } else {
+        // The bytes of the row's floats in planes, most significant first, then each byte minus the one a pixel to its left.
+        const planes = new Uint8Array(row * size);
+        for (let i = 0; i < row; i++) for (let b = 0; b < size; b++) planes[b * row + i] = out[at0 + i * size + (le ? size - 1 - b : b)]!;
+        for (let i = planes.length - 1; i >= which.length; i--) planes[i] = (planes[i]! - planes[i - which.length]!) & 255;
+        out.set(planes, at0);
+      }
+    }
+    const stored = compress(out, compression);
+    return spec.shortBlocks ? stored.subarray(0, stored.length - spec.shortBlocks) : stored;
   };
 
   const planes: number[][] = planar === 2 ? Array.from({ length: samples }, (_, s) => [s]) : [Array.from({ length: samples }, (_, s) => s)];
@@ -175,6 +203,7 @@ export function buildTiff(spec: TiffSpec): Uint8Array<ArrayBuffer> {
     entries.push([273, LONG, offsets], [278, LONG, [rowsPerStrip]], [279, LONG, blocks.map((b) => b.length)]);
   }
   if (samples === 4) entries.push([338, SHORT, [2]]);      // ExtraSamples: unassociated alpha
+  if (spec.predictor) entries.push([317, SHORT, [spec.predictor]]);
   entries.sort((a, b) => a[0] - b[0]);
 
   // After the blocks: the arrays that do not fit into an entry, then the directory.
@@ -299,6 +328,7 @@ export interface ExrSpec {
   readonly channels: readonly ExrChannelSpec[];
   readonly compression?: 0 | 2 | 3;                        // none (default), ZIPS (one line per chunk), ZIP (16 lines)
   readonly lineOrder?: 0 | 1;                              // increasing (default) or decreasing Y
+  readonly storedOrder?: 0 | 1;                            // the order of the chunks in the file, when it shall differ from lineOrder
   readonly origin?: readonly [x: number, y: number];       // the data window's minimum; default [0, 0]
   readonly flags?: number;                                 // the flag byte after the version; default 0
   readonly declaredCompression?: number;                   // the code in the header, when it shall differ
@@ -368,7 +398,7 @@ export function buildExr(spec: ExrSpec): Uint8Array<ArrayBuffer> {
   }
 
   // The offset table is by increasing y whatever the order of the chunks in the file.
-  const stored = lineOrder === 1 ? [...chunks].reverse() : chunks;
+  const stored = (spec.storedOrder ?? lineOrder) === 1 ? [...chunks].reverse() : chunks;
   const table = new Uint8Array(8 * chunks.length);
   const tableView = new DataView(table.buffer);
   let at = header.length + table.length;

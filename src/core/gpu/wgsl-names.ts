@@ -12,7 +12,7 @@ export const WGSL_RESERVED: ReadonlySet<string> = words(`
   constexpr constinit crate debugger decltype delete demote demote_to_helper do dynamic_cast enum explicit export
   extends extern external fallthrough filter final finally friend from fxgroup get goto groupshared highp impl
   implements import inline instanceof interface layout lowp macro macro_rules match mediump meta mod module move
-  mut mutable namespace new nil noexcept noinline nointerpolation non_coherent noperspective null
+  mut mutable namespace new nil noexcept noinline nointerpolation non_coherent noncoherent noperspective null
   nullptr of operator package packoffset partition pass patch pixelfragment precise precision premerge priv
   protected pub public readonly ref regardless register reinterpret_cast require resource restrict self set
   shared sizeof smooth snorm static static_assert static_cast std subroutine super target template this

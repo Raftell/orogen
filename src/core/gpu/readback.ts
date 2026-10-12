@@ -11,6 +11,10 @@ export interface Readback {
    * The texture's contents as float32, row-major and tightly packed, whatever its format; `rows` limits it to
    * rows y0 <= y < y1. Encodes for the stream's current owner, waits for all earlier work, and serialises with
    * other reads. Rejects with the abort reason of `signal` or DeviceLostError.
+   *
+   * The texture must not be written until the promise has settled. Only the first strip of a read that does not
+   * wait for another is copied at the call; later strips, and a read that waits its turn, are copied when the
+   * one staging buffer is free, and would see what was written in between.
    */
   read(texture: PoolTexture, rows?: readonly [y0: number, y1: number], signal?: AbortSignal): Promise<Float32Array<ArrayBuffer>>;
   /** Destroys the staging buffer. Not called for a lost device. */
@@ -33,6 +37,15 @@ const STAGING_MAX_BYTES = 67_108_864;
 const STAGING_STEP_BYTES = 65_536;
 
 const align256 = (bytes: number): number => Math.ceil(bytes / 256) * 256;
+
+/**
+ * runtime.md 5.7 rule 1: the row pitch a texture-to-buffer copy needs, and the whole rows one strip of at most
+ * `stripBytes` holds. A strip is never less than one row.
+ */
+export function stripLayout(width: number, bytesPerTexel: number, stripBytes: number = STAGING_MAX_BYTES): { readonly bytesPerRow: number; readonly rows: number } {
+  const bytesPerRow = align256(width * bytesPerTexel);
+  return { bytesPerRow, rows: Math.max(1, Math.floor(stripBytes / bytesPerRow)) };
+}
 
 export function createReadback(opts: ReadbackOptions): Readback {
   const { gpu, stream } = opts;
@@ -62,9 +75,9 @@ export function createReadback(opts: ReadbackOptions): Readback {
   ): Promise<Float32Array<ArrayBuffer>> {
     const channels = CHANNELS[texture.kind];
     const encoding = TEXEL_ENCODING[texture.format]!;
-    const rowBytes = texture.width * BYTES_PER_TEXEL[texture.format as keyof typeof BYTES_PER_TEXEL];
-    const paddedRow = align256(rowBytes);
-    const rowsPerStrip = Math.max(1, Math.floor(stripBytes / paddedRow));
+    const { bytesPerRow: paddedRow, rows: rowsPerStrip } = stripLayout(
+      texture.width, BYTES_PER_TEXEL[texture.format as keyof typeof BYTES_PER_TEXEL], stripBytes,
+    );
     const rowFloats = texture.width * channels;
     const out = new Float32Array(rowFloats * (y1 - y0));
 
@@ -108,6 +121,7 @@ export function createReadback(opts: ReadbackOptions): Readback {
       }
       const owner = stream.current;
       if (!owner) return Promise.reject(new Error('No stream owner is current: call use(owner) before reading'));
+      if (signal?.aborted) return Promise.reject(signal.reason);
       // With no read in progress the first copy is encoded now, in the order of the calls (engine.md 3.11).
       const start = (): Promise<Float32Array<ArrayBuffer>> => read(owner, texture, y0, y1, signal);
       const result = busy === 0 ? start() : tail.then(start);

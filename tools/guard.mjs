@@ -4,7 +4,7 @@
 // group that launched it (an IDE, a terminal session). This puts the command in its own
 // systemd scope instead. On other platforms only the time limit applies.
 //
-//   node tools/guard.mjs node --test tests/unit/foo.test.ts
+//   node tools/guard.mjs [--mem=3G] [--timeout=1800] node --test tests/unit/foo.test.ts
 //   OROGEN_GUARD_MEM=8G OROGEN_GUARD_TIMEOUT=3600 node tools/guard.mjs node src/cli/main.ts ...
 import { spawn, spawnSync } from 'node:child_process';
 
@@ -13,8 +13,18 @@ if (args.length === 0) {
   console.error('usage: node tools/guard.mjs <command> [args...]');
   process.exit(2);
 }
-const mem = process.env.OROGEN_GUARD_MEM ?? '3G';
-const limit = Number(process.env.OROGEN_GUARD_TIMEOUT ?? 1800);
+// Leading --mem= and --timeout= set the defaults for one script; the environment still overrides them.
+const flags = {};
+while (args.length > 0 && /^--(mem|timeout)=/.test(args[0])) {
+  const [key, value] = args.shift().slice(2).split('=');
+  flags[key] = value;
+}
+if (args.length === 0) {
+  console.error('usage: node tools/guard.mjs [--mem=3G] [--timeout=1800] <command> [args...]');
+  process.exit(2);
+}
+const mem = process.env.OROGEN_GUARD_MEM ?? flags.mem ?? '3G';
+const limit = Number(process.env.OROGEN_GUARD_TIMEOUT ?? flags.timeout ?? 1800);
 const nested = process.env.OROGEN_GUARD_ACTIVE === '1';
 const scoped = !nested && process.platform === 'linux'
   && spawnSync('systemctl', ['--user', 'show-environment'], { stdio: 'ignore' }).status === 0;

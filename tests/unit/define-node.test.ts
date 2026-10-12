@@ -82,6 +82,14 @@ test('1: the type has the pattern <category>/<name> with its category as prefix'
   assert.equal(define(base({ type: 'simulate/thermal-erosion2', category: 'simulate' })).type, 'simulate/thermal-erosion2');
 });
 
+test('a definition has a title, a description and an evaluate function', () => {
+  rejected({ title: '' }, 'title is empty');
+  rejected({ title: undefined }, 'title is empty');
+  rejected({ description: '  ' }, 'description is empty');
+  rejected({ evaluate: undefined }, 'evaluate must be a function');
+  rejected({ params: 'none' }, 'inputs, outputs, params and kernels are lists');
+});
+
 test('1: port and param names have their patterns and are unique', () => {
   rejected({ inputs: [{ name: 'In', type: 'field' }] }, 'input name "In" must match [a-z][A-Za-z0-9]{0,23}');
   rejected({ outputs: [{ name: 'out', type: 'field' }, { name: 'wear_map', type: 'field' }] }, 'output name "wear_map" must match [a-z][A-Za-z0-9]{0,23}');
@@ -247,6 +255,11 @@ test('5: a kernel or task is listed once', () => {
   rejected({ kernels: [k, k] }, 'kernel "ref/sample.pass" is listed twice');
   rejected({ cpuTasks: [task, task] }, 'CPU task "ref/sample.task" is listed twice');
   assert.ok(define(base({ kernels: [k], cpuTasks: [task] })));
+  rejected({ kernels: [k, undefined] }, 'kernels[1] is not a kernel');
+  rejected({ kernels: ['ref/sample.pass'] }, 'kernels[0] is not a kernel');
+  rejected({ kernels: [task] }, 'kernels[0] is not a kernel');
+  rejected({ cpuTasks: [k] }, 'cpuTasks[0] is not a CPU task');
+  rejected({ cpuTasks: task }, 'cpuTasks is a list');
 });
 
 test('6: a kernel that reads the seed needs the seed param', () => {

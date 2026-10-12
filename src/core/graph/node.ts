@@ -241,6 +241,10 @@ function validate(def: NodeDef): void {
   if (!Array.isArray(def.inputs) || !Array.isArray(def.outputs) || !Array.isArray(def.params) || !Array.isArray(def.kernels)) {
     fail('inputs, outputs, params and kernels are lists');
   }
+  for (const member of ['title', 'description'] as const) {
+    if (typeof def[member] !== 'string' || def[member].trim() === '') fail(`${member} is empty`);
+  }
+  if (typeof def.evaluate !== 'function') fail('evaluate must be a function');
   const names = new Set<string>();
   for (const p of def.params) {
     if (typeof p.name !== 'string' || !PARAM_NAME.test(p.name)) fail(`param name "${p.name}" must match [a-z][A-Za-z0-9]*`);
@@ -262,9 +266,13 @@ function validate(def: NodeDef): void {
   }
 
   // 5. Kernels and tasks listed twice.
-  for (const [what, list] of [['kernel', def.kernels], ['CPU task', def.cpuTasks ?? []]] as const) {
+  if (def.cpuTasks !== undefined && !Array.isArray(def.cpuTasks)) fail('cpuTasks is a list');
+  for (const [what, member, list] of [['kernel', 'kernels', def.kernels], ['CPU task', 'cpuTasks', def.cpuTasks ?? []]] as const) {
     const seen = new Set<string>();
-    for (const item of list) {
+    for (const [i, item] of list.entries()) {
+      const made = typeof item === 'object' && item !== null && typeof item.name === 'string'
+        && (what === 'kernel' ? typeof (item as AnyKernel).def?.code === 'string' : typeof (item as AnyCpuTask).run === 'function');
+      if (!made) fail(`${member}[${i}] is not a ${what}`);
       if (seen.has(item.name)) fail(`${what} "${item.name}" is listed twice`);
       seen.add(item.name);
     }

@@ -126,8 +126,20 @@ export function NodeFileSink(rootFolder: string): FileSink {
   // Rule 4: every path this sink has open or has closed. An aborted path is free again.
   const taken = new Set<string>();
   const open = new Set<FileWriter>();
+  // Calls of create that have not settled: each may already have a partial file, and none has a writer yet.
+  const creating = new Set<Promise<void>>();
+  // How often abortAll was called. A create that it overtakes hands out a writer that is already aborted.
+  let aborts = 0;
 
-  async function create(relPath: string): Promise<FileWriter> {
+  function create(relPath: string): Promise<FileWriter> {
+    const created = createWriter(relPath);
+    const settled = created.then(() => {}, () => {}).finally(() => { creating.delete(settled); });
+    creating.add(settled);
+    return created;
+  }
+
+  async function createWriter(relPath: string): Promise<FileWriter> {
+    const generation = aborts;
     const file = sinkPath(root, relPath);
     if (file === null) {
       throw new FileError('invalid-path', String(relPath), `"${relPath}" is not a relative path of plain segments separated by "/"`);
@@ -216,6 +228,7 @@ export function NodeFileSink(rootFolder: string): FileSink {
       },
     };
     open.add(writer);
+    if (aborts !== generation) await writer.abort();
     return writer;
   }
 
@@ -231,7 +244,9 @@ export function NodeFileSink(rootFolder: string): FileSink {
   }
 
   async function abortAll(): Promise<void> {
-    await Promise.all([...open].map((writer) => writer.abort()));
+    aborts++;
+    // A create that is under way aborts its own writer before it hands it out, and is waited for here.
+    await Promise.all([...[...open].map((writer) => writer.abort()), ...creating]);
   }
 
   return { create, write, abortAll };

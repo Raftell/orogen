@@ -3,7 +3,7 @@
 // produces no patch, a patch touches only the paths the command is about, and the inverse patches undo it.
 
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import { applyPatches, enablePatches, produceWithPatches, type Patch } from 'immer';
 import {
   addNode, connect, copyNodes, disconnect, moveNodes, newDoc, parseDoc, pasteNodes, removeGroups, removeNodes, resetParam,
@@ -90,6 +90,19 @@ test('addNode: an unknown type and a position that is no number throw and change
   assert.throws(() => transact(doc, (d) => addNode(d, registry, 'legacy/unknown', { x: 0, y: 0 })), /^Error: Unknown node type "legacy\/unknown"$/);
   assert.throws(() => transact(doc, (d) => addNode(d, registry, 'ref/gen', { x: NaN, y: 0 })), TypeError);
   assert.deepEqual(doc, newDoc());
+});
+
+test('addNode: a random source that repeats itself throws instead of drawing ids for ever', () => {
+  const doc = structuredClone(newDoc()) as DocDraft;
+  const draws = mock.method(globalThis.crypto, 'getRandomValues', (bytes: Uint8Array) => bytes.fill(7));
+  try {
+    assert.equal(addNode(doc, registry, 'ref/gen', { x: 0, y: 0 }), '7777777777');
+    assert.throws(() => addNode(doc, registry, 'ref/soften', { x: 0, y: 0 }), /^Error: newId returns ids that are already in use$/);
+    assert.deepEqual(Object.keys(doc.nodes), ['7777777777']);
+  } finally {
+    draws.mock.restore();
+  }
+  assert.notEqual(addNode(doc, registry, 'ref/soften', { x: 0, y: 0 }), '7777777777');
 });
 
 // ---- removeNodes -----------------------------------------------------------------------------------------------
@@ -407,6 +420,57 @@ test('pasteNodes: an edge that would break the graph is left out', () => {
   const idOf = Object.fromEntries(nodes.map((n, i) => [t.result[i]!, n.id]));
   const pasted = Object.values(t.doc.edges).map((e) => `${idOf[e.from.node]}.${e.from.port} -> ${idOf[e.to.node]}.${e.to.port}`);
   assert.deepEqual(pasted, ['a.out -> b.in', 'ghost.out -> k.in']);
+});
+
+test('pasteNodes: clipboard content that is no fragment is left out entry by entry, and nothing throws', () => {
+  const good: NodeInstance = { id: 'a', type: 'ref/gen', version: 1, position: { x: 30, y: 40 }, params: {} };
+  const loose = {
+    nodes: [
+      good,
+      null, 'node', 7, [good],
+      { id: 5, type: 'ref/gen' },                                                  // no id
+      { id: 'b' },                                                                 // no type
+      { id: 'a', type: 'ref/soften', version: 1, position: { x: 0, y: 0 }, params: {} },    // an id that is taken
+      { id: 'c', type: 'ref/soften', version: -3, position: 'left', params: [1], title: 9 }, // repaired as the loader repairs it
+    ],
+    edges: [
+      null, 'edge', { id: 'e0' }, { id: 'e1', from: 'a.out', to: 'c.in' },
+      { id: 'e2', from: { node: 'a', port: 'out' }, to: { node: 'c', port: 'in' } },
+    ],
+  } as unknown as Parameters<typeof pasteNodes>[2];
+  const t = transact(newDoc(), (d) => pasteNodes(d, registry, loose, { x: 100, y: 100 }));
+  assert.equal(t.result.length, 2);
+  const [a, c] = t.result as [string, string];
+  // The box of (30, 40) and the repaired (0, 0) starts at (0, 0).
+  assert.deepEqual(t.doc.nodes[a], { ...good, id: a, position: { x: 130, y: 140 } });
+  assert.deepEqual(t.doc.nodes[c], { id: c, type: 'ref/soften', version: 1, position: { x: 100, y: 100 }, params: {} });
+  assert.deepEqual(Object.values(t.doc.edges).map((e) => [e.from, e.to]), [[{ node: a, port: 'out' }, { node: c, port: 'in' }]]);
+
+  for (const nothing of [null, 'text', {}, { nodes: 'x', edges: 7 }, { nodes: [], edges: [{ id: 'e', from: { node: 'a', port: 'out' }, to: { node: 'b', port: 'in' } }] }]) {
+    noChange(newDoc(), (d) => { assert.deepEqual(pasteNodes(d, registry, nothing as never, { x: 0, y: 0 }), []); });
+  }
+});
+
+test('pasteNodes: a fragment with a cycle keeps the edges stored first, one per input', () => {
+  const nodes: NodeInstance[] = ['a', 'b', 'c', 'd'].map((id) => ({ id, type: 'ref/combine', version: 2, position: { x: 0, y: 0 }, params: {} }));
+  const edge = (id: string, from: string, to: string, port: string) => ({ id, from: { node: from, port: 'out' }, to: { node: to, port } });
+  const fragment = {
+    nodes,
+    edges: [
+      edge('e0', 'a', 'b', 'a'),
+      edge('e1', 'b', 'c', 'a'),
+      edge('e2', 'c', 'a', 'a'),      // closes a -> b -> c -> a
+      edge('e3', 'd', 'a', 'a'),      // a.a is still free, because e2 was left out
+      edge('e4', 'a', 'c', 'b'),      // a second path, no cycle
+      edge('e5', 'a', 'c', 'a'),      // c.a is taken by e1
+      edge('e6', 'c', 'd', 'a'),      // closes d -> a -> b -> c -> d
+    ],
+  };
+  const t = transact(newDoc(), (d) => pasteNodes(d, registry, fragment, { x: 0, y: 0 }));
+  const idOf = Object.fromEntries(nodes.map((n, i) => [t.result[i]!, n.id]));
+  const pasted = Object.values(t.doc.edges).map((e) => `${idOf[e.from.node]} -> ${idOf[e.to.node]}.${e.to.port}`);
+  assert.deepEqual(pasted, ['a -> b.a', 'b -> c.a', 'd -> a.a', 'a -> c.b']);
+  assert.deepEqual(parseDoc(serializeDoc(t.doc), registry).problems, []);
 });
 
 // ---- groups ----------------------------------------------------------------------------------------------------

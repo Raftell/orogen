@@ -2,11 +2,13 @@
 // divisible by 2^k and the level is at least 33.
 
 const MIN_LEVEL = 33;
+/** The bound of every loop over levels. A level above it would need a resolution beyond 2^35. */
+export const MAX_LEVEL = 30;
 
 /** The levels from `res` downwards: ladder(509) is [509, 255, 128]. This is ctx.ladder (engine.md 4.7). */
 export function ladder(res: number): number[] {
   const levels: number[] = [];
-  for (let k = 0; ; k++) {
+  for (let k = 0; k <= MAX_LEVEL; k++) {
     const level = ladderLevel(res, k);
     if (level === null) break;
     levels.push(level);
@@ -18,7 +20,7 @@ export function ladder(res: number): number[] {
 export function ladderLevel(res: number, k: number): number | null {
   if (!Number.isInteger(res) || res < 1 || !Number.isInteger(k) || k < 0) return null;
   if (k === 0) return res;
-  if (k > 30) return null;
+  if (k > MAX_LEVEL) return null;
   const divisor = 2 ** k;
   if ((res - 1) % divisor !== 0) return null;
   const level = (res - 1) / divisor + 1;

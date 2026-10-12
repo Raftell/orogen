@@ -2,7 +2,7 @@
 // (engine.md 4.6) and the ids of newId.
 
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { mock, test } from 'node:test';
 import { loadNode, migrateNode } from '../../src/core/graph/migrate.ts';
 import {
   DocFormatError, newDoc, newId, parseDoc, serializeDoc,
@@ -147,6 +147,23 @@ test('migrate runs once per step with the version it migrates from, on a copy', 
   assert.equal(migrateNode(node({ type: 'ref/plain' }), stored), stored);       // no version: version 1
   assert.throws(() => migrateNode(node({ type: 'ref/bare', version: 3 }), stored), /has version 3 and no migrate function/);
   assert.throws(() => migrateNode(node({ type: 'ref/odd', version: 3, migrate: () => null as never }), stored), TypeError);
+});
+
+test('migrate is never run from a version that is none: the steps are counted from a whole version of at least 1', () => {
+  let calls = 0;
+  const counted = node({ type: 'ref/counted', version: 3, migrate: (params) => { calls++; return params; } });
+  const stored: NodeInstance = { id: 'n', type: 'ref/counted', version: 1, position: { x: 0, y: 0 }, params: {} };
+  for (const version of [0, -1e15, 1.5, -Infinity]) {
+    assert.throws(() => migrateNode(counted, { ...stored, version }), RangeError, String(version));
+  }
+  assert.equal(calls, 0);
+  const nan = { ...stored, version: NaN };
+  assert.equal(migrateNode(counted, nan), nan);
+  // The loader reads such a version as 1, with a problem, and migrates from there.
+  const parsed = parseDoc(JSON.stringify(file({ nodes: { n: { ...stored, version: -1e15 } } })), createRegistry([counted]));
+  assert.equal(parsed.doc.nodes.n!.version, 3);
+  assert.equal(calls, 2);
+  assert.deepEqual(messages(parsed.problems), ['"version" is not a whole number of at least 1; 1 is used']);
 });
 
 test('a node whose migrate throws: unchanged, with a problem', () => {
@@ -386,4 +403,16 @@ test('newId: 10 characters of base 36, different every time', () => {
   }
   assert.equal(ids.size, 2000);
   assert.equal(seen.size, 36);
+});
+
+test('newId: a random source without usable bytes throws instead of drawing for ever', () => {
+  // 252 and above are the bytes newId rejects to keep the 36 characters equally likely.
+  const draws = mock.method(globalThis.crypto, 'getRandomValues', (bytes: Uint8Array) => bytes.fill(255));
+  try {
+    assert.throws(() => newId(), /^Error: crypto\.getRandomValues returns no usable bytes$/);
+    assert.equal(draws.mock.callCount(), 64);
+  } finally {
+    draws.mock.restore();
+  }
+  assert.match(newId(), /^[0-9a-z]{10}$/);
 });

@@ -101,6 +101,8 @@ export interface PoolOptions {
 }
 
 export interface ManagedPool extends TexturePool {
+  /** The references on a PUBLISHED texture, whoever holds them. The result cache compares them with its own to find what an eviction would free (2.7). */
+  references(t: PoolTexture): number;
   /** Destroys every texture whatever its state. For Engine.dispose only (2.1 rule 2). */
   dispose(): void;
 }
@@ -245,7 +247,16 @@ export function createPool(opts: PoolOptions): ManagedPool {
           slot.state = 'working';
           working += slot.bytes;
           const tenant = tenantOf(slot, kind);
-          if (opts.hooks?.poisonRecycled) stream.clear(tenant, poison(format));
+          if (opts.hooks?.poisonRecycled) {
+            try {
+              stream.clear(tenant, poison(format));
+            } catch (thrown) {
+              // No owner is current: the texture goes back, or it would stay WORKING with nobody to release it.
+              working -= slot.bytes;
+              toFree(slot);
+              throw thrown;
+            }
+          }
           return tenant;
         }
         // 2. A new texture, when it fits.
@@ -255,9 +266,15 @@ export function createPool(opts: PoolOptions): ManagedPool {
             return { texture, view: texture.createView() };
           });
           const fails = failAfter > 0 && --failAfter === 0;
-          stream.track(fails
-            ? { validation: made.scopes.validation, outOfMemory: Promise.resolve({ message: 'Out of memory (EngineTestHooks.failAllocAfter)' } as GPUError) }
-            : made.scopes);
+          try {
+            stream.track(fails
+              ? { validation: made.scopes.validation, outOfMemory: Promise.resolve({ message: 'Out of memory (EngineTestHooks.failAllocAfter)' } as GPUError) }
+              : made.scopes);
+          } catch (thrown) {
+            // No owner is current: the new texture is in no list yet and would never be destroyed.
+            made.value.texture.destroy();
+            throw thrown;
+          }
           const slot: Slot = { ...made.value, format, width, height, bytes: need, state: 'working', references: 0, freedAt: 0, tenant: null };
           slots.add(slot);
           working += need;
@@ -276,7 +293,13 @@ export function createPool(opts: PoolOptions): ManagedPool {
           continue;
         }
         // 4. Evict; a texture that reaches zero references becomes FREE and the loop goes round again.
-        if (cache.evictOne()) continue;
+        const freeBefore = free;
+        if (cache.evictOne()) {
+          // An evictable entry frees at least one texture (2.7). Without this check a cache that claims an
+          // eviction and frees nothing would keep this loop going for ever.
+          if (free <= freeBefore) throw new Error('pool.acquire: the cache evicted an entry and no texture became FREE');
+          continue;
+        }
         // 5.
         const state = report();
         throw new BudgetExceededError(
@@ -342,6 +365,9 @@ export function createPool(opts: PoolOptions): ManagedPool {
       while (barriers.size > 0) await Promise.all([...barriers]);
     },
     report,
+    references(t) {
+      return slotOf(t, 'published', 'references').references;
+    },
     setBudget(bytes) {
       if (!Number.isFinite(bytes) || bytes < 0) throw new RangeError(`pool.setBudget: ${bytes} is not a byte count`);
       budget = bytes;

@@ -1,11 +1,13 @@
-import { cloneJson, jsonEqual, own, type Edge, type GraphDoc, type NodeGroup, type NodeInstance, type PortRef, type ProjectSettings, type ViewBinding } from './doc.ts';
-import { loadNode } from './migrate.ts';
+import {
+  cloneJson, isPlainObject, isPortRef, jsonEqual, own,
+  type Edge, type GraphDoc, type NodeGroup, type NodeInstance, type PortRef, type ProjectSettings, type ViewBinding,
+} from './doc.ts';
 import type { NodeDef } from './node.ts';
 import { normalizeParams } from './params.ts';
 import type { NodeRegistry } from './registry.ts';
-import { GROUP_COLOR, newId } from './serialize.ts';
+import { GROUP_COLOR, newId, readNode } from './serialize.ts';
 import { normalizeSettings } from './settings.ts';
-import { createsCycle, validateConnection } from './validate.ts';
+import { endpointProblem, hasCycle, reaches, validateConnection } from './validate.ts';
 
 // Each command is a recipe: it mutates the draft it is given and touches nothing else (runtime.md 4.6).
 
@@ -24,10 +26,12 @@ function requireFinite(what: string, ...values: readonly unknown[]): void {
 }
 
 function freshId(taken: Readonly<Record<string, unknown>>): string {
-  for (;;) {
+  // Two equal ids among 36^10 do not happen by chance; the bound is for a random source that repeats itself.
+  for (let attempt = 0; attempt < 16; attempt++) {
     const id = newId();
     if (!Object.hasOwn(taken, id)) return id;
   }
+  throw new Error('newId returns ids that are already in use');
 }
 
 function nodeOf(doc: DocDraft, nodeId: string): Mutable<NodeInstance> {
@@ -141,38 +145,65 @@ export function copyNodes(doc: GraphDoc, ids: readonly string[]): DocFragment { 
 
 /**
  * The fragment's nodes with new ids, placed so that the top-left corner of their bounding box is at `at`, and
- * its edges between them. A fragment may come from another build, so each node is read as the loader reads
- * it, and an edge is left out when it would be a second edge into an input, close a cycle or, between nodes of
- * known types, fail validateConnection.
+ * its edges between them. A fragment is clipboard content and may come from another build, so each node is
+ * read as the loader reads it and an entry that is no node or no edge is left out. An edge is also left out
+ * when it would be a second edge into an input, close a cycle or, between nodes of known types, break rule 1
+ * of 4.3.
  */
 export function pasteNodes(doc: DocDraft, registry: NodeRegistry, fragment: DocFragment, at: { x: number; y: number }): string[] {   // new ids
   requireFinite('A position', at.x, at.y);
-  const coordinate = (v: number): number => (finite(v) ? v : 0);
-  const left = fragment.nodes.reduce((min, node) => Math.min(min, coordinate(node.position.x)), Infinity);
-  const top = fragment.nodes.reduce((min, node) => Math.min(min, coordinate(node.position.y)), Infinity);
+  const content: Readonly<Record<string, unknown>> = isPlainObject(fragment) ? fragment : {};
+  const entries = (list: unknown): readonly unknown[] => (Array.isArray(list) ? list : []);
+
+  const sources: NodeInstance[] = [];
+  const known = new Set<string>();
+  for (const entry of entries(content.nodes)) {
+    const id: unknown = isPlainObject(entry) ? entry.id : undefined;
+    if (typeof id !== 'string' || known.has(id)) continue;
+    const node = readNode(id, entry, registry, () => {});
+    if (node === null) continue;
+    known.add(id);
+    sources.push(node);
+  }
+  const left = sources.reduce((min, node) => Math.min(min, node.position.x), Infinity);
+  const top = sources.reduce((min, node) => Math.min(min, node.position.y), Infinity);
 
   const ids = new Map<string, string>();
-  for (const source of fragment.nodes) {
-    if (ids.has(source.id)) continue;
+  for (const source of sources) {
     const id = freshId(doc.nodes);
     ids.set(source.id, id);
-    const node = cloneJson(loadNode(registry, source).node);
+    const node = cloneJson(source);
     node.id = id;
-    node.position = { x: coordinate(node.position.x) - left + at.x, y: coordinate(node.position.y) - top + at.y };
+    node.position = { x: source.position.x - left + at.x, y: source.position.y - top + at.y };
     doc.nodes[id] = node;
   }
 
-  for (const edge of fragment.edges) {
-    const fromNode = ids.get(edge.from.node);
-    const toNode = ids.get(edge.to.node);
+  // The pasted nodes are new, so only the pasted edges can reach them: the checks below need no other edge.
+  const plausible: Edge[] = [];
+  for (const entry of entries(content.edges)) {
+    if (!isPlainObject(entry) || !isPortRef(entry.from) || !isPortRef(entry.to)) continue;
+    const fromNode = ids.get(entry.from.node);
+    const toNode = ids.get(entry.to.node);
     if (fromNode === undefined || toNode === undefined) continue;
-    const from: PortRef = { node: fromNode, port: edge.from.port };
-    const to: PortRef = { node: toNode, port: edge.to.port };
-    if (Object.values(doc.edges).some((e) => e.to.node === to.node && e.to.port === to.port)) continue;
-    const known = registry.get(doc.nodes[fromNode]!.type) && registry.get(doc.nodes[toNode]!.type);
-    if (known ? validateConnection(doc, registry, from, to) !== null : createsCycle(doc, from, to)) continue;
+    const from: PortRef = { node: fromNode, port: entry.from.port };
+    const to: PortRef = { node: toNode, port: entry.to.port };
+    const typed = registry.get(doc.nodes[fromNode]!.type) && registry.get(doc.nodes[toNode]!.type);
+    if (typed && endpointProblem(doc, registry, from, to) !== null) continue;
+    plausible.push({ id: '', from, to });
+  }
+  // A fragment copied from a document made by the commands has no cycle; then no edge needs the search.
+  const cyclic = hasCycle(plausible);
+  const taken = new Set<string>();
+  const added: Edge[] = [];
+  for (const { from, to } of plausible) {
+    const input = JSON.stringify([to.node, to.port]);
+    if (taken.has(input)) continue;
+    if (cyclic && reaches(added, to.node, from.node)) continue;
+    taken.add(input);
     const id = freshId(doc.edges);
-    doc.edges[id] = { id, from, to };
+    const edge: Edge = { id, from, to };
+    added.push(edge);
+    doc.edges[id] = cloneJson(edge);
   }
   return [...ids.values()];
 }

@@ -23,6 +23,7 @@ interface ExrChannel {
 interface ExrHeader {
   readonly width: number;
   readonly height: number;
+  readonly top: number;           // the y of the first scan line: dataWindow.yMin
   readonly channels: readonly ExrChannel[];
   readonly compression: number;
   readonly lineOrder: number;     // 0 increasing Y, 1 decreasing Y
@@ -94,6 +95,7 @@ function readHeader(bytes: Uint8Array): ExrHeader {
   return {
     width: window.xMax - window.xMin + 1,
     height: window.yMax - window.yMin + 1,
+    top: window.yMin,
     channels, compression, lineOrder, end: pos,
   };
 }
@@ -131,11 +133,16 @@ export function decodeExr(bytes: Uint8Array): DecodedImage {
     throw new Error('OpenEXR file stores its scan lines in decreasing or random order with this compression; increasing order is read');
   }
 
-  // The library reads the chunks one after another from behind the offset table: follow the same path to its end.
+  // The library reads the chunks one after another from behind the offset table, and places each by its position
+  // in that sequence, never by the line number it carries: follow the same path to its end and compare the two.
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let pos = header.end + 8 * Math.ceil(height / blockHeight);
   for (let line = 0; line < height; line += blockHeight) {
     if (pos + 8 > bytes.length) throw truncated();
+    const expected = header.top + (header.lineOrder === 0 ? line : height - 1 - line);
+    if (view.getInt32(pos, true) !== expected) {
+      throw new Error('OpenEXR file stores its scan lines in another order than its header states');
+    }
     pos += 8 + view.getUint32(pos + 4, true);
   }
   if (pos > bytes.length) throw truncated();

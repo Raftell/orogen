@@ -1,4 +1,4 @@
-import { isPlainObject, type Edge, type GraphDoc, type NodeGroup, type NodeInstance, type PortRef, type ViewBinding } from './doc.ts';
+import { isPlainObject, isPortRef, type Edge, type GraphDoc, type NodeGroup, type NodeInstance, type ViewBinding } from './doc.ts';
 import { loadNode } from './migrate.ts';
 import type { NodeRegistry } from './registry.ts';
 import { DEFAULT_SETTINGS, normalizeSettings } from './settings.ts';
@@ -16,7 +16,6 @@ type Raw = Record<string, unknown>;
 type Report = (problem: DocProblem) => void;
 
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-const isPortRef = (v: unknown): v is PortRef => isPlainObject(v) && typeof v.node === 'string' && typeof v.port === 'string';
 const isXy = (v: unknown): boolean => isPlainObject(v) && finite(v.x) && finite(v.y);
 /** A record is keyed by id. `__proto__` as a key would be the prototype of every copy made by assignment. */
 const usableId = (id: string): boolean => id !== '' && id !== '__proto__';
@@ -53,7 +52,12 @@ function readRecord<T>(doc: Raw, member: string, report: Report, shape: (id: str
   return same ? raw as Record<string, T> : Object.fromEntries(entries);
 }
 
-function shapeNode(id: string, value: unknown, registry: NodeRegistry, report: Report): NodeInstance | null {
+/**
+ * A stored node as this build holds it, under the id `id`: null for a value that is no node with a type; else
+ * its members of the wrong shape repaired, then loadNode. The same object when nothing had to change. The
+ * loader and pasteNodes share it.
+ */
+export function readNode(id: string, value: unknown, registry: NodeRegistry, report: (problem: DocProblem) => void): NodeInstance | null {
   const say = (message: string): void => report({ nodeId: id, message });
   if (!isPlainObject(value) || typeof value.type !== 'string') {
     say('The entry is not a node with a type; it is removed');
@@ -174,7 +178,7 @@ export function parseDoc(text: string, registry: NodeRegistry): { readonly doc: 
     format: 'orogen',
     version: 1,
     settings: settings.settings,
-    nodes: readRecord(raw, 'nodes', report, (id, value) => shapeNode(id, value, registry, report)),
+    nodes: readRecord(raw, 'nodes', report, (id, value) => readNode(id, value, registry, report)),
     edges: readRecord(raw, 'edges', report, (id, value) => shapeEdge(id, value, report)),
     groups: readRecord(raw, 'groups', report, (id, value) => shapeGroup(id, value, report)),
     ui: readUi(raw, report),
@@ -195,11 +199,13 @@ const ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
 
 export function newId(): string {          // 10 characters of base 36 from crypto.getRandomValues; the only source of the ids the commands create
   let id = '';
-  while (id.length < 10) {
+  // A round of 16 bytes almost always gives the 10 characters; 64 rounds fail only with a broken random source.
+  for (let round = 0; round < 64 && id.length < 10; round++) {
     for (const byte of crypto.getRandomValues(new Uint8Array(16))) {
       // 252 is 7 × 36: a byte below it gives every character with the same probability.
       if (byte < 252 && id.length < 10) id += ID_ALPHABET[byte % 36];
     }
   }
+  if (id.length < 10) throw new Error('crypto.getRandomValues returns no usable bytes');
   return id;
 }

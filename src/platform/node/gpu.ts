@@ -36,6 +36,7 @@ export async function createNodeGpu(opts?: { profile?: GpuProfile; adapter?: str
     instances.add(instance);
     context = await openGpu(instance, { profile });
   } catch (thrown) {
+    // The instance stays in the set: a device that failed the checks of 1.4 was destroyed, and its `lost` callback is still to come.
     alive = false;
     if (adapter !== undefined && thrown instanceof GpuUnavailableError) {
       throw new GpuUnavailableError(`${thrown.message} (adapter "${adapter}" was asked for)`);

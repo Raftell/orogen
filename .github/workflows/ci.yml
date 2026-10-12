@@ -1,43 +1,50 @@
-name: CI
+name: ci
 
 on:
-  push:
-  workflow_dispatch:
+  push: { branches: [main] }
+  pull_request: {}
+  workflow_dispatch: {}
 
+# The jobs follow docs/contract/testing.md section 9. Hosted runners have no GPU:
+# GPU code runs on Windows' software D3D12 adapter (WARP) and on Mesa's lavapipe.
+# That proves correctness on each backend, not speed on real hardware.
 jobs:
-  test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v5
+        with: { node-version: 26, cache: npm }
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:unit
+
+  gpu:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        include:
+          - { name: gpu-linux, os: ubuntu-latest, adapter: llvmpipe }
+          - { name: gpu-windows, os: windows-latest, adapter: Microsoft }
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      OROGEN_GPU_ADAPTER: ${{ matrix.adapter }}
+      OROGEN_GPU_PROFILE: core
     steps:
       - uses: actions/checkout@v5
-
       - uses: actions/setup-node@v5
-        with:
-          node-version: 26
-          cache: npm
-
-      # Hosted runners have no GPU. Windows ships a software D3D12 adapter (WARP);
-      # Linux needs Mesa's software Vulkan driver.
-      - name: Install software Vulkan (Linux)
-        if: runner.os == 'Linux'
+        with: { node-version: 26, cache: npm }
+      - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1
-
       - run: npm ci
-
-      - name: Type-check
-        run: npx tsc -p .
-
-      - name: GPU compute smoke test
-        run: node spikes/dawn-spike.ts --size=512
-
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - run: npm run test:gpu
+      - if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: output-${{ matrix.os }}
-          path: test-output/
+          name: test-output-${{ matrix.name }}
+          path: test-output
           if-no-files-found: ignore

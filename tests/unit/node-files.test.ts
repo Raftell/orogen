@@ -62,6 +62,17 @@ test('source: stat gives size and modification time, and null when there is no s
   assert.equal(await source.stat('sub'), null);
 });
 
+/**
+ * The index of the first byte that differs, or -1; a different length differs at the shorter one's end.
+ * 70 000 bytes are never handed to deepEqual: the diff node:assert builds when it fails grows with the square
+ * of the length (4000 bytes, half of them wrong, cost 300 MB; 16 000 exceed 1 GB).
+ */
+function firstDifference(actual: Uint8Array, expected: Uint8Array): number {
+  const shared = Math.min(actual.length, expected.length);
+  for (let i = 0; i < shared; i++) if (actual[i] !== expected[i]) return i;
+  return actual.length === expected.length ? -1 : shared;
+}
+
 test('source: read returns the bytes in an array that owns its whole buffer and can be transferred', async () => {
   const dir = folder();
   const source = NodeFileSource(dir);
@@ -73,10 +84,11 @@ test('source: read returns the bytes in an array that owns its whole buffer and 
     assert.ok(bytes instanceof Uint8Array);
     assert.equal(bytes.byteOffset, 0);
     assert.equal(bytes.byteLength, bytes.buffer.byteLength);
-    assert.deepEqual(bytes, content);
+    assert.equal(firstDifference(bytes, content), -1, `${name}: the byte that differs first`);
     const moved = structuredClone(bytes, { transfer: [bytes.buffer] });
     assert.equal(bytes.byteLength, 0);
-    assert.deepEqual(moved, content);
+    assert.ok(moved instanceof Uint8Array);
+    assert.equal(firstDifference(moved, content), -1, `${name}, moved: the byte that differs first`);
   }
   fs.writeFileSync(path.join(dir, 'empty.bin'), new Uint8Array(0));
   assert.equal((await source.read('empty.bin')).byteLength, 0);
@@ -281,6 +293,26 @@ test('sink: abortAll aborts every open writer and leaves closed files', async ()
   await assert.rejects(b.write(bytesOf(1)));
   await sink.abortAll();
   assert.deepEqual(listing(dir), ['done.bin']);
+});
+
+test('sink: abortAll also aborts a writer whose create is still under way', async () => {
+  const dir = folder();
+  const sink = NodeFileSink(dir);
+  // Neither create has touched the disk yet when abortAll is called.
+  const creating = [sink.create('a.bin'), sink.create('deep/er/b.bin')];
+  const written = sink.write('c.bin', bytesOf(1, 2, 3)).then(() => 'written', (error: Error) => error.message);
+  await sink.abortAll();
+  assert.deepEqual(listing(dir), []);
+  for (const writer of await Promise.all(creating)) {
+    await assert.rejects(writer.write(bytesOf(1)));
+    await assert.rejects(writer.close());
+  }
+  assert.equal(await written, '"c.bin" was aborted; nothing more can be written to it');
+  assert.deepEqual(listing(dir), []);
+
+  // The paths are free again.
+  await sink.write('a.bin', bytesOf(4));
+  assert.deepEqual(listing(dir), ['a.bin']);
 });
 
 test('sink: a close that cannot rename leaves no partial file and does not touch what is there', async () => {

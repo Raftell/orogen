@@ -1,5 +1,5 @@
 // The TypeScript hashes and mixSeed against fixed vectors (testing.md 8.1). The vectors come from the WGSL
-// text of engine.md 3.9 evaluated in exact integer arithmetic; tests/engine/gpu/hash.test.ts checks the
+// text of engine.md 3.9 evaluated in exact integer arithmetic; tests/engine/gpu/stdlib.test.ts checks the
 // same functions against the GPU.
 
 import assert from 'node:assert/strict';

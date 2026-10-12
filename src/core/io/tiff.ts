@@ -21,8 +21,10 @@ function cannotRead(error: unknown): Error {
 export async function decodeTiff(bytes: Uint8Array): Promise<DecodedImage> {
   const buffer = exactBuffer(bytes);
   let image;
+  let littleEndian;
   try {
     const tiff = await fromArrayBuffer(buffer);
+    littleEndian = tiff.littleEndian;
     // geotiff 3.0.5 reads a strip or tile table that it loads lazily as little-endian, whatever the byte order of
     // the file. An eager parser reads every table together with the directory, in the file's byte order.
     tiff.parser.eager = true;
@@ -62,6 +64,17 @@ export async function decodeTiff(bytes: Uint8Array): Promise<DecodedImage> {
     if (bits !== 8 && bits !== 16 && bits !== 32) throw new Error(`TIFF has ${bits}-bit integer samples; 8, 16 and 32 bits are read`);
   } else {
     throw new Error(`TIFF sample format ${format} is not supported; integers and 32-bit float are read`);
+  }
+
+  // The library undoes horizontal differencing on the bytes as a little-endian machine sees them, rebuilds the
+  // floats of predictor 3 in little-endian order, and applies no other predictor at all: each of these would give
+  // wrong values without an error.
+  const predictor: number = (await directory.loadValue('Predictor')) ?? 1;
+  if (predictor !== 1 && predictor !== 2 && predictor !== 3) {
+    throw new Error(`TIFF predictor ${predictor} is not supported; horizontal differencing and the floating-point predictor are read`);
+  }
+  if (!littleEndian && (predictor === 3 || (predictor === 2 && bits > 8))) {
+    throw new Error(`TIFF is big-endian and uses predictor ${predictor} on ${bits}-bit samples; that is read in little-endian files only`);
   }
 
   let raster;
