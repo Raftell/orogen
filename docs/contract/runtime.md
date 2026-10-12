@@ -1405,8 +1405,8 @@ interface FileSink {
 
 1. **Paths.** A sink is rooted at one output folder. `relPath` uses `/`, is relative, and has no empty, `.` or `..` segment, no backslash and no colon. Anything else rejects with `FileError` code `'invalid-path'`. Missing parent folders are created.
 2. **Streaming.** `write(chunk)` appends exactly the bytes `[byteOffset, byteOffset + byteLength)` of the chunk and resolves when the operating system has accepted them. The caller may then reuse the buffer. A caller awaits each `write` before the next; that is the back-pressure. Producers use chunks of at most 64 MiB.
-3. **Atomic.** A writer writes to `<relPath>.partial`. `close()` flushes it and renames it to `relPath`, replacing an existing file. Until `close()` has resolved, `relPath` is either the previous file or absent, never a part. `abort()` deletes the partial file; it is idempotent and does nothing after `close()`.
-4. **One writer per path.** `create` for a path that this sink has open, or has already closed, rejects: two exporters that would write the same file are caught, and nothing is overwritten within one build.
+3. **Atomic.** A writer writes to `<relPath>.partial`. `close()` flushes it and renames it to `relPath`, replacing an existing file. Until `close()` has resolved, `relPath` is either the previous file or absent, never a part. `abort()` deletes the partial file; it is idempotent and does nothing after `close()`. A `write` or a `close` that fails rejects with a `FileError`, deletes the partial file as `abort()` does, and every later `write` and `close` of that writer rejects with the same error.
+4. **One writer per path.** `create` for a path that this sink has open, or has already closed, rejects: two exporters that would write the same file are caught, and nothing is overwritten within one build. A path whose writer was aborted or has failed may be created again.
 5. **Cancellation.** A build that is cancelled or fails calls `abortAll()`. No partial file and no half-written set of files is left under a final name that the build had not completed.
 6. Implementations: `NodeFileSink(rootFolder: string): FileSink` in `src/platform/node/files.ts`, a function called without `new`, on `node:fs`; a memory-backed one for tests. No implementation crosses a process boundary, and file contents never travel through inter-process messages. Measured in Electron for 250 MB: 0.1 s written from the engine worker with `node:fs`; 0.9 s as one message through the preload bridge with a 0.5 s stall of the interface; 25 s as 8 MiB views of one buffer, because each view drags the whole buffer along.
 
@@ -1436,7 +1436,23 @@ interface CpuTaskPort {
 
 /** src/core/cpu/serve.ts. The whole worker side: receives task messages on `port`, runs the tasks defined in this thread, posts results. */
 declare function serveCpuTasks(port: CpuTaskPort): void;
+
+/** src/core/cpu/protocol.ts. What a CpuRunner posts on that port, and what serveCpuTasks posts back. */
+interface CpuTaskRequest {
+  readonly id: number;
+  readonly task: string;       // CpuTask.name
+  readonly args: unknown;
+}
+type CpuTaskReply =
+  | { readonly id: number; readonly type: 'progress'; readonly fraction: number }
+  | { readonly id: number; readonly type: 'result'; readonly value: unknown }   // the buffers of its typed arrays are transferred
+  | { readonly id: number; readonly type: 'error'; readonly message: string };  // the task threw, or its name is unknown
 ```
+
+A runner posts one `CpuTaskRequest` per task, with the caller's transfer list, and
+receives any number of `progress` replies followed by one `result` or `error`
+with the same `id`. There is no cancel message: a runner cancels by terminating
+its worker (rule 5).
 
 A transfer list is `ArrayBuffer[]`: a `SharedArrayBuffer` is not transferable,
 so no `postMessage` accepts `ArrayBufferLike[]`. The arrays the engine hands out
@@ -1449,13 +1465,14 @@ which makes `[data.buffer]` a transfer list without a cast.
 | Node: command line, tests | a `node:worker_threads` worker | `src/platform/node/cpu-worker.ts` | `createNodeCpuRunner()` in `src/platform/node/cpu.ts` |
 | Application | a dedicated Web Worker created by the engine worker; it needs and has no Node integration | `src/platform/electron/worker/cpu-worker.ts` | `createWebCpuRunner()` in `src/platform/electron/worker/cpu.ts` |
 
-1. Both entry files import `src/core/nodes/index.ts`, which runs every `defineCpuTask` of the product in that thread, and call `serveCpuTasks`. A task is found by name in the table `defineCpuTask` fills (`engine.md`, Module scope); an unknown name rejects. A task that is defined only in the calling thread, for instance in a test file, therefore cannot run.
+1. Both entry files import `src/core/nodes/index.ts`, which runs every `defineCpuTask` of the product in that thread, and call `serveCpuTasks`. `serve.ts` itself imports the core's own tasks (`decodeImage`, `decodeRaw`), so they are defined in every thread that serves. A task is found by name in the table `defineCpuTask` fills (`engine.md`, Module scope); an unknown name rejects. A task that is defined only in the calling thread, for instance in a test file, therefore cannot run. `createNodeCpuRunner(entry?: URL)` takes another entry file than the product's; only a test of the runner itself passes one.
 2. One CPU worker exists per engine. It is started at the first `ctx.cpu` call. Tasks run one at a time, in call order.
-3. `args` are structured-cloned; buffers in `transfer` are moved. In the result, the buffer of every typed array reachable through plain objects and arrays is moved back.
+3. `args` are structured-cloned; buffers in `transfer` are moved. In the result, the buffer of every typed array reachable through plain objects and arrays is moved back. A result that holds a buffer which cannot be moved, the memory of a WebAssembly module for one, is copied whole instead.
 4. `env.progress(f)` reaches `onProgress`, which the evaluator maps onto the node's progress.
-5. **Cancellation.** When the signal aborts, `run` rejects at once with the abort reason. If the task is executing, the worker is terminated and a new one is started on the next call. A task therefore holds no state that outlives it.
-6. A task that throws rejects `run` with an `Error` carrying its message; the worker survives.
+5. **Cancellation.** When the signal aborts, `run` rejects at once with the abort reason. If the task is executing, the worker is terminated and a new one is started on the next call. A task therefore holds no state that outlives it. A runner posts a request only when the one before it is answered: a task that still waits for its turn is cancelled without touching the worker, and terminating the worker loses no waiting task or its buffers.
+6. A task that throws rejects `run` with an `Error` carrying its message; the worker survives. A worker that cannot start or that dies rejects the task in progress with an `Error` that begins `The CPU worker failed: `, and the next call starts a new one.
 7. In the application a single `ArrayBuffer` is limited to 2 145 386 496 bytes (measured). A full read of an 8129² four-channel field is 1 057 290 256 bytes and fits.
+8. The Node runner starts its worker with `workerData: {}`, which the TIFF decoder's library needs in a worker thread (`export-unreal.md` 4.7), and keeps the process alive only while a task is in progress: an idle worker does not hold a command-line program or a test open. `dispose()` rejects what is pending and resolves when every worker thread has stopped.
 
 A Web Worker created from inside a worker is standard in Chromium but is not
 yet verified in this project's Electron build. Should it fail, the page creates
@@ -2158,8 +2175,8 @@ Versions are exact. Adding or upgrading a dependency is the integrator's change
 | `@webgpu/types` | 0.1.74 | the WebGPU types of every tsconfig (8.4) | Types only |
 | `webgpu` | 0.6.2 | the headless device (1.5) | Never bundled into the application |
 | `fast-png` | 8.0.0 | decoding PNG in `src/core/io/` (`export-unreal.md` 4.7) | Runs in the CPU worker. On the `import-src` allow-list of `testing.md` section 4 |
-| `geotiff` | 3.0.5 | decoding TIFF in `src/core/io/` | As `fast-png`. That it loads in a CPU-task thread without Node APIs is to verify (`export-unreal.md` 4.7) |
-| `parse-exr` | 1.0.2 | decoding OpenEXR in `src/core/io/` | As `geotiff` |
+| `geotiff` | 3.0.5 | decoding TIFF in `src/core/io/` | As `fast-png`. Imported by `tiff.ts` alone, with the two workarounds of `export-unreal.md` 4.7 (rules 2 and 3), which an upgrade re-examines |
+| `parse-exr` | 1.0.2 | decoding OpenEXR in `src/core/io/` | As `fast-png`. Imported by `exr.ts` alone, behind the checks of `export-unreal.md` 4.7 |
 | `ajv` | 8.20.0 | validating manifests against `MANIFEST_SCHEMA` in tests (`export-unreal.md` 6.1) | Tests only; never imported from `src/` |
 
 ### 8.10 Directory layout and ownership
@@ -2174,13 +2191,18 @@ src/
     export-decl.ts               declaration types of export nodes and builds (export-unreal.md section 1)
     globals.d.ts                 the ambient globals core may use (8.4)
     engine.ts                    createEngine
-    gpu/                         device.ts caps.ts pool.ts stream.ts tuning.ts readback.ts
-    wgsl/  ops/                  core WGSL libraries; shared operations (engine.md 3.9, section 5)
-    eval/                        evaluator, plan, keys, cache, context, errors, thumbnails
-    graph/                       doc types, commands.ts validate.ts params.ts serialize.ts view.ts registry.ts
-    session/                     session.ts scheduler.ts protocol.ts
-    io/                          files.ts; the image decoders and raw.ts (export-unreal.md 4.7)
-    cpu/                         runner.ts serve.ts
+    gpu/                         device.ts caps.ts pool.ts stream.ts tuning.ts readback.ts scopes.ts
+                                 the kernel system (engine.md section 3): field.ts kernel.ts lib.ts uniforms.ts bindings.ts
+                                 generate.ts pipelines.ts run.ts defaults.ts lut.ts hash.ts errors.ts seal.ts
+    wgsl/                        stdlib.ts hash.ts noise.ts (engine.md 3.8, 3.9)
+    ops/                         index.ts kernels.ts types.ts and one file per shared operation (engine.md section 5)
+    eval/                        evaluator.ts plan.ts keys.ts cache.ts context.ts errors.ts events.ts thumbnails.ts
+                                 convert.ts stats.ts handles.ts progress.ts hooks.ts parts.ts
+    graph/                       doc.ts settings.ts ladder.ts ports.ts param-types.ts canonical.ts params.ts curves.ts node.ts
+                                 registry.ts commands.ts validate.ts serialize.ts migrate.ts view.ts lint.ts
+    session/                     session.ts scheduler.ts protocol.ts events.ts viewport.ts budget.ts recovery.ts
+    io/                          files.ts; the image decoders image.ts png.ts tiff.ts exr.ts and raw.ts (export-unreal.md 4.7)
+    cpu/                         tasks.ts runner.ts serve.ts protocol.ts
     nodes/                       index.ts (entry module: `nodes`); one folder per category (testing.md section 1)
   export/                        the build pipeline, encoders and cli.ts (export-unreal.md section 1)
   cli/                           the command-line program `orogen` (testing.md 8.6)

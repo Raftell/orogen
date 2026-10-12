@@ -1560,7 +1560,7 @@ declare function defineCpuTask<A, R>(def: { name: string; run(args: A, env: CpuE
 `ctx.cpu(task, args, transfer)` runs `task.run(args, env)` in another thread and
 resolves with its result.
 
-1. A task is defined at module scope and listed in `NodeDef.cpuTasks`. It is named like a kernel: `<category>/<node name>[.<task>]` for a task of one node, `<category>/<module>[.<task>]` for a task shared inside a category (`simulate/route`). `defineCpuTask` throws `NodeDefError` for a second, different task with a name already defined in the process.
+1. A task is defined at module scope and listed in `NodeDef.cpuTasks`. It is named like a kernel: `<category>/<node name>[.<task>]` for a task of one node, `<category>/<module>[.<task>]` for a task shared inside a category (`simulate/route`). `defineCpuTask` throws `NodeDefError`, with the message prefix `task "<name>": `, for a name that does not match `/^[a-z]+\/[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)?$/` and for a second, different task with a name already defined in the process.
 2. `run` is pure: its result depends on `args` only. It has no access to the context, to fields or to the GPU, and it must not rely on module-level state of the engine thread, because it executes in another thread that has loaded the same modules.
 3. `args` and the result are structured-cloned. Buffers listed in `transfer` are moved, not copied, and are unusable by the caller afterwards. Typed arrays in the result are moved back.
 4. `run` may be synchronous or return a promise. It reports progress through `env.progress(0..1)`, which maps onto the node's progress.
@@ -1581,7 +1581,7 @@ interface DecodedImage {
   readonly channels: 1 | 3 | 4;
   readonly data: Float32Array;     // row-major, 0..1 for integer formats, first row = top row of the image
 }
-declare const decodeImage: CpuTask<{ bytes: Uint8Array }, DecodedImage>;
+declare const decodeImage: CpuTask<{ bytes: Uint8Array }, Promise<DecodedImage>>;
 ```
 
 1. A `file` param stores a path. Paths are stored relative to the project file when the file lies under its folder; `FileSource` (`runtime.md`) resolves them. The value `''` means no file is selected; the node throws `new Error('No file selected')`.

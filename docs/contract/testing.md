@@ -1205,13 +1205,13 @@ What each layer contains:
     "build": "vite build",
     "check": "tsc -p tsconfig.core.json && tsc -p tsconfig.json",
     "test": "npm run test:unit && npm run test:gpu",
-    "test:unit": "node --test \"tests/unit/**/*.test.ts\" \"tests/nodes/*/unit/*.test.ts\" \"tests/export/unit/*.test.ts\" \"tests/ui/*/unit/*.test.ts\"",
-    "test:gpu": "node --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
-    "test:gpu:max": "node --env-file=tests/env/max.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
-    "test:gpu:lavapipe": "node --env-file=tests/env/lavapipe.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
-    "test:gpu:warp": "node --env-file=tests/env/warp.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
-    "test:electron": "node --test --test-concurrency=1 --test-timeout=300000 \"tests/electron/*.test.ts\"",
-    "test:ui": "node --test --test-concurrency=1 --test-timeout=300000 \"tests/ui/*/*.test.ts\"",
+    "test:unit": "node tools/guard.mjs node --test \"tests/unit/**/*.test.ts\" \"tests/nodes/*/unit/*.test.ts\" \"tests/export/unit/*.test.ts\" \"tests/ui/*/unit/*.test.ts\"",
+    "test:gpu": "node tools/guard.mjs node --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
+    "test:gpu:max": "node tools/guard.mjs node --env-file=tests/env/max.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
+    "test:gpu:lavapipe": "node tools/guard.mjs node --env-file=tests/env/lavapipe.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
+    "test:gpu:warp": "node tools/guard.mjs node --env-file=tests/env/warp.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
+    "test:electron": "node tools/guard.mjs node --test --test-concurrency=1 --test-timeout=300000 \"tests/electron/*.test.ts\"",
+    "test:ui": "node tools/guard.mjs node --test --test-concurrency=1 --test-timeout=300000 \"tests/ui/*/*.test.ts\"",
     "orogen": "node src/cli/main.ts",
     "verify": "node tests/tools/verify.ts",
     "expect": "node tests/tools/expect.ts"
@@ -1225,6 +1225,7 @@ What each layer contains:
 | `tests/env/lavapipe.env` | `OROGEN_GPU_ADAPTER=llvmpipe` |
 | `tests/env/warp.env` | `OROGEN_GPU_ADAPTER=Microsoft` |
 
+- Every test script starts its process through `tools/guard.mjs`, which on Linux puts it in its own memory-capped systemd scope (`OROGEN_GUARD_MEM`, default `3G`; `OROGEN_GUARD_TIMEOUT` seconds, default 1800) and elsewhere applies only the time limit. A test that leaks or loops then dies alone. Without the scope the kernel's out-of-memory killer ends the whole process group that launched it, the editor or terminal session included: a 13 GB runaway in one unit test did exactly that. Anything else that runs project code from a shell, a single test file or the command-line program, is started the same way: `tools/guard node --test tests/unit/foo.test.ts`. A run that needs more memory raises the cap explicitly, for example `OROGEN_GUARD_MEM=8G tools/guard npm run orogen -- build ...`.
 - The glob patterns are quoted so that Node expands them, identically on Linux and Windows. A folder passed to `node --test` instead of a pattern fails.
 - `--env-file` sets the variables for the runner and for every test process, on every platform. A script never relies on `VAR=value command` syntax.
 - One file under another configuration: `node --env-file=tests/env/max.env --test tests/nodes/filter/blur.test.ts`.

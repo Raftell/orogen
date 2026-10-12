@@ -987,12 +987,12 @@ Import nodes decode with core CPU tasks (`engine.md` 4.11, 4.12). The decoders
 live in `src/core/io/` and use no Node, DOM or Electron API.
 
 ```ts
-// engine.md 4.12
-declare const decodeImage: CpuTask<{ bytes: Uint8Array }, DecodedImage>;
+// engine.md 4.12. The task is named 'core/decode-image'; its run returns a promise for every format.
+declare const decodeImage: CpuTask<{ bytes: Uint8Array }, Promise<DecodedImage>>;
 
-// src/core/io/raw.ts, re-exported by api.ts
+// src/core/io/raw.ts, re-exported by api.ts. The task is named 'core/decode-raw'.
 declare const decodeRaw: CpuTask<
-  { bytes: Uint8Array; sample: 'u16' | 'f32'; width?: number; height?: number },
+  { bytes: Uint8Array; sample: 'u8' | 'u16' | 'f32'; width?: number; height?: number },
   DecodedImage
 >;
 ```
@@ -1007,11 +1007,25 @@ name:
 | OpenEXR | `76 2F 31 01` | `parse-exr` 1.0.2 | scan-line files with a `Y` channel, or `R`, `G`, `B` and optional `A`; the compressions the library reads |
 
 The decoder's tests pin the accepted sets with fixture files, among them one
-file written by each encoder of this section. That `geotiff` and `parse-exr`
-load and run inside a CPU-task thread without Node APIs is to verify; a decoder
-that does not is replaced by a reduced decoder in `src/core/io/` for the subset
-the matching encoder of this section writes, plus Deflate for TIFF and ZIP for
-EXR.
+file written by each encoder of this section.
+
+Within the accepted sets a decoder refuses what its library would decode to
+wrong values without an error:
+
+| Format | Also rejected |
+| --- | --- |
+| PNG | grey and RGB of 1, 2 or 4 bits per channel. A palette is read at every index depth; a `tRNS` colour key of a grey or RGB image is ignored |
+| TIFF | BigTIFF (not recognised); 2 samples per pixel; samples of one pixel that differ in size or type; 16- and 64-bit float; a PhotometricInterpretation other than WhiteIsZero, BlackIsZero and RGB (palette, CMYK, YCbCr, CIELab). Samples are returned as stored: WhiteIsZero is not inverted |
+| OpenEXR | tiled, deep and multi-part files; a file with a UINT channel or a subsampled channel; `Y`, `R`, `G`, `B` and `A` channels that mix HALF and FLOAT; B44 and B44A; decreasing line order together with a compression whose chunks hold several scan lines (ZIP, PIZ, PXR24, DWAA, DWAB). HALF samples are widened to float; other channels of the file are ignored |
+
+All three libraries load and run inside a CPU-task thread without Node APIs.
+This is measured in a dedicated Web Worker of Electron 44 without Node
+integration, with the worker built for the browser, and in the Node worker
+thread. Three rules keep it true:
+
+1. `decodeImage` loads the module of a format (`png.ts`, `tiff.ts`, `exr.ts`), and with it the library, by a dynamic `import()` when the first file of that format arrives; `geotiff` loads its codecs the same way. A thread that only names the task loads no decoder, and the CPU worker of the application is built as an ES module with code splitting.
+2. `geotiff` imports the package `web-worker`, whose Node build reads `workerData.mod` when it is loaded in a worker thread and throws a `TypeError` when `workerData` is undefined. The Node runner therefore starts its worker with `workerData: {}` (`runtime.md` 6.3). In a browser build that package is the global `Worker`, and the Node modules `geotiff` names (`fs`, `http`, `https`, `url`) are empty.
+3. `geotiff` 3.0.5 reads a strip or tile table that it loads lazily as little-endian, whatever the byte order of the file. `tiff.ts` sets the library's directory parser to eager (`tiff.parser.eager = true`), which reads every table with the directory, in the file's byte order.
 
 Result (`DecodedImage`, `engine.md` 4.12):
 
@@ -1025,7 +1039,7 @@ Result (`DecodedImage`, `engine.md` 4.12):
 | float samples | | unchanged; a non-finite sample becomes 0 |
 
 - Rows are top first; nothing is flipped. No gamma or colour-space conversion is applied: an 8-bit colour PNG yields its stored, sRGB-encoded values, and the import node converts.
-- `decodeRaw` reads headerless little-endian samples (`'u16'` as `sample / 65535`, `'f32'` unchanged, non-finite as 0). With `width` and `height` the byte length must equal `width · height · bytesPerSample`. Without them the sample count must be a perfect square, which gives the side.
+- `decodeRaw` reads headerless samples: `'u8'` as `sample / 255`, little-endian `'u16'` as `sample / 65535`, little-endian `'f32'` unchanged with non-finite as 0. These are the three files of 4.4. With `width` and `height` the byte length must equal `width · height · bytesPerSample`. Without them the sample count must be a perfect square, which gives the side. One of the two without the other is an error.
 - Every decoder rejects, with a one-sentence `Error`, a file it does not recognise, a truncated file, an image with a side above 8192, and an image whose decoded data would exceed 1 GiB. Messages name the cause: `'image is 10812 x 10812; the largest side is 8192'`.
 
 ---

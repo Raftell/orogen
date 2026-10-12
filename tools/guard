@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Shorthand for tools/guard.mjs: tools/guard <command> [args...]
+exec node "$(dirname "$0")/guard.mjs" "$@"

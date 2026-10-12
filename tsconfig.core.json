@@ -1,0 +1,9 @@
+{
+  // runtime.md 8.4: neither DOM nor Node types. The globals core may use are src/core/globals.d.ts.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "types": ["@webgpu/types"]
+  },
+  "include": ["src/core"]
+}
