@@ -8,14 +8,30 @@ import { test } from 'node:test';
 import type { NodeDef } from '../../../src/core/api.ts';
 import { createRegistry, newDoc, previewResolution, serializeDoc, type GraphDoc, type NodeRegistry } from '../../../src/core/runtime.ts';
 import { UsageError } from '../../../src/cli/args.ts';
-import { projectDocument, RENDER_SETTINGS, typeDocument, type RenderPlan } from '../../../src/cli/document.ts';
-import { colorize, everyKind, gen, node, select, sink } from '../graph-fixtures.ts';
+import {
+  hasMaskedVariant, inputFeeds, MASK_SLOPES, MASK_TERRAIN, projectDocument, RENDER_SETTINGS, terrainParams, typeDocument, type RenderPlan,
+} from '../../../src/cli/document.ts';
+import { colorize, combine, everyKind, gen, node, select, sink, soften } from '../graph-fixtures.ts';
 
-const fbm = node({ type: 'ref/fbm', title: 'Fractal Noise (Reference)', params: [{ kind: 'seed', name: 'seed', help: 'A seed.', default: 0 }] });
+const fbm = node({
+  type: 'ref/fbm', title: 'Fractal Noise (Reference)',
+  params: [
+    { kind: 'seed', name: 'seed', help: 'A seed.', default: 0 },
+    { kind: 'float', name: 'size', unit: 'length', help: 'A size.', default: 0.25, min: 0.001, max: 4, soft: true, scale: 'log' },
+    { kind: 'int', name: 'octaves', help: 'Octaves.', default: 8, min: 1, max: 16 },
+  ],
+});
 const slopeMask = node({
   type: 'ref/slope-mask', title: 'Slope Mask (Reference)',
   inputs: [{ name: 'in', type: 'field' }], outputs: [{ name: 'out', type: 'field', role: 'mask' }],
+  params: [
+    { kind: 'float', name: 'slopeMin', unit: 'angle', help: 'The lower slope.', default: 20, min: 0, max: 90 },
+    { kind: 'float', name: 'slopeMax', unit: 'angle', help: 'The upper slope.', default: 45, min: 0, max: 90 },
+  ],
 });
+const FIRST = { seed: 0, size: 0.25, octaves: 8 };
+/** The terrain the mask is a slope mask of: the broad shape of the first. */
+const BROAD = { seed: 0, size: 0.25, octaves: 3 };
 /** One input of every sort that is wired differently, and a plain height output. */
 const subject = node({
   type: 'filter/subject', title: 'Subject', category: 'filter',
@@ -36,13 +52,19 @@ const plain = node({ type: 'filter/plain', title: 'Plain', category: 'filter', i
 
 const full: NodeRegistry = createRegistry([fbm, slopeMask, colorize, subject, maskFirst, plain, gen, select, sink]);
 const bare: NodeRegistry = createRegistry([fbm, subject, select]);
+/** With a maskable node and one that has an optional mask input of its own. */
+const masks: NodeRegistry = createRegistry([fbm, slopeMask, colorize, subject, soften, combine]);
 
-/** The type of the node an input of the plan's node is connected to, and the port it comes from. */
-function sourceOf(plan: RenderPlan, port: string): string | null {
+/** The node an input of the plan's node is connected to; null: unconnected. */
+function feedOf(plan: RenderPlan, port: string): GraphDoc['nodes'][string] | null {
   const edges = Object.values(plan.doc.edges).filter((edge) => edge.to.node === plan.nodeId && edge.to.port === port);
   assert.ok(edges.length <= 1, `the input "${port}" has ${edges.length} edges`);
-  const edge = edges[0];
-  return edge ? `${plan.doc.nodes[edge.from.node]!.type}.${edge.from.port}` : null;
+  return edges[0] ? plan.doc.nodes[edges[0].from.node]! : null;
+}
+/** The type of that node, and the port it comes from. */
+function sourceOf(plan: RenderPlan, port: string): string | null {
+  const feed = feedOf(plan, port);
+  return feed ? `${feed.type}.out` : null;
 }
 const typesOf = (doc: GraphDoc): string[] => Object.values(doc.nodes).map((instance) => instance.type).sort();
 
@@ -55,40 +77,93 @@ function usage(run: () => unknown, message: RegExp): void {
   });
 }
 
-test('a node type: heights, data and `any` inputs come from a ref/fbm, masks from a ref/slope-mask of it, colours from a ref/colorize of it', () => {
+test('a node type: each height, data and `any` input takes a terrain of its own; a mask comes from a slope mask of the first, a colour from a colouring of its terrain', () => {
   const plan = typeDocument(full, 'filter/subject');
   assert.equal(plan.type, 'filter/subject');
   assert.equal(plan.def, subject);
+  assert.equal(plan.masked, false);
   assert.equal(plan.doc.nodes[plan.nodeId]!.type, 'filter/subject');
   assert.deepEqual(
     ['in', 'flow', 'either', 'weights', 'tint'].map((port) => sourceOf(plan, port)),
     ['ref/fbm.out', 'ref/fbm.out', 'ref/fbm.out', 'ref/slope-mask.out', 'ref/colorize.out'],
   );
-  // One node of each wiring type, whatever the number of inputs it feeds; the mask and the colour are made of the same terrain.
-  assert.deepEqual(typesOf(plan.doc), ['filter/subject', 'ref/colorize', 'ref/fbm', 'ref/slope-mask']);
-  const idOf = (type: string): string => Object.values(plan.doc.nodes).find((instance) => instance.type === type)!.id;
-  const into = (type: string): string[] => Object.values(plan.doc.edges).filter((edge) => edge.to.node === idOf(type)).map((edge) => `${edge.from.node}.${edge.from.port}>${edge.to.port}`);
-  assert.deepEqual(into('ref/slope-mask'), [`${idOf('ref/fbm')}.out>in`]);
-  assert.deepEqual(into('ref/colorize'), [`${idOf('ref/fbm')}.out>in`], 'the optional colour input of the wiring node stays unconnected');
+  // Three terrains: the first is ref/fbm at its defaults, the others have a seed and a feature size of their own.
+  assert.deepEqual(['in', 'flow', 'either'].map((port) => feedOf(plan, port)!.params), [FIRST, { ...FIRST, seed: 1, size: 0.1 }, { ...FIRST, seed: 2, size: 0.5 }]);
+  assert.deepEqual([0, 1, 2, 3, 4, 5].map(terrainParams), [{}, { seed: 1, size: 0.1 }, { seed: 2, size: 0.5 }, { seed: 3, size: 0.05 }, { seed: 4, size: 0.25 }, { seed: 5, size: 0.1 }]);
+  assert.deepEqual(typesOf(plan.doc), ['filter/subject', 'ref/colorize', 'ref/fbm', 'ref/fbm', 'ref/fbm', 'ref/fbm', 'ref/slope-mask']);
+  // The colour is made of the first terrain. The mask is a slope mask of that terrain's broad shape, its first
+  // three octaves, between angles that select about half of it.
+  const first = feedOf(plan, 'in')!.id;
+  const into = (id: string): string[] => Object.values(plan.doc.edges).filter((edge) => edge.to.node === id).map((edge) => `${edge.from.node}.${edge.from.port}>${edge.to.port}`);
+  assert.deepEqual(into(feedOf(plan, 'tint')!.id), [`${first}.out>in`], 'the optional colour input of the wiring node stays unconnected');
+  const mask = feedOf(plan, 'weights')!;
+  assert.deepEqual(mask.params, { slopeMin: 35, slopeMax: 50 });
+  const beneath = Object.values(plan.doc.edges).filter((edge) => edge.to.node === mask.id).map((edge) => plan.doc.nodes[edge.from.node]!.params);
+  assert.deepEqual(beneath, [BROAD]);
+  assert.deepEqual([MASK_TERRAIN, MASK_SLOPES], [{ octaves: 3 }, { slopeMin: 35, slopeMax: 50 }]);
   assert.deepEqual(plan.warnings, []);
+
+  assert.deepEqual(inputFeeds(subject, false), {
+    in: { kind: 'terrain', index: 0 }, flow: { kind: 'terrain', index: 1 }, either: { kind: 'terrain', index: 2 }, weights: { kind: 'mask' }, tint: { kind: 'color', index: 0 },
+  });
+  // A second colour input is the colouring of the second terrain.
+  const twoColors = node({ type: 'color/blend', title: 'Blend', category: 'color', inputs: [{ name: 'a', type: 'color' }, { name: 'b', type: 'color' }], outputs: [{ name: 'out', type: 'color' }] });
+  const blended = typeDocument(createRegistry([fbm, colorize, twoColors]), 'color/blend');
+  const under = (port: string): unknown => Object.values(blended.doc.edges).filter((edge) => edge.to.node === feedOf(blended, port)!.id).map((edge) => blended.doc.nodes[edge.from.node]!.params);
+  assert.deepEqual([under('a'), under('b')], [[FIRST], [{ ...FIRST, seed: 1, size: 0.1 }]]);
 });
 
-test('a node type: where the registry lacks ref/slope-mask or ref/colorize, the ref/fbm itself is connected', () => {
+test('a node type: an optional mask input, and the mask of a maskable node, are connected in the masked variant only', () => {
+  // A node's own optional mask.
+  assert.deepEqual([hasMaskedVariant(combine), hasMaskedVariant(soften), hasMaskedVariant(subject), hasMaskedVariant(fbm)], [true, true, false, false]);
+  const plain = typeDocument(masks, 'ref/combine');
+  assert.deepEqual(['a', 'b', 'mask'].map((port) => sourceOf(plain, port)), ['ref/fbm.out', 'ref/fbm.out', null], 'the plain picture shows the full effect');
+  assert.deepEqual(['a', 'b'].map((port) => feedOf(plain, port)!.params), [FIRST, { ...FIRST, seed: 1, size: 0.1 }], 'two inputs, two terrains');
+  const masked = typeDocument(masks, 'ref/combine', { masked: true });
+  assert.equal(masked.masked, true);
+  assert.deepEqual(['a', 'b', 'mask'].map((port) => sourceOf(masked, port)), ['ref/fbm.out', 'ref/fbm.out', 'ref/slope-mask.out']);
+  const steep = feedOf(masked, 'mask')!.id;
+  assert.deepEqual(Object.values(masked.doc.edges).filter((edge) => edge.to.node === steep).map((edge) => masked.doc.nodes[edge.from.node]!.params), [BROAD], 'the mask is a slope mask of the broad shape of the first terrain');
+
+  // The mask the evaluator adds to a maskable node.
+  assert.deepEqual(['in', 'mask'].map((port) => sourceOf(typeDocument(masks, 'ref/soften'), port)), ['ref/fbm.out', null]);
+  assert.deepEqual(['in', 'mask'].map((port) => sourceOf(typeDocument(masks, 'ref/soften', { masked: true }), port)), ['ref/fbm.out', 'ref/slope-mask.out']);
+  assert.deepEqual(inputFeeds(soften, true), { in: { kind: 'terrain', index: 0 }, mask: { kind: 'mask' } });
+  assert.deepEqual(inputFeeds(soften, false), { in: { kind: 'terrain', index: 0 }, mask: null });
+
+  // An optional mask that is the first input is the node's subject, not a modifier: connected in both variants.
+  const pack = node({
+    type: 'color/pack', title: 'Pack', category: 'color',
+    inputs: ['r', 'g', 'b', 'a'].map((name) => ({ name, type: 'field' as const, role: 'mask' as const, optional: true })), outputs: [{ name: 'out', type: 'color' }],
+  });
+  assert.deepEqual(inputFeeds(pack, false), { r: { kind: 'mask' }, g: null, b: null, a: null });
+  assert.deepEqual(inputFeeds(pack, true), { r: { kind: 'mask' }, g: { kind: 'mask' }, b: { kind: 'mask' }, a: { kind: 'mask' } });
+  assert.equal(hasMaskedVariant(pack), true);
+  assert.equal(hasMaskedVariant(node({ type: 'select/grown', title: 'Grown', category: 'select', inputs: [{ name: 'in', type: 'field', role: 'mask', optional: true }] })), false);
+
+  // A required mask is connected in both; a node without an optional mask has no masked variant.
+  assert.equal(sourceOf(typeDocument(masks, 'filter/subject'), 'weights'), 'ref/slope-mask.out');
+  usage(() => typeDocument(masks, 'filter/subject', { masked: true }), /^--masked connects the optional mask inputs of a node, and filter\/subject has none and is not maskable$/);
+});
+
+test('a node type: where the registry lacks ref/slope-mask or ref/colorize, the terrain itself is connected', () => {
   const plan = typeDocument(bare, 'filter/subject');
   assert.deepEqual(['in', 'flow', 'either', 'weights', 'tint'].map((port) => sourceOf(plan, port)), Array<string>(5).fill('ref/fbm.out'));
-  assert.deepEqual(typesOf(plan.doc), ['filter/subject', 'ref/fbm']);
+  assert.deepEqual(typesOf(plan.doc), ['filter/subject', 'ref/fbm', 'ref/fbm', 'ref/fbm']);
+  assert.deepEqual(['weights', 'tint'].map((port) => feedOf(plan, port)!.id), [feedOf(plan, 'in')!.id, feedOf(plan, 'in')!.id], 'the first terrain stands in for its mask and its colouring');
 });
 
 test('a node type without inputs is alone in its document, with the settings of testing.md 8.6', () => {
   const plan = typeDocument(full, 'ref/fbm');
   assert.deepEqual(typesOf(plan.doc), ['ref/fbm']);
   assert.deepEqual(Object.keys(plan.doc.edges), []);
-  assert.deepEqual(plan.doc.settings, { ...newDoc().settings, terrainSize: 4096, heightRange: 1024, seed: 1 });
-  assert.deepEqual(RENDER_SETTINGS, { terrainSize: 4096, heightRange: 1024, seed: 1 });
+  // The settings of the tests and of the acceptance graphs: a sea level above the floor, so that a node that reads it has a sea to show.
+  assert.deepEqual(plan.doc.settings, { ...newDoc().settings, terrainSize: 4096, heightRange: 1024, seed: 1, seaLevel: 0.25 });
+  assert.deepEqual(RENDER_SETTINGS, { terrainSize: 4096, heightRange: 1024, seed: 1, seaLevel: 0.25 });
   assert.equal(plan.terrain, null);
 });
 
-test('a node type: the terrain a picture is drawn over is what feeds the first height input, for outputs that are no heights', () => {
+test('a node type: the terrain a picture is drawn over is what feeds the first height input, or what the mask or colour was made of', () => {
   // A mask and a data output: both are drawn over the height input.
   const selected = typeDocument(full, 'ref/select');
   assert.deepEqual(selected.terrain && [selected.doc.nodes[selected.terrain.node]!.type, selected.terrain.port], ['ref/fbm', 'out']);
@@ -102,9 +177,25 @@ test('a node type: the terrain a picture is drawn over is what feeds the first h
   assert.deepEqual(grown.terrain && [grown.doc.nodes[grown.terrain.node]!.type, grown.terrain.port], ['ref/fbm', 'out']);
   // Height outputs only: nothing is drawn over a terrain, so none is read back.
   assert.equal(typeDocument(full, 'filter/subject').terrain, null);
-  // A mask output and no height input.
-  const lone = createRegistry([fbm, slopeMask, node({ type: 'select/edge', title: 'Edge', category: 'select', inputs: [{ name: 'in', type: 'field', role: 'mask' }], outputs: [{ name: 'out', type: 'field', role: 'data' }] })]);
-  assert.equal(typeDocument(lone, 'select/edge').terrain, null);
+  // No height input: a mask is drawn over the terrain it is a slope mask of, a colour over the terrain it colours.
+  const lone = createRegistry([
+    fbm, slopeMask, colorize,
+    node({ type: 'select/edge', title: 'Edge', category: 'select', inputs: [{ name: 'in', type: 'field', role: 'mask' }], outputs: [{ name: 'out', type: 'field', role: 'data' }] }),
+    node({ type: 'color/tone', title: 'Tone', category: 'color', inputs: [{ name: 'in', type: 'color' }], outputs: [{ name: 'out', type: 'color' }] }),
+    node({ type: 'generate/disc', title: 'Disc', category: 'generate', outputs: [{ name: 'out', type: 'field', role: 'mask' }] }),
+  ]);
+  for (const type of ['select/edge', 'color/tone']) {
+    const plan = typeDocument(lone, type);
+    assert.ok(plan.terrain, type);
+    assert.deepEqual([plan.doc.nodes[plan.terrain.node]!.type, plan.doc.nodes[plan.terrain.node]!.params, plan.terrain.port], ['ref/fbm', FIRST, 'out'], `${type}: the first terrain`);
+  }
+  // The colouring is of that very terrain; the mask is of its broad shape, so the terrain is in the document for the picture alone.
+  const toned = typeDocument(lone, 'color/tone');
+  assert.equal(Object.values(toned.doc.edges).find((edge) => edge.to.node === feedOf(toned, 'in')!.id)!.from.node, toned.terrain!.node);
+  const edged = typeDocument(lone, 'select/edge');
+  assert.equal(Object.values(edged.doc.edges).some((edge) => edge.from.node === edged.terrain!.node), false);
+  // No input at all: there is no terrain to draw over.
+  assert.equal(typeDocument(lone, 'generate/disc').terrain, null);
 });
 
 test('a node type: defaults, then --max-params, then each --param, then --seed', () => {
@@ -123,7 +214,7 @@ test('a node type: defaults, then --max-params, then each --param, then --seed',
   assert.deepEqual(params(given), { ...maxed, count: 5, mode: 'add', soft: 25, tint: [0.5, 0.25, 0], label: 'Rock', seed: 7 });
   // The wiring nodes keep their defaults.
   const withInput = typeDocument(full, 'filter/plain', { maxParams: true });
-  assert.deepEqual(Object.values(withInput.doc.nodes).find((instance) => instance.type === 'ref/fbm')!.params, { seed: 0 });
+  assert.deepEqual(Object.values(withInput.doc.nodes).find((instance) => instance.type === 'ref/fbm')!.params, FIRST);
   assert.equal(params(withInput).count, 16);
 });
 

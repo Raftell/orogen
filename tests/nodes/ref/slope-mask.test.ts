@@ -66,6 +66,16 @@ test('ref/slope-mask: an upper angle at or below the lower one gives a hard edge
   }
 });
 
+test('ref/slope-mask: a threshold of 90 degrees is one no slope reaches, and one of 0 selects every slope', async () => {
+  // The thresholds reach the kernel as tangents (engine.md 4.5): tan 90 is finite in float32, and the ends are exact.
+  const steep = plane(80, 30);
+  expectStats((await renderNode(def, { inputs: { in: steep }, params: { slopeMin: 90, slopeMax: 90 } })).out, { min: [0, 0], max: [0, 0] });
+  const upTo90 = (80 - 20) / 70;
+  expectStats((await renderNode(def, { inputs: { in: steep }, params: { slopeMin: 20, slopeMax: 90 } })).out, { min: [upTo90 - 1e-4, upTo90 + 1e-4], max: [upTo90 - 1e-4, upTo90 + 1e-4] });
+  expectStats((await renderNode(def, { inputs: { in: plane(1, 200) }, params: { slopeMin: 0, slopeMax: 0 } })).out, { min: [1, 1], max: [1, 1] });
+  expectStats((await renderNode(def, { inputs: { in: 'zero' }, params: { slopeMin: 0, slopeMax: 0 } })).out, { min: [0, 0], max: [0, 0] });
+});
+
 test('ref/slope-mask: a cone is selected on its flank and not on its floor', async () => {
   // The cone rises from a radius of 64 texels to its tip at the centre. Its flank is at 45 degrees with the test
   // settings, the upper angle of the defaults; a central difference across its round contours measures a little less.

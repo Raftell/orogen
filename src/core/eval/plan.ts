@@ -169,24 +169,6 @@ export function buildPlan(doc: GraphDoc, registry: NodeRegistry, targets: readon
   return { nodes, byId };
 }
 
-/** Step 4: for every node of the plan, the outputs this evaluation wants. */
-export function wantedOutputs(plan: EvalPlan, targets: readonly EvalTarget[], outputs: 'all' | 'needed'): ReadonlyMap<string, ReadonlySet<string>> {
-  const wanted = new Map<string, Set<string>>();
-  for (const node of plan.nodes) {
-    wanted.set(node.nodeId, new Set(outputs === 'all' ? (node.def?.outputs ?? []).map((p) => p.name) : []));
-  }
-  if (outputs === 'all') return wanted;
-  for (const node of plan.nodes) {
-    for (const input of node.inputs) {
-      if (input.from) wanted.get(input.from.node)?.add(input.from.port);
-    }
-  }
-  for (const target of targets) {
-    if ('ref' in target) wanted.get(target.ref.node)?.add(target.ref.port);
-  }
-  return wanted;
-}
-
 /** One texture's worth of content in a build: alive from the step that produces it to the step of its last reader or its delivery. */
 export interface Lifetime { readonly bytes: number; readonly from: number; readonly to: number }
 

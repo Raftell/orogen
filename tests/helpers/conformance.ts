@@ -127,8 +127,14 @@ export function conformance(def: NodeDef, opts: ConformanceOptions = {}): void {
   // ---- what the node is ------------------------------------------------------------------------------------------
   const isExport = def.export !== undefined;
   const variants: readonly Variant[] = def.inputs.some((port) => port.type === 'any') ? ['field', 'color'] : ['field'];
-  const generator = def.inputs.every((port) => port.optional);
   const primary = def.outputs[0];
+  /**
+   * A generator (engine.md 1.7, testing.md 3.2): no required input, a primary output that is a field of role
+   * `height`, and no `file` parameter. A mask or a colour made from nothing has no height range to keep, and a
+   * node that reads a file returns what the file holds.
+   */
+  const generator = def.inputs.every((port) => port.optional) && primary !== undefined && primary.type === 'field'
+    && (primary.role ?? 'height') === 'height' && !def.params.some((param) => param.kind === 'file');
   const hasSeed = def.params.some((param) => param.kind === 'seed');
   const kindOf = (output: NodeDef['outputs'][number], variant: Variant): Variant => (output.type === 'color' ? 'color' : output.type === 'field' ? 'field' : variant);
   const isMask = (output: NodeDef['outputs'][number]): boolean => output.type === 'field' && output.role === 'mask';
@@ -137,7 +143,7 @@ export function conformance(def: NodeDef, opts: ConformanceOptions = {}): void {
     finite: !isExport,
     'mask-range': !isExport && def.outputs.some(isMask),
     alpha: !isExport && variants.some((variant) => def.outputs.some((output) => kindOf(output, variant) === 'color')),
-    'generator-range': !isExport && generator && primary !== undefined && primary.type === 'field' && (primary.role ?? 'height') === 'height',
+    'generator-range': !isExport && generator,
     deterministic: !isExport,
     'deterministic-large': !isExport && def.kernels.some((kernel) => Object.keys(kernel.def.unsafeReadWrite ?? {}).length > 0),
     resolution: !isExport && !def.resolutionDependent,
@@ -182,7 +188,7 @@ export function conformance(def: NodeDef, opts: ConformanceOptions = {}): void {
     }
     checkReason(reason, `${where}: resolutionTol`);
     if (def.resolutionDependent) throw new TypeError(`${where}: resolutionTol on a resolutionDependent node, which the resolution check leaves out`);
-    if (generator) throw new TypeError(`${where}: resolutionTol on a node without required inputs: a generator agrees at shared vertices within 1e-6, and no tolerance replaces that`);
+    if (generator) throw new TypeError(`${where}: resolutionTol on a generator: a generator agrees at shared vertices within 1e-6, and no tolerance replaces that`);
     if (skip.resolution !== undefined) throw new TypeError(`${where}: resolutionTol and skip["resolution"] are both declared`);
   }
   const settings: ProjectSettings = { ...TEST_SETTINGS, ...opts.settings };
@@ -293,8 +299,8 @@ export function conformance(def: NodeDef, opts: ConformanceOptions = {}): void {
     async finite() {
       for (const variant of variants) {
         const { outputs } = await reference(257, variant);
-        // The terrain a mask or a data output is drawn over: the node's first height input.
-        const heightPort = def.inputs.find((port) => port.type === 'field' && (port.role ?? 'height') === 'height');
+        // The terrain a mask or a data output is drawn over: the node's first height input, an `any` input given a field included.
+        const heightPort = def.inputs.find((port) => (port.type === 'field' && (port.role ?? 'height') === 'height') || (port.type === 'any' && variant === 'field'));
         const heightName = heightPort ? inputsOf(variant)[heightPort.name] : undefined;
         const terrain = heightName ? await fixtures.byName(heightName, 257) : undefined;
         for (const output of def.outputs) {

@@ -1,6 +1,7 @@
-// registryDoc (testing.md 2.4): one instance of every node, its inputs wired by port to a ref/fbm, a
-// ref/slope-mask of that and a ref/colorize of that, a chain of ref/combine nodes over every first output with
-// the nodes that read a file last, and the view at the end of the chain. Evaluating the view evaluates every node.
+// registryDoc (testing.md 2.4): one instance of every node, its inputs wired by port as the masked variant of
+// `orogen render` wires them (each height from a ref/fbm of its own, masks from a ref/slope-mask of the first,
+// colours from a ref/colorize of their terrain), a chain of ref/combine nodes over every first output with the
+// nodes that read a file last, and the view at the end of the chain. Evaluating the view evaluates every node.
 //
 // The three wiring types are reference nodes; graph.test.ts covers the document that is made when a registry
 // lacks them.
@@ -73,35 +74,52 @@ function feeds(doc: GraphDoc, node: string, port: string): PortRef | null {
 }
 const idsOf = (doc: GraphDoc, type: string): string[] => Object.keys(doc.nodes).filter((id) => typeOf(doc, id) === type);
 
-test('registryDoc: one instance of every node with outputs, wired by port to fbm, slope-mask and colorize', () => {
+test('registryDoc: one instance of every node with outputs, wired by port: a terrain per height input, the slope mask, the colouring', () => {
   const doc = registryDoc(DEFS);
   assert.deepEqual(doc.settings, TEST_SETTINGS);
   for (const def of DEFS) {
-    const expected = def.outputs.length === 0 ? 0 : def.type === 'ref/combine' ? DEFS.filter((d) => d.outputs.length > 0).length : def.type === 'ref/colorize' ? 2 : 1;
+    // Beside the instances: a link of the chain for every instance, the second terrain and the terrain under the
+    // mask, the slope mask that feeds mask inputs, and the colorize that feeds colour inputs.
+    const beside: Readonly<Record<string, number>> = { 'ref/fbm': 3, 'ref/slope-mask': 2, 'ref/colorize': 2, 'ref/combine': DEFS.filter((d) => d.outputs.length > 0).length };
+    const expected = def.outputs.length === 0 ? 0 : beside[def.type] ?? 1;
     assert.equal(idsOf(doc, def.type).length, expected, `nodes of type ${def.type}`);
   }
   // Every instance holds its defaults.
   assert.deepEqual(doc.nodes[idsOf(doc, 'ref/h-scale')[0]!]!.params, { factor: 2 });
   assert.deepEqual(doc.nodes[idsOf(doc, 'ref/talus')[0]!]!.params, { talus: 35, reach: 0.02 });
 
-  const noise = idsOf(doc, 'ref/fbm')[0]!;
-  const steep = idsOf(doc, 'ref/slope-mask')[0]!;
+  // The instance of ref/fbm is the first terrain; the second has a seed and a feature size of its own, and the
+  // terrain under the mask is the broad shape of the first.
+  const terrains = idsOf(doc, 'ref/fbm');
+  const noise = terrains.find((id) => doc.nodes[id]!.params.seed === 0 && doc.nodes[id]!.params.octaves === 8)!;
+  const second = terrains.find((id) => doc.nodes[id]!.params.seed === 1)!;
+  const broad = terrains.find((id) => doc.nodes[id]!.params.octaves === 3)!;
+  assert.deepEqual([doc.nodes[noise]!.params, doc.nodes[second]!.params, doc.nodes[broad]!.params], [
+    { seed: 0, size: 0.25, octaves: 8, gain: 0.5 }, { seed: 1, size: 0.1, octaves: 8, gain: 0.5 }, { seed: 0, size: 0.25, octaves: 3, gain: 0.5 },
+  ]);
+  // The mask is a slope mask of that broad shape; the instance of ref/slope-mask, at its defaults, reads the first terrain.
+  const steep = idsOf(doc, 'ref/slope-mask').find((id) => feeds(doc, id, 'in')?.node === broad)!;
+  const instance = idsOf(doc, 'ref/slope-mask').find((id) => id !== steep)!;
+  assert.deepEqual([doc.nodes[steep]!.params, doc.nodes[instance]!.params], [{ slopeMin: 35, slopeMax: 50 }, { slopeMin: 20, slopeMax: 45 }]);
+  assert.deepEqual(feeds(doc, instance, 'in'), { node: noise, port: 'out' });
   // The colorize that feeds colour inputs reads the fbm alone; the instance under test has its `base` fed by it.
   const paints = idsOf(doc, 'ref/colorize');
   const painter = paints.find((id) => feeds(doc, id, 'base') === null)!;
   const painted = paints.find((id) => id !== painter)!;
   assert.deepEqual([feeds(doc, painter, 'in'), feeds(doc, painted, 'in'), feeds(doc, painted, 'base')], [{ node: noise, port: 'out' }, { node: noise, port: 'out' }, { node: painter, port: 'out' }]);
-  assert.deepEqual(feeds(doc, steep, 'in'), { node: noise, port: 'out' }, 'a ref/slope-mask of that');
 
   const node = idsOf(doc, 'ref/h-wired')[0]!;
   assert.deepEqual(
     ['in', 'weight', 'paint', 'guide', 'mask'].map((port) => feeds(doc, node, port)),
-    [{ node: noise, port: 'out' }, { node: steep, port: 'out' }, { node: painter, port: 'out' }, { node: noise, port: 'out' }, { node: steep, port: 'out' }],
-    'height and data inputs from the fbm, mask inputs from the slope mask, colour inputs from the colorize',
+    [{ node: noise, port: 'out' }, { node: steep, port: 'out' }, { node: painter, port: 'out' }, { node: second, port: 'out' }, { node: steep, port: 'out' }],
+    'the height from the first terrain and the data input from the second, mask inputs from the slope mask, the colour input from the colorize',
   );
-  assert.deepEqual(feeds(doc, idsOf(doc, 'ref/h-either')[0]!, 'in'), { node: noise, port: 'out' }, 'an `any` input takes the fbm');
+  // Two inputs of equal rank are two terrains: the instance of ref/combine is not shown one field twice.
+  const mixer = idsOf(doc, 'ref/combine').find((id) => feeds(doc, id, 'a')?.node === noise && feeds(doc, id, 'b')?.node === second)!;
+  assert.deepEqual(feeds(doc, mixer, 'mask'), { node: steep, port: 'out' }, 'its optional mask is connected');
+  assert.deepEqual(feeds(doc, idsOf(doc, 'ref/h-either')[0]!, 'in'), { node: noise, port: 'out' }, 'an `any` input takes a terrain');
   assert.deepEqual(feeds(doc, idsOf(doc, 'ref/h-dim')[0]!, 'in'), { node: painter, port: 'out' });
-  assert.equal(feeds(doc, idsOf(doc, 'ref/h-scale')[0]!, 'mask'), null, 'the mask the evaluator adds to a maskable node is not wired');
+  assert.deepEqual(feeds(doc, idsOf(doc, 'ref/h-scale')[0]!, 'mask'), { node: steep, port: 'out' }, 'the mask the evaluator adds to a maskable node is wired like any optional mask');
   assert.equal(Object.values(doc.edges).some((edge) => edge.from.node === edge.to.node), false);
 });
 
@@ -165,6 +183,6 @@ test('registryDoc: a single node is its own view, and a list without outputs giv
   assert.deepEqual([Object.keys(none.nodes).length, none.ui.view], [0, undefined]);
   // A node that is not among the definitions still gets its wiring.
   const lone = registryDoc([wired]);
-  assert.deepEqual(Object.values(lone.nodes).map((node) => node.type).sort(), ['ref/colorize', 'ref/fbm', 'ref/h-wired', 'ref/slope-mask']);
+  assert.deepEqual(Object.values(lone.nodes).map((node) => node.type).sort(), ['ref/colorize', 'ref/fbm', 'ref/fbm', 'ref/fbm', 'ref/h-wired', 'ref/slope-mask']);
   assert.equal(lone.ui.view?.height?.node, idsOf(lone, 'ref/h-wired')[0]);
 });

@@ -173,7 +173,7 @@ size. Every stored parameter value is in exactly one of these units:
 | --- | --- | --- | --- |
 | `'length'` | fraction of terrain width; 1.0 = `terrainSize` | feature size, radius, distance, offset, wavelength, width | already a `uv` distance; `ctx.lengthToPx(v)` texels; `ctx.lengthToMetres(v)` |
 | `'height'` | normalised; 1.0 = `heightRange` | heights, amplitudes, height thresholds | already in field units; `ctx.heightToMetres(v)` |
-| `'angle'` | degrees | directions (0..360) and slope thresholds (0..90) | `v * Math.PI / 180`; a slope threshold is compared as `Math.tan(...)` |
+| `'angle'` | degrees | directions (0..360) and slope thresholds (0..90) | `v * Math.PI / 180`; a slope threshold is compared as `Math.tan(...)` (4.5) |
 | `'ratio'` | 0..1 | amounts, strengths, opacities, probabilities | none |
 | `'none'` | a plain number | exponents, lacunarity, gamma, multipliers | none |
 
@@ -188,7 +188,7 @@ size. Every stored parameter value is in exactly one of these units:
 equals `heightRange` metres. Values outside 0..1 are legal inside the graph and
 are handled at export.
 
-- The primary output of a generator (a node without required inputs whose `outputs[0]` has role `'height'`) is nominally 0..1: at default parameters, for any seed, it lies within −0.05..1.05, spans at least 0.5 and has a mean between 0.25 and 0.75.
+- A **generator** is a node without required inputs and without a `file` parameter whose `outputs[0]` is a `field` of role `'height'`. Its primary output is nominally 0..1: at default parameters, for any seed, it lies within −0.05..1.05, spans at least 0.5 and has a mean between 0.25 and 0.75. A node that makes a mask or a colour from nothing, or returns the heights of a file, is not held to that range.
 - Normalisation is analytic or uses fixed constants compiled into the kernel. It never depends on the resolution or on measured statistics.
 - Whole-field statistics (`ctx.stats`, `ops.minMax`) may influence an output only in a node that declares `resolutionDependent: true` (4.6).
 - Filters accept any finite input and do not clamp unless clamping is their documented job.
@@ -238,7 +238,7 @@ the frame above only.
 
 The same graph is evaluated at several ladder levels. A node obeys:
 
-1. A generator is a pure function of `uv`, its parameters and its seed. It positions features with `uv`, never with `px`, and never reads `frame.res` or `frame.cellSize`. Its octave count and feature sizes do not depend on the resolution.
+1. A generator (1.7) is a pure function of `uv`, its parameters and its seed, and of an optional input, where one is connected, at the texel it writes. It positions features with `uv`, never with `px`, and never reads `frame.res` or `frame.cellSize`. Its octave count and feature sizes do not depend on the resolution. The same holds for every other node without required inputs that reads no file.
 2. Neighbourhood sizes are `'length'` parameters converted with `ctx.lengthToPx()`. A filter whose radius in texels is below the size at which it has an effect passes its input through.
 3. Slopes and gradients are physical (1.6).
 4. Simulations scale their time steps and iteration counts with the cell size as `simulation.md` prescribes.
@@ -993,7 +993,7 @@ targets). Tiling is invisible to a correctly written kernel:
 2. An invocation stores only to its own texel, and reads no texel that the same run writes, except its own texel of an in-place target. Map mode and the accessors guarantee this; `unsafeReadWrite` code must (3.5).
 3. Loops in WGSL have a constant upper bound: a `const` maximum in the kernel, with the param clamped to it (`let n = clamp(P.taps, 1, MAX_TAPS);`).
 4. `cost` is the number of texture loads one texel performs in the run, counting a bilinear read as 4 and one octave of library noise as 8. The kernel default is `KernelDef.cost` (8 when omitted). A run passes `cost` whenever the count depends on its params (taps, octaves, steps). The runtime sizes tiles and batches from `texels × cost` and corrects the estimate from measured times. A texel that spends its time in arithmetic counts that as well, at one unit per four rounds of a loop that loads nothing (measured: 2406 rounds of an integer hash take the time of 649 loads). A kernel that understates its cost is not unsafe, because the runtime bounds the tiles of a kernel it has not measured by texels (`runtime.md` 3.4 rule 5), but it is tiled by a wrong estimate until it has been measured at the size it runs at.
-5. A neighbourhood wider than 64 texels is not computed by a wider loop. Use `ops.blur`, work on a coarser grid (`ops.resample`), or use several runs.
+5. A neighbourhood wider than 64 texels is not computed by a wider loop. Use `ops.blur`, work on a coarser grid (`ops.resample`, with a ring where the operation reads neighbours at the border; section 5), or use several runs.
 6. `tiled: false` makes every run of the kernel a single dispatch. It is for a kernel whose result would differ if bands of rows ran as separate dispatches; no kernel written to rules 1 and 2 needs it. Such a kernel performs at most 64 loads per texel.
 7. A node that runs a kernel a number of times that depends on params or on the resolution, or more than 8 times in a row, does so inside `ctx.loop` (4.7), so that batches are awaited, progress is reported and the evaluation can be cancelled.
 
@@ -1048,7 +1048,7 @@ interface PortDef {
 Conventions enforced by `defineNode`:
 
 - `outputs[0]`, when the node has outputs, is the primary output and is named `out`.
-- `inputs[0]`, when the node has inputs, is the primary input and is named `in`; a node with two inputs of equal rank names them `a` and `b`.
+- `inputs[0]`, when the node has inputs, is the primary input and is named `in`; a node with two inputs of equal rank names them `a` and `b`; a node that takes the channels of a colour names them `r`, `g`, `b` and `a` (`color/pack-channels`).
 - An input named `mask` has type `'field'`, role `'mask'` and is optional.
 - Secondary outputs are named for their content: `flow`, `wear`, `deposit`.
 
@@ -1206,7 +1206,7 @@ and `rotation` and `rotate` (use `angle`).
 | --- | --- | --- |
 | `float`, unit `length` | `number` | `f32`: unchanged when the kernel works in `uv`; `ctx.lengthToPx(v)` when it works in texels |
 | `float`, unit `height` | `number` | `f32`, unchanged (field units) |
-| `float`, unit `angle` | `number` | a direction as `vec2f` `[Math.cos(r), Math.sin(r)]` or as `f32` radians, `r = v * Math.PI / 180`; a slope threshold as `f32` `Math.tan(r)` |
+| `float`, unit `angle` | `number` | a direction as `vec2f` `[Math.cos(r), Math.sin(r)]` or as `f32` radians, `r = v * Math.PI / 180`; a slope threshold as `f32` `Math.tan(r)`, and the two ends of a band graded by the angle also as `f32` radians (below) |
 | `float`, unit `ratio` or `none` | `number` | `f32` |
 | `int` | `number` | `i32` or `u32` |
 | `bool` | `boolean` | `u32` (true = 1) |
@@ -1219,6 +1219,16 @@ and `rotation` and `rotate` (use `angle`).
 | `file`, `text` | `string` | not passed |
 
 Kernel param names are independent of node param names.
+
+**Slopes: tangents and angles.** A slope is a tangent, metres per metre (1.6
+rule 2), and that is what `slopeAt` returns. Which of the two a kernel compares
+follows from what it computes:
+
+1. **A test against a slope angle** (steeper than the talus angle; no steeper than `slopeMax`) compares tangents. The kernel receives `Math.tan(r)` and compares it with `length(slopeAt(...))`, or, scaled by the run, with a height difference between two texels (6.2). It evaluates no inverse tangent. A threshold of 90° is `Math.tan(Math.PI / 2)`, about 1.6e16: finite, and a slope no texel reaches.
+2. **A value graded by the angle between two thresholds** (a mask that rises linearly in the angle from `slopeMin` to `slopeMax`; a feather given as an angle) needs the angle itself. The kernel receives both thresholds twice, as tangents and in radians. It decides the two ends by rule 1 and returns exactly 0 and 1 there; only for the texels between them does it evaluate `atan`. Grading by the tangent instead is another mask: between 20° and 45° it differs from the angle's by up to 0.07, and towards 90° the tangent has no bound.
+3. **An output that is the angle** (`ops.slope`, a `data` field in degrees) evaluates `degrees(atan(...))` on every texel.
+
+`ref/talus` (6.2) is the model of rule 1 and `ref/slope-mask` of rule 2.
 
 ### 4.6 `defineNode`
 
@@ -1306,7 +1316,7 @@ type; that error is reported first.
 `defineNode` throws `NodeDefError`, with the message prefix `node "<type>": `, when:
 
 1. `type`, a port name or a param name violates its pattern, or a name is duplicated.
-2. A port breaks a rule or convention of 4.2: a role on a non-`field` port, `optional` on an output, a required input after an optional one, `'any'` on an output, `sameAs` not naming a required `'any'` input, `outputs[0]` not named `out`, `inputs[0]` named neither `in` nor `a`, an input named `mask` that is not an optional `field` with role `'mask'`.
+2. A port breaks a rule or convention of 4.2: a role on a non-`field` port, `optional` on an output, a required input after an optional one, `'any'` on an output, `sameAs` not naming a required `'any'` input, `outputs[0]` not named `out`, `inputs[0]` named neither `in`, `a` nor `r`, an input named `mask` that is not an optional `field` with role `'mask'`.
 3. A param breaks a rule of 4.3: default outside `min..max`, `min ≥ max`, log scale with `min ≤ 0`, enum default not among the options, empty `help`, a second `seed` param, a `seed` param with another name, a rejected synonym (4.4), a `visibleWhen.param` that is not another `bool`, `enum` or `int` param of the node.
 4. `maskable` is set on a node that does not qualify (4.13).
 5. `kernels` or `cpuTasks` lists the same kernel or task twice.
@@ -1653,7 +1663,11 @@ interface LadderLevel {
 
 declare const ops: {
   copy<K extends FieldKind>(ctx: OpContext, src: Field<K>, dst: Field<NoInfer<K>>): void;
-  resample<K extends Img>(ctx: OpContext, src: Field<K>, opts: { size: number; filter?: ResampleFilter }): Field<K>;
+  resample<K extends Img>(ctx: OpContext, src: Field<K>, opts: {
+    size: number;
+    filter?: ResampleFilter;
+    ring?: { readonly src?: boolean; readonly out?: boolean };
+  }): Field<K>;
   blur<K extends Img>(ctx: OpContext, src: Field<K>, sigma: number): Field<K>;
   blend<K extends Img>(ctx: OpContext, a: Field<K>, b: Field<NoInfer<K>>, mask: Field<'field'> | number): Field<K>;
   slope(ctx: OpContext, height: Field<'field'>): Field<'field'>;
@@ -1676,7 +1690,7 @@ declare const ops: {
 | Operation | Semantics |
 | --- | --- |
 | `copy(ctx, src, dst)` | Copies `src` into the writable field `dst` of the same kind and size. Both are square, because a kernel makes the copy and kernels write square grids (3.11): `FieldAccessError` otherwise. `ctx.clone` copies a field of any shape. `NoInfer` makes the first field decide `K` here and in `blend`, so two fields of different kinds are a compile error |
-| `resample(ctx, src, { size, filter })` | A new `size × size` field holding `src` resampled with the vertex-centred mapping of 1.1; `src` may have any size. `'auto'` (default) is `'tent'` when shrinking and `'bilinear'` when growing. `'tent'` is a triangle filter as wide as the reduction (1-2-1 weights for an exact 2:1 ladder step); `'bspline'` is the cubic B-spline (smooth, no faceting in slope maps, slightly blurring), scaled to the reduction when shrinking; `'nearest'` takes the nearest source texel. Filters act per axis, renormalise their weights, clamp at the border and are never narrower than a source texel, so `'tent'` is `'bilinear'` where the result is finer. No pass exceeds 64 loads per texel: a reduction above 4:1 runs as several `'tent'` passes down the 2:1 grids above the result, which is the one triangle exactly between ladder levels and has its width otherwise; `'bspline'` above 2:1 is the last 2:1 step of such a chain |
+| `resample(ctx, src, { size, filter, ring })` | A new `size × size` field holding `src` resampled with the vertex-centred mapping of 1.1; `src` may have any size. `'auto'` (default) is `'tent'` when shrinking and `'bilinear'` when growing. `'tent'` is a triangle filter as wide as the reduction (1-2-1 weights for an exact 2:1 ladder step); `'bspline'` is the cubic B-spline (smooth, no faceting in slope maps, slightly blurring), scaled to the reduction when shrinking; `'nearest'` takes the nearest source texel. Filters act per axis, renormalise their weights, clamp at the border and are never narrower than a source texel, so `'tent'` is `'bilinear'` where the result is finer. No pass exceeds 64 loads per texel: a reduction above 4:1 runs as several `'tent'` passes down the 2:1 grids above the result, which is the one triangle exactly between ladder levels and has its width otherwise; `'bspline'` above 2:1 is the last 2:1 step of such a chain. `ring` is for a node that works on a coarser grid of its own; see below |
 | `blur(ctx, src, sigma)` | Gaussian blur with standard deviation `sigma`, a length (1.6). Weights beyond 3 `sigma` are dropped and the rest renormalised; borders clamp. Returns a copy when `sigma` is below a quarter of a texel. No pass exceeds 64 loads per texel: wide blurs are evaluated on a coarser grid, with an error bound that is to calibrate |
 | `blend(ctx, a, b, mask)` | `mix(a, b, saturate(mask))` per channel. `mask` is a field or a constant |
 | `slope(ctx, height)` | Physical slope angle in degrees, 0..90: `degrees(atan(length(slopeAt)))`; a `data` field |
@@ -1684,6 +1698,19 @@ declare const ops: {
 | `minMax(ctx, src)` | A 1 × 1 `vec2` field holding `(min, max)` over the finite texels of `src`, `(0, 0)` when none is finite, computed on the GPU without readback. Bind it to a kernel input as a constant. Subject to the statistics rule of 1.7 |
 | `remap(ctx, src, { from, to, clamp })` | `to[0] + (v − from[0]) / (from[1] − from[0]) * (to[1] − to[0])`; `to` defaults to `[0, 1]`; `from` is a pair or a `minMax` result; a zero-width `from` gives `to[0]`; `clamp` (default false) limits the result to `to` |
 | `coarseToFine(ctx, opts)` | Runs a simulation up the ladder. Starts at the coarsest level of `ctx.ladder` whose cell size is at most `coarsestCell` (a length), calls `begin` there, then alternates `simulate(level, state)` and `refine(coarse, fine, state)` until `simulate` has run at `ctx.res`, and resolves with that state. `refine` returns the state for the finer level and releases the coarse fields it replaces. When no level of `ctx.ladder` has a cell that small, the run has the single level `ctx.res`. `LadderLevel.progress` shares the node's progress between the levels in proportion to their texel counts. `begin` and `refine` are synchronous: they do no readback and start no CPU task. `simulation.md` section 2 defines level selection, the call sequence, the share of work per level and the standard refinement step |
+
+**A grid with a ring.** A `resample` result ends at the terrain's border, and a
+kernel that reads past it reads the border texel again (3.8). On the field's
+own grid that is the rule; on a coarser grid it is a different border, one
+coarse cell wide instead of one fine one, and a neighbourhood operation there
+is wrong near the border: a wide blur by 7 % of the value range on a border
+whose texels differ from their neighbours. `ring` removes the difference.
+
+- A field **with a ring** has one texel more on every side than its grid has vertices: `(size + 2) × (size + 2)` texels for a grid of `size` vertices. It is the grid continued by one cell past the terrain, and its ring holds what the filter gives there when the source continues with its border texels. A clamped read of such a field is a read of the grid so continued, however far out.
+- `ring: { out: true }` gives the result a ring. `size` still counts the vertices, from 2 to 8190, and vertex `(i, j)` is texel `(i + 1, j + 1)` of the result.
+- `ring: { src: true }` says that `src` has a ring: the op reads it as the grid inside, and `size` is again a number of vertices.
+- A kernel the node runs on a field with a ring reads and writes by `px` and its neighbours only. `uvOf`, `frame.res` and `frame.cellSize` count the ring as vertices there, and `ctx.lengthToPx(length, field)` does too: a length in texels of that grid is `length * (size − 1)`.
+- The pattern is the one `ops.blur` uses for a wide blur: down with `ring: { out: true }`, the operation on the coarse grid, and back up with `ring: { src: true }`.
 
 A node that needs an operation two categories would share asks the integrator
 for it (`testing.md`); it does not import another category. A node never

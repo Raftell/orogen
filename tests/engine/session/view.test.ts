@@ -6,9 +6,9 @@ import { test } from 'node:test';
 
 import { BYTES_PER_TEXEL } from '../../../src/core/gpu/pool.ts';
 import type { ViewportContent } from '../../../src/core/runtime.ts';
-import { budgetBytes, DEFAULT_PREFERENCES } from '../../../src/core/session/budget.ts';
+import { budgetBytes, budgetInForce, DEFAULT_PREFERENCES, MIN_FIELD_BYTES } from '../../../src/core/session/budget.ts';
 import { testGpu } from '../gpu/rig.ts';
-import { doc, MIB, PREVIEW, RENDERER_BYTES, resetSlow, slow, startSession } from './rig.ts';
+import { doc, endings, MIB, PREVIEW, RENDERER_BYTES, resetSlow, slow, startSession } from './rig.ts';
 
 const gpu = await testGpu();
 
@@ -258,6 +258,87 @@ test('setPreferences recomputes the budget and applies it; memory reports the le
     assert.equal(budgetBytes(caps(null), { vramBytes: 1000, budgetFraction: 0.99 }), 850, 'the fraction is limited to 0.85');
     assert.equal(budgetBytes(caps(null), { vramBytes: 1000, budgetFraction: 0.1 }), 300, 'and to 0.3');
     assert.equal(budgetBytes(caps(null), { vramBytes: 1001, budgetFraction: 0.5 }), 500, 'floor');
+  } finally {
+    await t.dispose();
+  }
+});
+
+test('inspect answers for a cached port whose source was evicted, and a view evaluation does not run that source again', async () => {
+  resetSlow();
+  const t = await startSession();
+  try {
+    t.session.setDocument(graph(), 1);
+    await t.next('view-updated');
+    await t.idle();
+    // The cache holds level, walk (two outputs) and out; out is on screen and pinned. A budget one byte short of
+    // what is held makes the next allocation, the scratch of an inspection, evict the least recently used entry: level.
+    const held = t.memory();
+    assert.deepEqual([held.cacheBytes, held.pinnedBytes], [3 * bytes('field'), bytes('field')]);
+    t.engine.setBudget(held.reservedBytes + held.pinnedBytes + held.cacheBytes - 1);
+    assert.deepEqual(await t.session.inspect(port('out')), { min: 48.5, max: 48.5, mean: 48.5, nonFinite: 0 });
+    assert.equal(t.memory().cacheBytes, 2 * bytes('field'), 'the entry of level went');
+    const runs = new Map(slow.runs);
+    const requests = t.of('eval-start').length;
+
+    // walk is cached; that level, which it reads, is not does not matter: nothing reads level now.
+    assert.deepEqual(await t.session.inspect(port('walk')), { min: 24.25, max: 24.25, mean: 24.25, nonFinite: 0 });
+    assert.deepEqual(await t.session.inspect(port('walk', 'steps')), { min: 24, max: 24, mean: 24, nonFinite: 0 });
+    // level itself is not cached: answering would run it.
+    assert.equal(await t.session.inspect(port('level')), null);
+    assert.deepEqual(slow.runs, runs, 'inspect ran no node');
+    assert.equal(t.of('eval-start').length, requests, 'and is not in the event stream');
+
+    // An edit downstream of walk: out runs, walk is a hit, and level is left alone.
+    t.engine.setBudget(512 * MIB);
+    const from = t.mark();
+    t.session.setDocument(graph({ gain: 3 }), 2);
+    const start = await t.next('eval-start');
+    await t.next('view-updated');
+    assert.deepEqual(start.plan.map((p) => `${p.nodeId} ${p.state}`), ['level unused', 'walk cached', 'out run']);
+    assert.deepEqual(endings(t.events.slice(from), start.requestId), { level: 'cached', walk: 'cached', out: 'run' });
+    assert.deepEqual(slow.runs, runs);
+    assert.deepEqual(await t.session.inspect(port('out')), { min: 72.75, max: 72.75, mean: 72.75, nonFinite: 0 });
+  } finally {
+    await t.dispose();
+  }
+});
+
+test('preferences that ask for less than the engine has reserved leave room for fields: the view, inspect and thumbnails work', async () => {
+  resetSlow();
+  const t = await startSession();
+  try {
+    assert.equal(MIN_FIELD_BYTES, 64 * MIB);
+    assert.deepEqual([budgetInForce(500, 3 * MIB), budgetInForce(512 * MIB, 3 * MIB)], [67 * MIB, 512 * MIB]);
+    // A vramBytes typed in the wrong unit: the formula gives 500 bytes, below what any engine reserves.
+    t.session.setPreferences({ vramBytes: 1000, budgetFraction: 0.5 });
+    const first = t.memory();
+    assert.ok(first.reservedBytes > 500, 'the engine has reserved more than the preferences allow in all');
+    assert.equal(first.budgetBytes, first.reservedBytes + MIN_FIELD_BYTES, 'the budget in force is what is reserved and room for fields');
+
+    t.session.requestThumbnails(['level', 'walk', 'out']);
+    t.session.setDocument(graph(), 1);
+    const shown = await t.next('view-updated');
+    assert.deepEqual([shown.height, t.of('node-error').length], [true, 0], 'no node fails for the budget');
+    await t.idle();
+    // The shown port, and one the view does not name: both need scratch of their own.
+    assert.deepEqual(await t.session.inspect(port('out')), { min: 48.5, max: 48.5, mean: 48.5, nonFinite: 0 });
+    assert.deepEqual(await t.session.inspect(port('walk')), { min: 24.25, max: 24.25, mean: 24.25, nonFinite: 0 });
+    for (let tries = 0; tries < 400 && t.of('thumbnail').length < 3; tries++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.deepEqual(t.of('thumbnail').map((e) => e.nodeId).sort(), ['level', 'out', 'walk']);
+
+    // What is reserved has grown by the atlas and the staging buffer; the budget follows with the next piece of work.
+    const grown = t.memory();
+    assert.ok(grown.reservedBytes >= first.reservedBytes + 16 * MIB, 'the atlas is reserved');
+    t.session.setDocument(graph({ value: 0.5 }), 2);
+    await t.next('view-updated');
+    await t.idle();
+    const after = t.memory();
+    assert.ok(after.budgetBytes >= grown.reservedBytes + MIN_FIELD_BYTES && after.budgetBytes > first.budgetBytes, `${after.budgetBytes} bytes, with ${grown.reservedBytes} reserved before that work`);
+    assert.equal(t.of('node-error').length, 0);
+
+    // Preferences that leave more than that are applied as the formula gives them.
+    t.session.setPreferences({ vramBytes: 1024 * MIB, budgetFraction: 0.5 });
+    assert.equal(t.memory().budgetBytes, 512 * MIB);
   } finally {
     await t.dispose();
   }

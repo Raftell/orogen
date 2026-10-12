@@ -20,7 +20,8 @@ const span = (n: number): number => Math.max(n - 1, 1);
  * cell past the terrain, holding what the filter gives there when the source continues with its border texels.
  * A clamped read of such a field is a read of the grid so continued, however far out. The grids between the
  * passes of a large reduction carry a ring, so that the passes together clamp as one filter on the source would;
- * ops.blur runs a wide blur on a coarser grid with a ring for the same reason.
+ * ops.blur runs a wide blur on a coarser grid with a ring for the same reason, and a node that works on a
+ * coarser grid of its own asks for one with the `ring` option (engine.md section 5).
  */
 export interface Rings { readonly src: 0 | 1; readonly out: 0 | 1 }
 const NO_RINGS: Rings = { src: 0, out: 0 };
@@ -72,7 +73,9 @@ export function resampleRings<K extends Img>(ctx: OpContext, src: Field<K>, size
   return out;
 }
 
-export function resample<K extends Img>(ctx: OpContext, src: Field<K>, opts: { size: number; filter?: ResampleFilter }): Field<K> {
+export function resample<K extends Img>(
+  ctx: OpContext, src: Field<K>, opts: { size: number; filter?: ResampleFilter; ring?: { readonly src?: boolean; readonly out?: boolean } },
+): Field<K> {
   requireImage('ops.resample', 'the source', src);
   const size = opts?.size;
   if (!Number.isInteger(size) || size < 1 || size > MAX_SIDE) {
@@ -80,8 +83,20 @@ export function resample<K extends Img>(ctx: OpContext, src: Field<K>, opts: { s
   }
   const given = opts.filter ?? 'auto';
   if (!FILTERS.includes(given)) throw byContext(new TypeError(`ops.resample: unknown filter "${String(given)}"; it is one of ${FILTERS.join(', ')}`));
+  const ring = opts.ring ?? {};
+  if (typeof ring !== 'object' || ring === null || [ring.src, ring.out].some((flag) => flag !== undefined && typeof flag !== 'boolean')) {
+    throw byContext(new TypeError('ops.resample: ring is { src?: boolean; out?: boolean }'));
+  }
+  const rings: Rings = { src: ring.src ? 1 : 0, out: ring.out ? 1 : 0 };
+  // A ring continues a grid by one cell, and a grid has a cell from two vertices a side.
+  if (rings.src === 1 && Math.min(src.width, src.height) < 4) {
+    throw byContext(new RangeError(`ops.resample: ring.src says field #${src.id} has a ring, and it is ${src.width}x${src.height}; a grid with a ring has at least 4 texels a side`));
+  }
+  if (rings.out === 1 && (size < 2 || size + 2 > MAX_SIDE)) {
+    throw byContext(new RangeError(`ops.resample: with ring.out the size is ${size}; the result has two texels more a side, so the size is from 2 to ${MAX_SIDE - 2}`));
+  }
   // A triangle as wide as the reduction is, where the result is finer than the source, the bilinear interpolant.
   const filter = given === 'auto' ? 'tent' : given;
-  if (filter !== 'bspline' && src.width === size && src.height === size) return ctx.clone(src);
-  return resampleRings(ctx, src, size, filter, NO_RINGS);
+  if (rings.src === 0 && rings.out === 0 && filter !== 'bspline' && src.width === size && src.height === size) return ctx.clone(src);
+  return resampleRings(ctx, src, size, filter, rings);
 }

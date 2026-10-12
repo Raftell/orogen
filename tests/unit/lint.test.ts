@@ -134,7 +134,11 @@ test('generator-frame: the kernels of a node without required inputs mention nei
 test('title: at most 24 characters, every word capitalised, no trailing punctuation', () => {
   const title = (text: string, category: NodeDef['category'] = 'filter'): NodeDef => node({ type: `${category}/sample`, category, title: text, inputs: [{ name: 'in', type: 'field' }] });
   assert.deepEqual(breaks(title('Thermal erosion node'), 'title'), ['the word "erosion" of "Thermal erosion node" does not begin with a capital letter or a digit']);
-  assert.deepEqual(breaks(title('Height to Mask'), 'title'), ['the word "to" of "Height to Mask" does not begin with a capital letter or a digit']);
+  // Title Case leaves its small words and the signs between two names as they are, inside a title: the catalog has all three.
+  for (const text of ['Bias and Gain', 'Grow / Shrink', 'Hue / Saturation', 'Height to Mask', 'Rock & Scree']) assert.deepEqual(lintNode(title(text)), [], text);
+  assert.deepEqual(breaks(title('and Gain'), 'title'), ['the word "and" of "and Gain" does not begin with a capital letter or a digit']);
+  assert.deepEqual(breaks(title('Bias and'), 'title'), ['the word "and" of "Bias and" does not begin with a capital letter or a digit']);
+  assert.deepEqual(breaks(title('Bias with Gain'), 'title'), ['the word "with" of "Bias with Gain" does not begin with a capital letter or a digit']);
   assert.deepEqual(breaks(title('Blur:'), 'title'), ['"Blur:" ends in punctuation']);
   assert.deepEqual(breaks(title('Blur.'), 'title'), ['"Blur." ends in punctuation']);
   assert.deepEqual(breaks(title('A Title Of Twenty Five Ch'), 'title'), ['"A Title Of Twenty Five Ch" has 25 characters; a title has at most 24']);
@@ -532,6 +536,22 @@ test('index: nodes holds exactly the default exports of the node files, sorted b
     `index ${index}: nodes holds filter/sharpen, which is not the default export of a node file of the folder`,
   ]);
   assert.deepEqual(categoryMessages({ index: undefined }), [`index ${index}: the file does not export the list \`nodes\``]);
+});
+
+test('index: a category two owners share lists its nodes in private index modules, which index.ts concatenates', () => {
+  // nodes.md sections 1 and 4: each owner has one private index module; index.ts imports both and sorts.
+  const shared = category({
+    files: {
+      ...category().files,
+      '_first.ts': "import blur from './blur.ts';\nexport const nodes = [blur];\n",
+      '_second.ts': "import sharpen from './sharpen.ts';\nexport const nodes = [sharpen];\n",
+      'index.ts': "import { nodes as first } from './_first.ts';\nimport { nodes as second } from './_second.ts';\nexport const nodes = [...first, ...second].sort();\n",
+    },
+  });
+  assert.deepEqual(lintCategory(shared), []);
+  // What the lint holds the concatenation to is what it holds any index to.
+  assert.deepEqual(lintCategory({ ...shared, index: [sharpenDef, blurDef] }).map((p) => p.message), ['index src/core/nodes/filter/index.ts: nodes is not sorted by type']);
+  assert.deepEqual(lintCategory({ ...shared, index: [blurDef] }).map((p) => p.message), ['index src/core/nodes/filter/index.ts: nodes lacks filter/sharpen']);
 });
 
 test('test-file: every node has a test file that imports it and calls conformance at module scope', () => {

@@ -12,7 +12,7 @@ export type SliceListener = (s: { readonly nodeId: string | null; readonly kerne
 
 export interface NodeReport {
   readonly nodeId: string;
-  readonly state: 'done' | 'cached' | 'bypassed' | 'error' | 'skipped';
+  readonly state: 'done' | 'cached' | 'unused' | 'bypassed' | 'error' | 'skipped';
   readonly error: NodeError | null;            // for 'error'
   readonly skipReason: 'upstream' | 'aborted' | 'device-lost' | null;   // for 'skipped'
   readonly upstream: string | null;            // for 'skipped' because of a failed node: that node's id
@@ -116,6 +116,7 @@ function mapEvent(event: EvalEvent, ids: IdMap): EvalEvent {
 
 function buildReport(result: EvaluateResult, events: readonly EvalEvent[], slices: readonly EngineSlice[], ids: IdMap): EvalReport {
   const bypassed = new Set<string>();
+  const unused = new Set<string>();
   const progress = new Map<string, number[]>();
   const sliceCount = new Map<string, number>();
   for (const slice of slices) {
@@ -129,7 +130,10 @@ function buildReport(result: EvaluateResult, events: readonly EvalEvent[], slice
   for (const event of events) {
     switch (event.type) {
       case 'eval-start':
-        for (const entry of event.plan) if (entry.state === 'bypassed') bypassed.add(entry.nodeId);
+        for (const entry of event.plan) {
+          if (entry.state === 'bypassed') bypassed.add(entry.nodeId);
+          if (entry.state === 'unused') unused.add(entry.nodeId);
+        }
         break;
       case 'node-progress': {
         let fractions = progress.get(event.nodeId);
@@ -139,7 +143,7 @@ function buildReport(result: EvaluateResult, events: readonly EvalEvent[], slice
       }
       case 'node-done':
         if (!event.cached) report(event.nodeId, { ...none, state: 'done', wallMs: event.wallMs, peakBytes: event.peakBytes });
-        else report(event.nodeId, { ...none, state: bypassed.has(event.nodeId) ? 'bypassed' : 'cached' });
+        else report(event.nodeId, { ...none, state: bypassed.has(event.nodeId) ? 'bypassed' : unused.has(event.nodeId) ? 'unused' : 'cached' });
         break;
       case 'node-error':
         report(event.error.nodeId, { ...none, state: 'error', error: event.error });

@@ -204,8 +204,13 @@ test('traceNode: the report of a build evaluation, with the node under the id "n
   assert.ok(node.progress.length >= 1 && node.progress.every((f, i) => f >= 0 && f <= 1 && (i === 0 || f >= node.progress[i - 1]!)), `progress ${node.progress.join(', ')}`);
   assert.equal(node.progress.at(-1), 1);
   assert.deepEqual([report.nodesRun, report.nodesCached], [2, 0], 'the source and the node ran; a build reads no cache');
-  // The longest slice the device measured (runtime.md 3.5): by wall clock a slice this short may not be resolved.
-  assert.ok(report.slices >= node.slices && ((await getEngine()).gpu.caps.timestampQuery ? report.longestSliceMs > 0 : report.longestSliceMs >= 0));
+  // The longest slice the device measured (runtime.md 3.5): by wall clock a slice this short may not be resolved,
+  // and by the device's timer it may measure nothing. That timer has steps: 65.536 µs on the GTX 1660 Ti, where
+  // these 16 passes at 129 measured 0 in two runs of six and one step in the others.
+  assert.ok(report.slices >= node.slices && report.longestSliceMs >= 0);
+  // A slice of many steps is measured as more than none: 64 passes at 513 measured 0.85 to 0.92 ms there.
+  const long = await traceNode(climb, { res: 513, params: { count: 64 } });
+  if ((await getEngine()).gpu.caps.timestampQuery) assert.ok(long.report.longestSliceMs > 0, `the longest of ${long.report.slices} slices measured ${long.report.longestSliceMs} ms`);
 
   // The events are those of the evaluation, in order, with the ids of the report.
   assert.deepEqual([report.events[0]!.type, report.events.at(-1)!.type], ['eval-start', 'eval-end']);

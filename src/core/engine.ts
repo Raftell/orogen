@@ -294,8 +294,17 @@ export async function createEngine(opts: EngineOptions): Promise<Engine> {
     setBudget(bytes) {
       open();
       if (!Number.isFinite(bytes) || bytes < 0) throw new RangeError(`Engine.setBudget: ${bytes} is not a byte count`);
+      const shrank = bytes < budgetBytes;
       budgetBytes = bytes;
-      if (!parts.device.retired) parts.pool.setBudget(bytes);
+      if (parts.device.retired) return;
+      parts.pool.setBudget(bytes);
+      // 5.12 rule 4: an atlas that no longer fits is given back. In the evaluations' turn: at once when none
+      // runs or waits, else when what was asked before has settled; the stream is not touched under a running node.
+      if (shrank) {
+        void evaluator.exclusive(() => {
+          if (!disposed && !parts.device.retired && !parts.gpu.lost) thumbnails.fit();
+        }).catch((thrown: unknown) => console.error('[orogen] the thumbnail atlas could not be given back', thrown));
+      }
     },
 
     setFiles(next) {

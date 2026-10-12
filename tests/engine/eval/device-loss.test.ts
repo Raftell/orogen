@@ -176,6 +176,54 @@ test('the node that was running at a loss runs once more with halved limits; at 
   t.noLeaks();
 });
 
+test('a node that completes between two losses is not banned: its completion ends the record of the first', async () => {
+  // Loss 1, with "walk" running at parameters of its own.
+  await t.engine.trim();
+  reset();
+  hooks.at = (i) => { if (i === 1) lose(t.engine.gpu); };
+  assert.equal((await t.run(graph(13), ['reader.out'])).result.status, 'device-lost');
+  await recover();
+
+  // It runs again and completes: with halved limits this once, and the record ends there.
+  reset();
+  const completed = await t.run(graph(13), ['reader.out']);
+  assert.equal(completed.result.status, 'ok', JSON.stringify(completed.result.errors));
+  assert.deepEqual(endings(completed.events), { level: 'run', walk: 'run', reader: 'run' });
+  await t.engine.trim();
+  hooks.at = (i, ctx) => { if (i === 0) ctx.run(untiled, { out: { out: ctx.alloc('field') }, cost: 1e9 }); };
+  assert.match((await t.run(graph(13), ['reader.out'])).result.errors[0]!.message, /the limit is 500 ms$/, 'the limits are whole again');
+
+  // Loss 2 finds the same node with the same key running. That is one loss of a new row, not the second of the old.
+  reset();
+  hooks.at = (i) => { if (i === 1) lose(t.engine.gpu); };
+  assert.equal((await t.run(graph(13), ['reader.out'])).result.status, 'device-lost');
+  await recover();
+  reset();
+  hooks.at = (i, ctx) => { if (i === 0) ctx.run(untiled, { out: { out: ctx.alloc('field') }, cost: 1e9 }); };
+  const first = await t.run(graph(13), ['reader.out']);
+  assert.deepEqual(first.result.errors.map((e) => e.kind), ['watchdog'], 'the node is run, not refused');
+  assert.match(first.result.errors[0]!.message, /the limit is 250 ms$/, 'with the halved limits of the attempt after a loss');
+  reset();
+  const again = await t.run(graph(13), ['reader.out']);
+  assert.equal(again.result.status, 'ok', JSON.stringify(again.result.errors));
+  assertUniform(again.data[0], 2 * (10 + 13), 'reader.out');
+  assert.equal(calls.get('ref/fragile'), 1);
+
+  // A row is still two losses with nothing completed between them: loss 3 and loss 4 here.
+  for (const round of ['third', 'fourth']) {
+    await t.engine.trim();
+    reset();
+    hooks.at = (i) => { if (i === 1) lose(t.engine.gpu); };
+    assert.equal((await t.run(graph(13), ['reader.out'])).result.status, 'device-lost', `the ${round} loss`);
+    await recover();
+  }
+  reset();
+  const banned = await t.run(graph(13), ['reader.out']);
+  assert.deepEqual(endings(banned.events), { level: 'run', walk: 'error:device-lost', reader: 'skipped:upstream' });
+  assert.equal(calls.get('ref/fragile'), undefined);
+  t.noLeaks();
+});
+
 test('a device lost while nothing runs is forgotten at once; a lost engine can be disposed and replaced by a new one', async () => {
   reset();
   const cached = await t.run(graph(), ['reader.out']);

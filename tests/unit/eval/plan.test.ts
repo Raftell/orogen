@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { buildPlan, outputPeak, wantedOutputs, type EvalPlan } from '../../../src/core/eval/plan.ts';
+import { buildPlan, outputPeak, type EvalPlan } from '../../../src/core/eval/plan.ts';
 import type { EvalTarget, GraphDoc } from '../../../src/core/runtime.ts';
 import { createRegistry } from '../../../src/core/runtime.ts';
 import { node } from '../graph-fixtures.ts';
@@ -147,21 +147,6 @@ test('conversions: a field input reads a colour as luma, a colour input a field 
   assert.deepEqual(plan.byId.get('chained')!.outputKinds, { out: 'color', extra: 'field' });
   assert.deepEqual(plan.byId.get('anyField')!.outputKinds.out, 'field');
   assert.deepEqual([plan.byId.get('open')!.outputKinds.out, plan.byId.get('open')!.error?.kind], ['field', 'missing-input']);
-});
-
-test('wanted outputs: what a node of the plan reads or a target names; with "all", every output of every node', () => {
-  const d = doc({
-    a: { type: 'ref/any', in: { in: 'g.out' } },
-    g: { type: 'ref/gen' },
-    f: { type: 'ref/filter', in: { in: 'a.extra' } },
-    h: { type: 'ref/filter', in: { in: 'f.out' } },
-  });
-  const plan = buildPlan(d, registry, targets('h', 'f.out'));
-  const sets = (mode: 'all' | 'needed', ...refs: string[]): Record<string, string[]> =>
-    Object.fromEntries([...wantedOutputs(plan, targets(...refs), mode)].map(([id, ports]) => [id, [...ports].sort()]));
-  assert.deepEqual(sets('needed', 'h', 'f.out'), { g: ['out'], a: ['extra'], f: ['out'], h: [] });
-  assert.deepEqual(sets('needed', 'h', 'a.out'), { g: ['out'], a: ['extra', 'out'], f: ['out'], h: [] });
-  assert.deepEqual(sets('all', 'h'), { g: ['out'], a: ['extra', 'out'], f: ['out'], h: ['out'] });
 });
 
 test('a target that names a node or an output the document lacks is a TypeError', () => {

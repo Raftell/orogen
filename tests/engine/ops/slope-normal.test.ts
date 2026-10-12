@@ -153,7 +153,7 @@ test('pictures: the slope map and the normal map of a terrain', async () => {
     slope = await ctx.read(ops.slope(ctx, input));
     normal = await ctx.read(ops.normal(ctx, input));
   }, { res: n, sources: { fbm: { type: 'ref/fbm', params: { seed: 5 } } }, inputs: { in: 'fbm.out' } });
-  writeGrey('ops/slope-grey', slope!, n, [0, 90]);
+  await writeGrey('ops/slope-grey', slope!, n, [0, 90]);
   writeRgb('ops/normal-rgb', normal!, n, 4, [-1, 1]);
   const angles = rangeOf(slope!);
   assert.ok(angles.nonFinite === 0 && angles.min >= 0 && angles.max < 90, JSON.stringify(angles));

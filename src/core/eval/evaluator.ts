@@ -11,7 +11,7 @@ import type { EvalEvent } from './events.ts';
 import { createFieldHandle } from './handles.ts';
 import { computeKeys, createTokenTable, edgeContent, type Content, type NodeKeys } from './keys.ts';
 import { deviceAlive, type EngineParts } from './parts.ts';
-import { buildPlan, outputPeak, wantedOutputs, type EvalPlan, type Lifetime, type PlanNode } from './plan.ts';
+import { buildPlan, outputPeak, type EvalPlan, type Lifetime, type PlanNode } from './plan.ts';
 import { etaMs, nodeWeights, type NodeTiming } from './progress.ts';
 import type { Thumbnails } from './thumbnails.ts';
 
@@ -62,7 +62,7 @@ export interface Evaluator {
   exclusive<T>(work: () => T | Promise<T>): Promise<T>;
   /** Resolves when no evaluation runs or waits. */
   idle(): Promise<void>;
-  /** 5.9 rule 6: the node that was running when the device was lost, and its key; null when none was. */
+  /** 5.9 rule 6: the node that was running when the device was lost, and its key; null when none was, and once that node has completed. */
   readonly lostAt: { readonly nodeId: string; readonly key: string } | null;
   /** The device was lost while no evaluation ran: no node was running at this loss. */
   lostWhileIdle(): void;
@@ -103,13 +103,18 @@ interface Slot {
 interface Group {
   readonly key: string;
   readonly members: Step[];
+  /** The outputs that the members this evaluation needs want. */
   readonly wanted: Set<string>;
-  /** The entry that holds every wanted output; null when the node runs. */
+  /** A member is needed (5.3 step 5): a target names it, or content this evaluation makes reads its result. */
+  needed: boolean;
+  /** The cache holds every wanted output of a needed node. */
+  hit: boolean;
+  /** The entry in use: the one that holds every wanted output, or whatever the cache holds of a node nothing needs; null when the node runs. */
   entry: EntryTextures | null;
   /**
-   * The member that runs for all of them: planned as the first in plan order, and in the end the first whose
-   * turn comes with nothing it reads failed. A member skipped for a source of its own (its mask, which is not
-   * in the key) leaves the run to the next one.
+   * The member that runs for all of them: planned as the first needed one in plan order, and in the end the
+   * first needed one whose turn comes with nothing it reads failed. A member skipped for a source of its own
+   * (its mask, which is not in the key) leaves the run to the next one.
    */
   runner: Step | null;
   /** What ctx.wants() answers for whichever member runs (5.4 rule 2). */
@@ -124,14 +129,16 @@ interface Step {
   readonly node: PlanNode;
   readonly index: number;
   keys: NodeKeys | null;
-  state: 'cached' | 'run' | 'bypassed' | 'blocked';
+  state: 'cached' | 'run' | 'bypassed' | 'blocked' | 'unused';
+  /** A target names the node, or content this evaluation makes reads one of its outputs. Only such a node runs. */
+  needed: boolean;
   /** A failure known before the node's turn: a check of 5.3, its externalKey, a kernel, a second device loss. */
   error: NodeError | null;
   group: Group | null;
   /** The outputs of this node that the evaluation wants. */
   wanted: ReadonlySet<string>;
   /**
-   * What evaluate() would read. Every member of a group that has no entry holds these until one of them has
+   * What evaluate() would read. Every needed member of a group that runs holds these until one of them has
    * published or failed: any of them may have to run.
    */
   inputs: Slot[];
@@ -178,7 +185,7 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
     const emit = (event: EvalEvent): void => opts.onEvent?.(event);
 
     const steps: Step[] = plan.nodes.map((node, index) => ({
-      node, index, keys: null, state: 'blocked', error: node.error, group: null, wanted: new Set<string>(), inputs: [], reqs: [], targets: new Map(),
+      node, index, keys: null, state: 'blocked', needed: false, error: node.error, group: null, wanted: new Set<string>(), inputs: [], reqs: [], targets: new Map(),
     }));
     const stepOf = new Map(steps.map((step) => [step.node.nodeId, step]));
     const slots = new Map<string, Slot>();
@@ -619,6 +626,9 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
         return;
       }
       flow.running = null;
+      // 5.9 rule 6: the record of a loss ends when its node completes. A node that ran through is not the one
+      // that loses the device, however often a later loss finds it running.
+      if (lostAt !== null && lostAt.nodeId === nodeId && lostAt.key === key) lostAt = null;
       const { gpuMs, peakBytes } = outcome;
       await finish(step, {
         cached: false, gpuMs, peakBytes,
@@ -653,7 +663,7 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
 
       if (!flow.stop) {
         // Step 4, and the failures known before any node runs.
-        const wanted = wantedOutputs(plan, targets, opts.outputs ?? (preview ? 'all' : 'needed'));
+        const allOutputs = (opts.outputs ?? (preview ? 'all' : 'needed')) === 'all';
         for (const step of steps) {
           const { node } = step;
           const nodeId = node.nodeId;
@@ -675,41 +685,126 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
           }
           let group = groups.get(key!);
           if (!group) {
-            groups.set(key!, group = { key: key!, members: [], wanted: new Set(), entry: null, runner: null, runWanted: new Set(), published: false, failed: null });
+            groups.set(key!, group = {
+              key: key!, members: [], wanted: new Set(), needed: false, hit: false, entry: null, runner: null, runWanted: new Set(), published: false, failed: null,
+            });
           }
           group.members.push(step);
           step.group = group;
-          step.wanted = wanted.get(nodeId) ?? new Set();
-          for (const port of step.wanted) group.wanted.add(port);
         }
 
-        // Step 5: a node whose entry holds every wanted output is cached; of several nodes with one key the first runs.
-        for (const group of groups.values()) {
+        /** What each target delivers, by index: the output, converted where the target asks for the other kind. */
+        const targetContents = new Map<number, Content>();
+        targets.forEach((target, index) => {
+          const step = stepOf.get('ref' in target ? target.ref.node : target.node)!;
+          step.targets.set(index, null);
+          if (step.state === 'blocked' && !step.group) return;
+          if (!('ref' in target)) return;
+          const output = step.keys!.outputs[target.ref.port]!;
+          const conversion = target.as === undefined || target.as === output.content.kind ? '' : target.as === 'color' ? 'grey' : 'luma';
+          targetContents.set(index, edgeContent(tokens, output, conversion).content);
+        });
+
+        // Step 5, from the targets back. A node is needed when a target names it, when content this evaluation
+        // makes reads one of its outputs, or when a blocked node reads one. Only a needed node is looked up for a
+        // hit, and only one without a hit runs. A node that is not needed has readers that are all cache hits,
+        // or not needed themselves: an entry of it that was evicted is not made again for them.
+        const neededIds = new Set<string>();
+        /** The evaluation must have this content: so it must have what making it reads, unless the cache holds it. */
+        const need = (first: Content): void => {
+          // Each content is entered once, so the walk ends after one round per content.
+          const work: Content[] = [first];
+          for (let c = work.pop(); c !== undefined; c = work.pop()) {
+            if (neededIds.has(c.id)) continue;
+            neededIds.add(c.id);
+            // A node's output is decided with its node, below.
+            if (c.type === 'node' || (preview && deps.cache.peek(c.id, resolution) !== undefined)) continue;
+            if (c.type === 'convert') work.push(c.source);
+            else if (c.type === 'mask') work.push(c.raw, c.mask, c.base);
+          }
+        };
+        for (const content of targetContents.values()) need(content);
+        /** The outputs a blocked node reads: a reader that will not run is a reader still, and its sources are evaluated. */
+        const readByBlocked = new Set<string>();
+        const portKey = (nodeId: string, port: string): string => JSON.stringify([nodeId, port]);
+        /** Whether the cache holds what readers would receive at outputs[0] of a node this evaluation does not need. */
+        const atHand = (step: Step, entry: EntryTextures | undefined): boolean => {
+          const primary = step.node.def!.outputs[0];
+          if (!primary) return entry !== undefined;
+          const content = step.keys!.outputs[primary.name]!.content;
+          return content.type === 'node' ? entry?.has(content.port) === true : preview && deps.cache.peek(content.id, resolution) !== undefined;
+        };
+
+        // In reverse plan order every reader of a node comes before the node, and every reader of a key before
+        // the first node of that key, where the key is decided.
+        for (let at = steps.length - 1; at >= 0; at--) {
+          const step = steps[at]!;
+          const { node } = step;
+          const group = step.group;
+          if (!group) {
+            if (step.state === 'bypassed') {
+              // The outputs of a bypassed node are its input's content, or a constant.
+              for (const port of node.def!.outputs) {
+                if (readByBlocked.has(portKey(node.nodeId, port.name))) need(step.keys!.outputs[port.name]!.content);
+              }
+            } else {
+              for (const input of node.inputs) if (input.from) readByBlocked.add(portKey(input.from.node, input.from.port));
+            }
+            continue;
+          }
+          const keys = step.keys!;
+          const outputs = node.def!.outputs;
+          const named = new Set<string>();
+          for (const t of step.targets.keys()) {
+            const target = targets[t]!;
+            if ('ref' in target) named.add(target.ref.port);
+          }
+          const read = outputs.filter((port) => named.has(port.name) || readByBlocked.has(portKey(node.nodeId, port.name))
+            || neededIds.has(keys.outputs[port.name]!.content.id) || neededIds.has(keys.raw[port.name]!.id));
+          step.needed = step.targets.size > 0 || read.length > 0;
+          step.wanted = new Set((!step.needed ? [] : allOutputs ? outputs : read).map((port) => port.name));
+          const primary = outputs[0];
+          // What readers receive at outputs[0], a mask blend, is made at the node's turn when it is wanted (5.5 step 4).
+          if (primary && step.wanted.has(primary.name)) need(keys.outputs[primary.name]!.content);
+          if (group.members[0] !== step) continue;
+
+          const needed = group.members.filter((member) => member.needed);
+          group.needed = needed.length > 0;
+          for (const member of group.members) for (const port of member.wanted) group.wanted.add(port);
           const entry = preview ? deps.cache.peek(group.key, resolution) : undefined;
-          const hit = entry !== undefined && [...group.wanted].every((port) => entry.has(port));
-          for (const member of group.members) member.state = 'cached';
-          if (hit) {
-            group.entry = deps.cache.get(group.key, resolution, transient) ?? null;
-          } else {
-            const runner = group.members[0]!;
+          group.hit = group.needed && entry !== undefined && [...group.wanted].every((port) => entry.has(port));
+          if (group.needed && !group.hit) {
+            // Of several needed nodes with one key the first runs.
+            const runner = needed[0]!;
             group.runner = runner;
-            runner.state = 'run';
             // 5.4 rule 2: every output this evaluation wants or the old entry held.
             group.runWanted = runner.wanted = new Set([...group.wanted, ...(entry?.keys() ?? [])]);
+            const first = runner.node.def!.outputs[0];
+            if (first && runner.wanted.has(first.name)) need(runner.keys!.outputs[first.name]!.content);
+            for (const port of runner.node.def!.inputs) {
+              const content = runner.keys!.inputs[port.name];
+              if (content) need(content);
+            }
           }
+          for (const member of group.members) {
+            member.state = member === group.runner ? 'run' : member.needed || atHand(member, entry) ? 'cached' : 'unused';
+          }
+        }
+
+        // The entries are used in plan order, sources before their readers: under the budget a source is then
+        // evicted before the result that was made from it (2.7). What the cache holds of a node that is not
+        // needed is used all the same, so that entries upstream of an edit keep their place and survive a gesture (5.4).
+        for (const group of groups.values()) {
+          if (preview && (group.hit || !group.needed)) group.entry = deps.cache.get(group.key, resolution, transient) ?? null;
         }
 
         // The references of the evaluation (2.2), taken in the same synchronous section as the lookup, in plan order.
         const end = steps.length - 1;
-        targets.forEach((target, index) => {
-          const step = stepOf.get('ref' in target ? target.ref.node : target.node)!;
-          step.targets.set(index, null);
-        });
         for (const step of steps) {
           const { node, index } = step;
           if (step.state === 'blocked') continue;
           const keys = step.keys!;
-          if (step.group && !step.group.entry) {
+          if (step.group?.runner && step.needed) {
             for (const port of node.def!.inputs) {
               const content = keys.inputs[port.name];
               if (!content) continue;
@@ -721,15 +816,14 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
             }
           }
           const primary = node.def!.outputs[0];
-          if (step.state !== 'bypassed' && primary && step.wanted.has(primary.name)) {
+          // outputs[0] as readers receive it: of a needed node when it is wanted, and of a node nothing needs
+          // when the cache still holds it, for its thumbnail (5.12 rule 1).
+          if (step.state !== 'bypassed' && primary && (step.wanted.has(primary.name) || (!step.needed && step.state === 'cached'))) {
             step.reqs.push(require(keys.outputs[primary.name]!.content, index));
           }
           for (const t of step.targets.keys()) {
-            const target = targets[t]!;
-            if (!('ref' in target)) continue;
-            const output = keys.outputs[target.ref.port]!;
-            const conversion = target.as === undefined || target.as === output.content.kind ? '' : target.as === 'color' ? 'grey' : 'luma';
-            step.targets.set(t, require(edgeContent(tokens, output, conversion).content, index, staged ? index : end));
+            const content = targetContents.get(t);
+            if (content) step.targets.set(t, require(content, index, staged ? index : end));
           }
         }
 
@@ -795,7 +889,7 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
       // A runner that will not run for a source of its own leaves the run to the next node of its key.
       for (const group of groups.values()) {
         if (group.entry || !group.runner || group.runner.state !== 'blocked' || group.runner.error) continue;
-        const next = group.members.find((member) => member.state === 'cached');
+        const next = group.members.find((member) => member.state === 'cached' && member.needed);
         if (!next) continue;
         group.runner = next;
         next.state = 'run';
@@ -838,12 +932,13 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
           if (group?.failed) {
             // The node of the same key that ran for this one failed, and this one would fail the same way.
             fail(step, { ...group.failed, nodeId: node.nodeId });
-          } else if (group && !group.entry && !group.published) {
-            // 5.13: the first node of a key whose turn comes runs. That is the planned runner unless it was
-            // skipped for a source the others do not read.
+          } else if (group && step.needed && !group.entry && !group.published) {
+            // 5.13: the first needed node of a key whose turn comes runs. That is the planned runner unless it
+            // was skipped for a source the others do not read.
             group.runner = step;
             await runNode(step);
           } else {
+            // A hit, a node whose key another node ran for, a bypassed node, or one that nothing needs.
             await finish(step, { cached: true, wallMs: () => 0, gpuMs: null, peakBytes: 0 });
           }
         } finally {

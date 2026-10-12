@@ -88,6 +88,9 @@ function readsSeed(kernel: AnyKernel): boolean {
   return mentions(kernel.def.code) || (kernel.def.includes ?? []).some(inLib);
 }
 
+/** engine.md 4.2: the primary input; the first of two of equal rank; the first of the channels of a colour (r, g, b, a). */
+const FIRST_INPUT_NAMES: readonly string[] = ['in', 'a', 'r'];
+
 function checkPorts(inputs: readonly PortDef[], outputs: readonly PortDef[], fail: (problem: string) => never): void {
   for (const [side, ports] of [['input', inputs], ['output', outputs]] as const) {
     const seen = new Set<string>();
@@ -124,8 +127,8 @@ function checkPorts(inputs: readonly PortDef[], outputs: readonly PortDef[], fai
     }
   }
   if (outputs.length > 0 && outputs[0]!.name !== 'out') fail(`the first output must be named "out", not "${outputs[0]!.name}"`);
-  if (inputs.length > 0 && inputs[0]!.name !== 'in' && inputs[0]!.name !== 'a') {
-    fail(`the first input must be named "in" or "a", not "${inputs[0]!.name}"`);
+  if (inputs.length > 0 && !FIRST_INPUT_NAMES.includes(inputs[0]!.name)) {
+    fail(`the first input must be named "in", "a" or "r", not "${inputs[0]!.name}"`);
   }
 }
 

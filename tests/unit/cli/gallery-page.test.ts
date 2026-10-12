@@ -7,7 +7,7 @@ import { test } from 'node:test';
 
 import { countsAsFailure, galleryPage, mib, ms, type GalleryEntry, type GalleryInfo } from '../../../src/cli/gallery-page.ts';
 import type { RenderResult } from '../../../src/cli/result.ts';
-import { colorize, gen, node, soften } from '../graph-fixtures.ts';
+import { colorize, combine, gen, node, soften } from '../graph-fixtures.ts';
 
 const INFO: GalleryInfo = { res: 513, category: null, device: { adapter: 'NVIDIA <GTX>', software: false, profile: 'max' } };
 
@@ -46,11 +46,11 @@ const twoOutputs = node({
 const importer = node({ type: 'io/import', title: 'Import', category: 'io', params: [{ kind: 'file', name: 'file', help: 'The image.', default: '', filters: ['png', 'r16'] }] });
 
 const ENTRIES: readonly GalleryEntry[] = [
-  { def: importer, result: failed('io/import', 'No file selected'), conformance: null },
-  { def: colorize, result: rendered('ref/colorize', ['out'], { pictures: { out: { file: 'nodes/ref/colorize/out-513.png', width: 513, height: 513 } }, views: { out: { file: 'nodes/ref/colorize/out-513-3d.png', width: 768, height: 512 } } }), conformance: 'not json {' },
-  { def: gen, result: rendered('ref/gen', ['out']), conformance: REPORT },
-  { def: twoOutputs, result: rendered('ref/select', ['out', 'flow'], { longestSliceMs: 812, longestSliceKernels: ['ref/select.pass'], gpuMs: null, engineErrors: ['Validation <error>'] }), conformance: null },
-  { def: soften, result: failed('ref/soften', 'kernel "<script>alert(1)</script>" failed'), conformance: null },
+  { def: importer, result: failed('io/import', 'No file selected'), masked: null, conformance: null },
+  { def: colorize, result: rendered('ref/colorize', ['out'], { pictures: { out: { file: 'nodes/ref/colorize/out-513.png', width: 513, height: 513 } }, views: { out: { file: 'nodes/ref/colorize/out-513-3d.png', width: 768, height: 512 } } }), masked: null, conformance: 'not json {' },
+  { def: gen, result: rendered('ref/gen', ['out']), masked: null, conformance: REPORT },
+  { def: twoOutputs, result: rendered('ref/select', ['out', 'flow'], { longestSliceMs: 812, longestSliceKernels: ['ref/select.pass'], gpuMs: null, engineErrors: ['Validation <error>'] }), masked: null, conformance: null },
+  { def: soften, result: failed('ref/soften', 'kernel "<script>alert(1)</script>" failed'), masked: null, conformance: null },
 ];
 
 const page = galleryPage(INFO, ENTRIES);
@@ -169,9 +169,33 @@ test('a node that fails is listed with its error, and nothing it says is markup'
 test('gallery exits with 1 for a node that fails, unless the node reads a file its defaults do not select', () => {
   assert.deepEqual(ENTRIES.map(countsAsFailure), [false, false, false, false, true]);
   // An import node that fails for another reason still has a file parameter: the page shows the error, a person judges it.
-  assert.equal(countsAsFailure({ def: importer, result: failed('io/import', 'Out of GPU memory'), conformance: null }), false);
-  assert.equal(countsAsFailure({ def: gen, result: failed('ref/gen', 'No file selected'), conformance: null }), false, 'ref/gen of the fixtures has a file parameter');
-  assert.equal(countsAsFailure({ def: colorize, result: { ...rendered('ref/colorize', []), status: 'errors' }, conformance: null }), true);
+  assert.equal(countsAsFailure({ def: importer, result: failed('io/import', 'Out of GPU memory'), masked: null, conformance: null }), false);
+  assert.equal(countsAsFailure({ def: gen, result: failed('ref/gen', 'No file selected'), masked: null, conformance: null }), false, 'ref/gen of the fixtures has a file parameter');
+  assert.equal(countsAsFailure({ def: colorize, result: { ...rendered('ref/colorize', []), status: 'errors' }, masked: null, conformance: null }), true);
+});
+
+test('a node with a masked variant shows outputs[0] a second time, with its optional mask inputs connected', () => {
+  const masked = rendered('ref/combine', ['out'], { pictures: { out: { file: 'nodes/ref/combine/out-513-masked.png', width: 1808, height: 512 } } });
+  const entries: GalleryEntry[] = [
+    { def: combine, result: rendered('ref/combine', ['out']), masked, conformance: null },
+    { def: soften, result: rendered('ref/soften', ['out']), masked: failed('ref/soften', 'The <mask> broke it'), conformance: null },
+    { def: gen, result: rendered('ref/gen', ['out']), masked: null, conformance: null },
+  ];
+  const text = galleryPage(INFO, entries);
+  const of = (type: string): string => text.slice(text.indexOf(`id="${type.replace('/', '-')}"`), text.indexOf('</article>', text.indexOf(`id="${type.replace('/', '-')}"`)));
+  const both = of('ref/combine');
+  assert.ok(both.includes('<img src="../nodes/ref/combine/out-513.png"'), 'the plain picture');
+  assert.ok(both.includes('<figure class="masked"><a href="../nodes/ref/combine/out-513-masked.png"><img src="../nodes/ref/combine/out-513-masked.png" width="1808" height="512" alt="out of ref/combine under a mask"'));
+  assert.ok(both.includes("<figcaption>out with <code>mask</code> connected to a slope mask of the first terrain's broad shape</figcaption>"));
+  assert.ok(both.indexOf('out-513.png') < both.indexOf('out-513-masked.png'), 'after the plain one');
+  // A node that fails only with its mask connected is broken, and says how.
+  const broken = of('ref/soften');
+  assert.ok(text.includes('<article class="node broken" id="ref-soften">'));
+  assert.ok(broken.includes('<img src="../nodes/ref/soften/out-513.png"'));
+  assert.ok(broken.includes('<p>Not rendered with its mask connected.</p><pre>ref/soften failed, node-exception: The &lt;mask&gt; broke it'));
+  assert.ok(!of('ref/gen').includes('class="masked"'));
+  // ref/gen of the fixtures has a file parameter, so its failures never count; the two others do.
+  assert.deepEqual(entries.map(countsAsFailure), [false, true, false]);
 });
 
 test('a gallery without nodes says so, and names no device', () => {

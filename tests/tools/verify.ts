@@ -4,7 +4,8 @@
 //
 // Eight steps, in order, stopping at the first that fails: the type check, the unit layer, the node's test
 // file on the default adapter under `core`, under `max`, and on the machine's software adapter, then
-// `orogen render` at 513, at 4033 with a one-to-one crop, and at 4033 with every parameter at its maximum.
+// `orogen render` at 513 (and with --masked for a node that has a masked variant), at 4033 with a one-to-one
+// crop, and at 4033 with every parameter at its maximum.
 // It ends with the summary the change description carries. A step whose adapter the machine lacks is reported
 // as `missing` and does not fail the run; the node is not done until someone has run it.
 //
@@ -128,6 +129,8 @@ async function verify(type: string): Promise<number> {
   ].map((title, i) => ({ number: i + 1, title, status: 'not run', note: '' }));
   const reports: (ConformanceReport | null)[] = [];
   const renders: (RenderLine | null)[] = [];
+  /** The pictures of the masked variant, which step 6 draws for a node that has one. */
+  const maskedFiles: string[] = [];
   let failed = false;
 
   const begin = (step: Step): void => console.log(`\n=== verify ${type}: step ${step.number} of ${steps.length}: ${step.title}`);
@@ -217,6 +220,23 @@ async function verify(type: string): Promise<number> {
       if (args.includes('--crop') && !render.files.some((file) => file.endsWith('-crop.png'))) problems.push('no one-to-one crop was written');
       if (i > 0 && render.longestSliceMs > HARD_CEILING_MS) problems.push(`the longest slice took ${render.longestSliceMs.toFixed(0)} ms, above the hard ceiling of ${HARD_CEILING_MS} ms`);
     }
+    // Step 6 also draws the masked variant (testing.md 2.4). A node without one is refused as a usage error, which says so.
+    if (i === 0 && problems.length === 0) {
+      const masked = await run(process.execPath, [GUARD, 'node', CLI, 'render', type, ...given, ...args, '--masked'], { ...process.env });
+      const none = masked.code === 2 && masked.output.includes('--masked connects the optional mask inputs of a node');
+      if (!none) {
+        const maskedLine = masked.output.split('\n').reverse().find((text) => text.startsWith('{') && text.includes('"files"'));
+        let files: readonly string[] = [];
+        try {
+          files = maskedLine ? (JSON.parse(maskedLine) as RenderLine).files : [];
+        } catch {
+          files = [];
+        }
+        if (masked.code !== 0) problems.push(`render --masked exited with ${masked.code}`);
+        else if (files.length === 0 || files.some((file) => !fs.existsSync(path.resolve(out, file)))) problems.push('render --masked wrote no picture');
+        else maskedFiles.push(...files.map((file) => path.resolve(out, file)));
+      }
+    }
     const measured = render ? `${(render.wallMs / 1000).toFixed(1)} s, longest slice ${render.longestSliceMs.toFixed(0)} ms, peak ${(render.peakBytes / 1e9).toFixed(2)} GB` : '';
     finish(step, problems.length === 0, problems.length === 0 ? measured : problems.join('; '));
   }
@@ -239,7 +259,7 @@ async function verify(type: string): Promise<number> {
     const previews = path.join(OUTPUT, 'nodes', category, name);
     if (fs.existsSync(previews)) console.log(`pictures of the conformance suite: ${previews}`);
   }
-  const pictures = renders.flatMap((render, i) => (render?.files ?? []).map((file) => path.resolve(renderArgs[i]!.at(-1)!, file)));
+  const pictures = [...renders.flatMap((render, i) => (render?.files ?? []).map((file) => path.resolve(renderArgs[i]!.at(-1)!, file))), ...maskedFiles];
   if (pictures.length > 0) console.log(`pictures of orogen render:\n${pictures.map((file) => `  ${file}`).join('\n')}`);
   const missing = steps.filter((step) => step.status === 'missing');
   const notRun = steps.filter((step) => step.status === 'not run');

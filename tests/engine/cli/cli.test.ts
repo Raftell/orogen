@@ -190,6 +190,65 @@ test('orogen render --max-params --seed: the parameters reach the node', () => {
   assert.ok(differing(plain, octave) > 0.5);
 });
 
+/** The share of the grey picture's pixels that differ between two sheets. */
+function differingGrey(a: Png, b: Png): number {
+  let count = 0;
+  for (let y = 0; y < 512; y++) for (let x = 0; x < 512; x++) if (a.data[(y * a.width + x) * 3] !== b.data[(y * b.width + x) * 3]) count++;
+  return count / (512 * 512);
+}
+
+test('orogen render of a node with two inputs: each is fed a terrain of its own, and --masked connects the optional mask', () => {
+  const sheet = (name: string, type: string, args: readonly string[]): { readonly png: Png; readonly files: readonly string[] } => {
+    const out = path.join(OUTPUT, name);
+    const done = orogen(['render', type, '--res', String(RES), '--out', out, ...args]);
+    assert.equal(done.code, 0, done.err);
+    const { files } = lineOf(done);
+    return { png: expectSheet(files[0]!, `${type} ${args.join(' ')}`), files };
+  };
+  // mode mix at strength 1 gives the second input: the node is shown its `b`, which is not its `a`.
+  const second = sheet('combine-b', 'ref/combine', ['--param', 'strength=1']);
+  const first = sheet('combine-a', 'ref/combine', ['--param', 'strength=0']);
+  assert.ok(differingGrey(first.png, second.png) > 0.5, 'the two inputs are two terrains');
+  // The first is ref/fbm at its defaults, the second ref/fbm with seed 1 and feature size 0.1 (testing.md 2.4).
+  assert.equal(differingGrey(first.png, sheet('combine-fbm0', 'ref/fbm', []).png), 0);
+  assert.equal(differingGrey(second.png, sheet('combine-fbm1', 'ref/fbm', ['--seed', '1', '--param', 'size=0.1']).png), 0);
+  assert.deepEqual(second.files, [fileOf(path.join(OUTPUT, 'combine-b'), 'ref/combine', 'out-129.png')], 'without --masked the optional mask is unconnected');
+
+  // --masked: `b` only where the slope mask of the first terrain selects, in files of their own.
+  const masked = sheet('combine-masked', 'ref/combine', ['--param', 'strength=1', '--masked']);
+  assert.deepEqual(masked.files, [fileOf(path.join(OUTPUT, 'combine-masked'), 'ref/combine', 'out-129-masked.png')]);
+  const fromB = differingGrey(masked.png, second.png), fromA = differingGrey(masked.png, first.png);
+  assert.ok(fromB > 0.05 && fromA > 0.05, `under the mask ${(100 * fromB).toFixed(0)} % of the picture differs from b and ${(100 * fromA).toFixed(0)} % from a`);
+
+  // The mask the evaluator gives a maskable node: the blur acts on the steep ground alone.
+  const blurred = sheet('blur-plain', 'ref/blur', ['--param', 'radius=0.05']);
+  const partly = sheet('blur-masked', 'ref/blur', ['--param', 'radius=0.05', '--masked', '--crop', '64']);
+  assert.deepEqual(partly.files, ['out-129-masked.png', 'out-129-masked-crop.png'].map((name) => fileOf(path.join(OUTPUT, 'blur-masked'), 'ref/blur', name)));
+  assert.ok(differingGrey(blurred.png, partly.png) > 0.05);
+
+  // A node without an optional mask has no masked variant.
+  const refused = orogen(['render', 'ref/fbm', '--masked', '--out', path.join(OUTPUT, 'refused')]);
+  assert.equal(refused.code, 2, refused.err);
+  assert.match(refused.err, /--masked connects the optional mask inputs of a node, and ref\/fbm has none and is not maskable/);
+});
+
+test('orogen render ref/distance: a node whose input is a mask is drawn over the terrain the mask was made of', () => {
+  const out = path.join(OUTPUT, 'distance');
+  const done = orogen(['render', 'ref/distance', '--res', String(RES), '--out', out]);
+  assert.equal(done.code, 0, done.err);
+  const line = lineOf(done);
+  assert.deepEqual(line.files, [fileOf(out, 'ref/distance', 'out-129.png')]);
+  const png = read(line.files[0]!);
+  assert.deepEqual([png.width, png.height], [1808, 512]);
+  // The data output with the range of its own values, then the terrain shaded and tinted by it, flat and in 3d.
+  assert.ok(look(png, 0, 512).spread >= 250, 'the grey picture reaches from 0 to the largest distance');
+  const shade = look(png, 520, 1032);
+  assert.ok(shade.spread >= 60, `the hillshade shows the relief of the terrain under the mask (${shade.spread} levels)`);
+  assert.ok(shade.tinted > 0.01 && shade.tinted < 0.99, `${(100 * shade.tinted).toFixed(1)} % of that terrain is tinted by the distance`);
+  const view = look(png, 1040, 1808);
+  assert.ok(view.drawn > 0.2 && view.drawn < 0.95, 'the 3d view is a terrain, not a plane');
+});
+
 /** A project file with a ref/fbm feeding a ref/talus, and a ref/talus nothing is connected to. */
 function writeProject(file: string): void {
   const node = (id: string, type: string, params: Record<string, unknown> = {}): Record<string, unknown> => ({ id, type, version: 1, position: { x: 0, y: 0 }, params });
@@ -267,7 +326,12 @@ test('orogen gallery --category ref: every reference node rendered, and the page
     assert.deepEqual([png.width, png.height], expected, def.type);
     assert.ok(look(png, 0, Math.min(png.width, 512)).spread >= 40, `${def.type}: the picture of outputs[0] is not flat`);
     for (const port of def.outputs.slice(1)) assert.ok(fs.existsSync(fileOf(out, def.type, `${port.name}-${RES}.png`)), `${def.type}.${port.name}`);
+    // The second variant of a node with an optional mask: outputs[0] under a slope mask, shown below the plain picture.
+    const hasMask = def.maskable === true || def.inputs.some((port) => port.role === 'mask' && port.optional);
+    assert.equal(fs.existsSync(fileOf(out, def.type, `out-${RES}-masked.png`)), hasMask, `${def.type}: the masked variant`);
+    assert.equal(page.includes(`<img src="../nodes/${def.type}/out-${RES}-masked.png"`), hasMask, `${def.type}: the masked picture on the page`);
   }
+  assert.deepEqual(withOutputs.filter((def) => def.maskable === true || def.inputs.some((port) => port.role === 'mask' && port.optional)).map((def) => def.type), ['ref/blur', 'ref/combine', 'ref/talus']);
   assert.match(page, new RegExp(`${withOutputs.length} nodes of the category ref at ${RES} × ${RES}`));
   assert.ok(page.includes('Checked on the adapter of this test, profile core.'));
   assert.match(done.err, new RegExp(`^orogen gallery: ${withOutputs.length}/${withOutputs.length} `, 'm'));

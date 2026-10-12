@@ -81,7 +81,9 @@ fn compute(px: vec2i, uv: vec2f) -> vec2f {
 const MODE: Readonly<Record<PortRole, number>> = { height: 0, mask: 1, data: 2 };
 
 // Rule 3, for a field. normalAt takes its cell from the size of the 128 x 128 samples and the Frame's
-// terrainSize and heightRange: central differences in metres with a cell of terrainSize / 127.
+// terrainSize and heightRange: central differences in metres with a cell of terrainSize / 127. A height is
+// shaded as the pictures of testing.md 2.7 are (src/cli/preview.ts): the wrapped term keeps a gradation on the
+// slopes that face away from the light, where max(n·L, 0) is 0 above 45 degrees and a steep terrain has two tones.
 const shade = defineKernel({
   name: 'core/thumbnail.shade',
   inputs: { src: 'field', bounds: { kind: 'vec2', default: 0 } },
@@ -89,10 +91,14 @@ const shade = defineKernel({
   params: { mode: 'u32' },
   cost: 5,
   code: /* wgsl */ `
+// Towards the light: normalize(-1, -1, sqrt(2)).
+const LIGHT = vec3f(-0.5, -0.5, 0.70710678);
+
 fn compute(px: vec2i, uv: vec2f) -> vec4f {
   var grey = 0.5;
   if (P.mode == 0u) {
-    grey = saturate(dot(normalAt(src, px), normalize(vec3f(-0.5, -0.5, 0.7))));
+    let wrapped = 0.5 + 0.5 * dot(normalAt(src, px), LIGHT);
+    grey = 0.10 + 0.80 * wrapped * wrapped;
   } else if (P.mode == 1u) {
     grey = saturate(src_at(px));
   } else {
@@ -137,6 +143,12 @@ export interface Thumbnails {
   /** Rule 4: reads the atlas back when `force` is set (the evaluation has ended), when 250 ms have passed, or when all cells are in use; delivers each thumbnail once. Never delays the caller. */
   poll(force: boolean): void;
   onThumbnail(listener: (t: Thumbnail) => void): () => void;
+  /**
+   * The budget shrank: an atlas that no longer fits beside what is reserved, working and pinned is given back,
+   * after what it stages has been read back (rule 4). It is made again with the first thumbnail it fits for.
+   * Called in the evaluations' turn, with no node running.
+   */
+  fit(): void;
   /** Compiles the pass that writes the atlas, on the device of the current parts. Rejects when it does not compile. */
   prepare(): Promise<void>;
   /** Resolves when every readback under way has delivered or failed. */
@@ -352,6 +364,21 @@ export function createThumbnails(parts: () => EngineParts): Thumbnails {
       const s = current();
       if (!s || !s.batch) return;
       if (force || s.batch.cells.length >= CELLS || performance.now() - lastRead >= READ_INTERVAL_MS) flush(s);
+    },
+
+    fit() {
+      const s = current();
+      if (!s?.atlas) return;
+      const memory = s.parts.pool.report();
+      // The rule the atlas was made by (atlasOf), with the atlas now among the reserved bytes.
+      if (memory.reservedBytes + memory.workingBytes + memory.pinnedBytes <= memory.budgetBytes) return;
+      // The copy of what is staged is submitted before the texture goes: in queue order it reads the atlas intact.
+      flush(s);
+      const atlas = s.atlas;
+      s.atlas = null;
+      s.parts.stream.submit();
+      atlas.texture.destroy();
+      atlas.reservation.release();
     },
 
     onThumbnail(listener) {

@@ -51,7 +51,7 @@ test('probe: usage errors', () => {
 test('render <type>: defaults', () => {
   assert.deepEqual(parse('render ref/fbm'), {
     command: 'render', device: { profile: 'max', adapter: undefined }, out: path.join(CWD, 'test-output'), budgetBytes: null,
-    source: { kind: 'type', type: 'ref/fbm' }, res: DEFAULT_RES, params: [], maxParams: false, seed: null, crop: null,
+    source: { kind: 'type', type: 'ref/fbm' }, res: DEFAULT_RES, params: [], maxParams: false, seed: null, crop: null, masked: false,
   });
   assert.equal(DEFAULT_RES, 513);
 });
@@ -59,13 +59,13 @@ test('render <type>: defaults', () => {
 test('render <type>: every option', () => {
   const command = parseCommand([
     'render', 'simulate/hydraulic-erosion', '--res', '4033', '--param', 'reach=0.05', '--param=mode="add"', '--param', 'offset=[0.5, -0.25]',
-    '--param', 'invert=true', '--max-params', '--seed', '4294967295', '--crop', '768', '--out', 'pictures', '--budget-mb', '4096', '--profile', 'core', '--adapter', 'llvmpipe',
+    '--param', 'invert=true', '--max-params', '--seed', '4294967295', '--masked', '--crop', '768', '--out', 'pictures', '--budget-mb', '4096', '--profile', 'core', '--adapter', 'llvmpipe',
   ], { OROGEN_TEST_OUTPUT: 'elsewhere', OROGEN_GPU_PROFILE: 'max' }, CWD);
   assert.deepEqual(command, {
     command: 'render', device: { profile: 'core', adapter: 'llvmpipe' }, out: path.join(CWD, 'pictures'), budgetBytes: 4096 * 2 ** 20,
     source: { kind: 'type', type: 'simulate/hydraulic-erosion' }, res: 4033,
     params: [{ name: 'reach', value: 0.05 }, { name: 'mode', value: 'add' }, { name: 'offset', value: [0.5, -0.25] }, { name: 'invert', value: true }],
-    maxParams: true, seed: 4294967295, crop: 768,
+    maxParams: true, seed: 4294967295, crop: 768, masked: true,
   });
 });
 
@@ -89,7 +89,7 @@ test('render: the budget is a number of MiB', () => {
 test('render <project.orogen>: the file is taken from the working directory and the resolution is the project\'s unless --res is given', () => {
   assert.deepEqual(parse('render graphs/island.orogen --node talus'), {
     command: 'render', device: { profile: 'max', adapter: undefined }, out: path.join(CWD, 'test-output'), budgetBytes: null,
-    source: { kind: 'project', file: path.join(CWD, 'graphs', 'island.orogen'), node: 'talus' }, res: null, params: [], maxParams: false, seed: null, crop: null,
+    source: { kind: 'project', file: path.join(CWD, 'graphs', 'island.orogen'), node: 'talus' }, res: null, params: [], maxParams: false, seed: null, crop: null, masked: false,
   });
   const given = parse('render Island.OROGEN --node=a.b --res 1009 --crop 768') as Extract<Command, { command: 'render' }>;
   assert.deepEqual([given.source, given.res, given.crop], [{ kind: 'project', file: path.join(CWD, 'Island.OROGEN'), node: 'a.b' }, 1009, 768]);
@@ -132,6 +132,8 @@ test('render: usage errors', () => {
   refused('render a.orogen --node x --param size=1', /--param applies to a node type/, 'render');
   refused('render a.orogen --node x --max-params', /--max-params applies to a node type/, 'render');
   refused('render a.orogen --node x --seed 3', /--seed applies to a node type/, 'render');
+  refused('render a.orogen --node x --masked', /--masked applies to a node type; the nodes of a project file are rendered with the connections it stores/, 'render');
+  refused('render ref/blur --masked=1', /--masked takes no value/, 'render');
   refused('render ref/fbm --node x', /--node names a node of a project file/, 'render');
 });
 

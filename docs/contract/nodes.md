@@ -96,8 +96,20 @@ one private index module that `simulate/index.ts` concatenates:
 
 | Owner | Private index | Nodes | Private modules |
 | --- | --- | --- | --- |
-| erosion | `_erosion.ts` | `simulate/fluvial-erosion`, `simulate/hydraulic-erosion`, `simulate/thermal-erosion`, `simulate/sediment`, `simulate/snow` | `_talus*.ts`, `_pipes*.ts`, `_stream*.ts`, `_layers*.ts` and others not beginning with `_route`, `_water` |
+| erosion | `_erosion.ts` | `simulate/fluvial-erosion`, `simulate/hydraulic-erosion`, `simulate/thermal-erosion`, `simulate/sediment`, `simulate/snow` | `_refine*.ts`, `_constants.ts`, `_talus*.ts`, `_pipes*.ts`, `_stream*.ts`, `_layers*.ts` and others not beginning with `_route`, `_water` |
 | hydrology | `_hydrology.ts` | `simulate/fill`, `simulate/flow`, `simulate/rivers`, `simulate/lakes`, `simulate/sea` | `_route*.ts`, `_water*.ts` |
+
+Two private modules exist from the start, written by the integrator:
+`_refine.ts`, the refine module of `simulation.md` section 2 (`levelInput`,
+`refineHeight`, `refinePlane`, `levelBudget` and the kernels
+`simulate/refine.height` and `simulate/refine.plane`), and `_constants.ts`, the
+calibration register of `simulation.md` section 13, which starts with the two
+constants the refine module uses. The erosion owner owns both from then on and
+adds its rows of the register to `_constants.ts`; the hydrology owner keeps the
+rows that only sections 6 to 9 use in a `_route*.ts` or `_water*.ts` module of
+its own. `tests/engine/ops/refine.test.ts` and `coarse-to-fine.test.ts` hold
+the refine module to what `simulation.md` states of it: a change of its
+behaviour is a change of that document first.
 
 The erosion nodes use the routing of `simulation.md` section 6 where it says
 so. The hydrology owner delivers the router first and the two agree on its

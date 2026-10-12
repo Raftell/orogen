@@ -47,6 +47,17 @@ test('a category owns its nodes, their tests and its change requests, and nothin
   }
 });
 
+test('a category two owners share by file is one owner to the tool: its private index modules are its own, the product index is not', () => {
+  // nodes.md sections 1 and 4. The two agree among themselves which files are whose (testing.md 7.1).
+  for (const [branch, paths] of [
+    ['nodes/generate/basics', ['src/core/nodes/generate/_basics.ts', 'src/core/nodes/generate/_landforms.ts', 'src/core/nodes/generate/_noise-warp.ts', 'src/core/nodes/generate/index.ts', 'tests/nodes/generate/fractal-noise.test.ts']],
+    ['nodes/simulate/hydrology/router', ['src/core/nodes/simulate/_hydrology.ts', 'src/core/nodes/simulate/_erosion.ts', 'src/core/nodes/simulate/_route.ts', 'src/core/nodes/simulate/_refine.ts', 'tests/nodes/simulate/unit/route.test.ts']],
+  ] as const) {
+    assert.deepEqual(foreignPaths(branch, [...paths]), [], branch);
+    assert.deepEqual(foreignPaths(branch, ['src/core/nodes/index.ts', 'src/core/ops/resample.ts']), ['src/core/nodes/index.ts', 'src/core/ops/resample.ts'], branch);
+  }
+});
+
 test('export, the application owners and the integrator own what the tables give them', () => {
   const exportOwner = ownerOf('export/tiff')!;
   for (const path of ['src/export/encode/png.ts', 'src/core/nodes/io/export-layer.ts', 'tests/nodes/io/import.test.ts', 'tests/export/unit/png.test.ts', 'unreal/OrogenBridge/x.cpp', 'docs/user/unreal-import.md', 'docs/changes/export-sink.md']) {

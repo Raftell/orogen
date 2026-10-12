@@ -97,6 +97,9 @@ by one node carries that node's name.
 | diff | `simulate/diff` | | 5.5 |
 | constants | | every constant of section 13 | 13 |
 
+The refine module is `_refine.ts`. It and `_constants.ts`, with the constants
+it uses, exist before the nodes do (`nodes.md` section 4).
+
 ### 1.2 Units and storage
 
 Symbols used throughout:
@@ -374,7 +377,7 @@ fn compute(px: vec2i, uv: vec2f) -> f32 {
 });
 ```
 
-- `P.jitter` is 0.5 with jitter and 0 without. `P.noiseSeed` is `mixSeed(salt, 1)`.
+- `P.jitter` is 0.5 with jitter, twice `JITTER_HALF_WIDTH`, and 0 without. `P.noiseSeed` is `mixSeed(salt, 1)`.
 - The interpolation is applied to the per-texel differences, not to the two planes separately. An unchanged region gives exactly 0, and a plane that only went down gives a value `<= 0`.
 - `simulate/refine.plane` has the input `coarse` (`size: 'any'`), one output and the params `jitter`, `salt`, `gain`; it returns `P.gain * coarse_lerp(t)` with the same `t`.
 
@@ -1807,8 +1810,10 @@ paper. Source code is a different matter:
 
 ## 13. Calibration register
 
-Every number below is a named constant in one module of the `simulate`
-category. No kernel or node contains another tuning literal. A value marked
+Every number below is a named constant of the `simulate` category: in
+`_constants.ts`, or, for a row that only sections 6 to 9 use, in a constants
+module of the hydrology owner (`nodes.md` section 4). No kernel or node
+contains another tuning literal. A value marked
 **fixed** follows from a derivation in this document and is not tuned.
 
 | Constant | Value | Unit | Used in | Status and source |
@@ -1816,7 +1821,7 @@ category. No kernel or node contains another tuning literal. A value marked
 | `FEATURE_CELLS` | 32 | texels | 3.8, 4.8 | to calibrate |
 | `FEATURE_CELLS_RELAX` | 8 | texels | 5.7, 5.9, 10 | to calibrate |
 | `DETAIL_SLOPE` | 0.1 | cell fraction | 2.4 | to calibrate |
-| Jitter half-width | 0.25 | coarse texels | 2.4 | fixed; Tzathas24 |
+| `JITTER_HALF_WIDTH` | 0.25 | coarse texels | 2.4 | fixed; Tzathas24 |
 | `COURANT` | 0.5 | texels per iteration | 3.6 | fixed; stability |
 | `CELERITY_CAP` | 4 | none | 3.3 | to calibrate |
 | `TALUS_RATE` | 0.1 | none | 3.3 | to calibrate; between the ratios implied by Jain24 (0.03) and Tzathas24 (0.2) at a 1 km feature |

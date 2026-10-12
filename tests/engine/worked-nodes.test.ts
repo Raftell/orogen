@@ -1,140 +1,76 @@
-// The two worked nodes of engine.md section 6, ref/fbm and ref/talus, through the whole product: a document made
-// with the commands, the registry of the reference nodes, a real Engine on the process's device with the Node
-// file source and CPU runner, and Engine.evaluate. Every expectation is a property the contract states
-// (engine.md 1.7, 3.14, 4.10, 4.13; testing.md 3.4 and 10.2 graphs 01 and 03), never a number from an earlier run.
+// The two worked nodes of engine.md section 6, ref/fbm and ref/talus, through the whole product: documents made
+// with the commands, the registry of the reference nodes, and the harness's engine on the process's device
+// (testing.md section 2): every evaluation is Engine.evaluate on a real Engine, with the Node file source and
+// CPU runner. Every expectation is a property the contract states (engine.md 1.7, 3.14, 4.10, 4.13; testing.md
+// 3.4 and 10.2 graphs 01 and 03), never a number from an earlier run.
 //
 // Sizes: fields of 257 x 257 and 513 x 513 floats (1 MiB at most each); no list is handed to an assertion.
 
 import assert from 'node:assert/strict';
-import path from 'node:path';
 import { after, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 
-import { hashCell, mixSeed } from '../../src/core/api.ts';
-import { nodes as refNodes } from '../../src/core/nodes/ref/index.ts';
+import { hashCell, mixSeed, type ParamValue } from '../../src/core/api.ts';
+import { parseDoc, serializeDoc, type GraphDoc, type ProjectSettings } from '../../src/core/runtime.ts';
 import {
-  addNode, connect, createEngine, createRegistry, newDoc, parseDoc, serializeDoc, setParam, setSettings,
-  type DocDraft, type Engine, type EngineTestHooks, type EvalEvent, type EvaluateOptions, type EvaluateResult, type GpuProfile,
-  type GraphDoc, type ProjectSettings,
-} from '../../src/core/runtime.ts';
-import { createNodeCpuRunner } from '../../src/platform/node/cpu.ts';
-import { NodeFileSource } from '../../src/platform/node/files.ts';
-import { createNodeGpu } from '../../src/platform/node/gpu.ts';
+  expectNoLeaks, getEngine, makeDoc, openGraph, TEST_SETTINGS, type GraphOptions, type GraphRender, type GraphSession,
+} from '../helpers/index.ts';
 import { writeGrey, writeHillshade } from './pictures.ts';
 
-const SETTINGS: ProjectSettings = { terrainSize: 4096, heightRange: 1024, seed: 1, buildResolution: 513, previewLevel: 1, seaLevel: 0.25 };
-const TESTS_FOLDER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const BUDGET = 1_073_741_824;
+const SETTINGS: ProjectSettings = TEST_SETTINGS;
 const FIELD_BYTES = (res: number): number => res * res * 4;
-
-type Slice = Parameters<NonNullable<EngineTestHooks['onSlice']>>[0];
-type Slicing = 'auto' | 'small' | 'one';
-const SLICE_TARGET: Readonly<Record<Slicing, number | undefined>> = { auto: undefined, small: 1e-6, one: 1e9 };
-
-// ---- the engine: one device per process, one engine at a time ----------------------------------------------------
-
-const registry = createRegistry(refNodes);
-const gpu = await createNodeGpu({ profile: (process.env.OROGEN_GPU_PROFILE as GpuProfile | undefined) || 'core' });
-let live: { readonly engine: Engine; readonly slicing: Slicing } | null = null;
-let requestId = 0;
-/** Every slice the live engine has completed, and what the running test wants to hear of them. */
-let slices: Slice[] = [];
-let onSlice: ((slice: Slice) => void) | null = null;
-
-async function engineFor(slicing: Slicing): Promise<Engine> {
-  if (live?.slicing === slicing) return live.engine;
-  await live?.engine.dispose();
-  live = null;
-  slices = [];
-  const target = SLICE_TARGET[slicing];
-  const engine = await createEngine({
-    gpu, registry,
-    files: NodeFileSource(TESTS_FOLDER),
-    cpu: createNodeCpuRunner(),
-    budgetBytes: BUDGET,
-    test: {
-      poisonRecycled: true,
-      ...(target !== undefined ? { sliceTargetMs: target } : {}),
-      onSlice: (slice) => {
-        slices.push(slice);
-        onSlice?.(slice);
-      },
-    },
-  });
-  live = { engine, slicing };
-  return engine;
-}
-
-after(async () => {
-  await live?.engine.dispose();
-  gpu.destroy();
-});
 
 // ---- documents, made with the commands of runtime.md 4.6 ----------------------------------------------------------
 
-interface Terrain { readonly doc: GraphDoc; readonly fbm: string; readonly talus: string; readonly mask: string | null }
+type Params = Readonly<Record<string, ParamValue>>;
 
-/** ref/fbm → ref/talus, and when `maskSeed` is given a second ref/fbm on the mask input the node gets from `maskable`. */
-function terrain(opts: {
-  fbm?: Readonly<Record<string, unknown>>; talus?: Readonly<Record<string, unknown>>; maskSeed?: number; settings?: Partial<ProjectSettings>;
-} = {}): Terrain {
-  const draft = structuredClone(newDoc()) as DocDraft;
-  setSettings(draft, { ...SETTINGS, ...opts.settings });
-  const fbm = addNode(draft, registry, 'ref/fbm', { x: 0, y: 0 });
-  const talus = addNode(draft, registry, 'ref/talus', { x: 240, y: 0 });
-  for (const [name, value] of Object.entries(opts.fbm ?? {})) setParam(draft, registry, fbm, name, value);
-  for (const [name, value] of Object.entries(opts.talus ?? {})) setParam(draft, registry, talus, name, value);
-  connect(draft, registry, { node: fbm, port: 'out' }, { node: talus, port: 'in' });
-  let mask: string | null = null;
-  if (opts.maskSeed !== undefined) {
-    mask = addNode(draft, registry, 'ref/fbm', { x: 0, y: 160 });
-    setParam(draft, registry, mask, 'seed', opts.maskSeed);
-    connect(draft, registry, { node: mask, port: 'out' }, { node: talus, port: 'mask' });
-  }
-  return { doc: draft as GraphDoc, fbm, talus, mask };
+/**
+ * ref/fbm → ref/talus, and when `maskSeed` is given a second ref/fbm on the mask input the node gets from
+ * `maskable`. The nodes are named `fbm`, `talus` and `mask`.
+ */
+function terrain(opts: { fbm?: Params; talus?: Params; maskSeed?: number; settings?: Partial<ProjectSettings> } = {}): GraphDoc {
+  return makeDoc({
+    ...(opts.settings ? { settings: opts.settings } : {}),
+    nodes: {
+      fbm: { type: 'ref/fbm', ...(opts.fbm ? { params: opts.fbm } : {}) },
+      ...(opts.maskSeed !== undefined ? { mask: { type: 'ref/fbm', params: { seed: opts.maskSeed } } } : {}),
+      talus: {
+        type: 'ref/talus', ...(opts.talus ? { params: opts.talus } : {}),
+        inputs: { in: 'fbm.out', ...(opts.maskSeed !== undefined ? { mask: 'mask.out' } : {}) },
+      },
+    },
+  });
 }
 
-interface Outcome {
-  readonly result: EvaluateResult;
-  readonly events: readonly EvalEvent[];
-  /** The contents of each delivered target; null where no field was delivered. */
-  readonly data: readonly (Float32Array | null)[];
+// ---- evaluations: the harness's sessions, which keep the cache between them (testing.md 2.4) ------------------------
+
+const sessions = new Map<GraphDoc, GraphSession>();
+after(async () => {
+  for (const session of sessions.values()) await session.close();
+});
+
+/**
+ * One evaluation of a document, with the cache as the evaluations before it left it. Targets are
+ * '<node>.<port>'. As Engine.evaluate decides it, every output is wanted in a preview and the needed ones in a build.
+ */
+async function evaluate(doc: GraphDoc, targets: readonly string[], opts: GraphOptions & { readonly res: number }): Promise<GraphRender> {
+  let session = sessions.get(doc);
+  if (!session) sessions.set(doc, session = await openGraph(doc));
+  return session.evaluate(targets, { outputs: (opts.mode ?? 'preview') === 'build' ? 'needed' : 'all', ...opts });
 }
 
-/** One Engine.evaluate. Targets are '<node id>.<port>'; the delivered fields are read back and their handles released. */
-async function evaluate(engine: Engine, doc: GraphDoc, targets: readonly string[], opts: Partial<EvaluateOptions> & { resolution: number }): Promise<Outcome> {
-  const events: EvalEvent[] = [];
-  const result = await engine.evaluate(
-    doc,
-    targets.map((text) => ({ ref: { node: text.slice(0, text.indexOf('.')), port: text.slice(text.indexOf('.') + 1) } })),
-    { mode: 'preview', thumbnails: false, requestId: ++requestId, ...opts, onEvent: (e) => { events.push(e); opts.onEvent?.(e); } },
-  );
-  const data: (Float32Array | null)[] = [];
-  for (const field of result.fields) {
-    data.push(field ? await engine.read(field) : null);
-    field?.release();
-  }
-  return { result, events, data };
-}
+/** The process's engine, for what a test asks of it beside an evaluation: emptying its cache. */
+const engineOf = async (): Promise<Awaited<ReturnType<typeof getEngine>>['engine']> => (await getEngine()).engine;
 
-/** How each node ended: 'run', 'cached', 'error:<kind>' or 'skipped:<reason>'. */
-function ending(events: readonly EvalEvent[], nodeId: string): string {
-  for (const e of events) {
-    if (e.type === 'node-done' && e.nodeId === nodeId) return e.cached ? 'cached' : 'run';
-    if (e.type === 'node-error' && e.error.nodeId === nodeId) return `error:${e.error.kind}`;
-    if (e.type === 'node-skipped' && e.nodeId === nodeId) return `skipped:${e.reason}`;
-  }
-  return 'no final event';
+/** How a node ended: 'run', 'cached', 'error:<kind>' or 'skipped:<reason>'. */
+function ending(render: GraphRender, nodeId: string): string {
+  const node = render.report.nodes[nodeId];
+  if (!node) return 'no final event';
+  if (node.state === 'done') return 'run';
+  if (node.state === 'error') return `error:${node.error!.kind}`;
+  if (node.state === 'skipped') return `skipped:${node.skipReason}`;
+  return node.state;
 }
-const peakBytes = (events: readonly EvalEvent[], nodeId: string): number | null =>
-  events.find((e): e is Extract<EvalEvent, { type: 'node-done' }> => e.type === 'node-done' && e.nodeId === nodeId)?.peakBytes ?? null;
-
-/** testing.md 2.8: after an evaluation has settled and its handles are released, nothing is WORKING and nothing is pinned. */
-function noLeaks(engine: Engine): void {
-  const memory = engine.memory();
-  assert.equal(memory.workingBytes, 0, `nothing is WORKING: ${JSON.stringify(memory)}`);
-  assert.equal(memory.pinnedBytes, 0, `nothing is pinned: ${JSON.stringify(memory)}`);
-}
+const errorsOf = (render: GraphRender): string => JSON.stringify(Object.values(render.report.nodes).flatMap((node) => (node.error ? [node.error] : [])));
 
 // ---- numbers, in float64; a field is never handed to an assertion -------------------------------------------------
 
@@ -153,9 +89,11 @@ function statsOf(data: Float32Array): Stats {
   return { min, max, mean, std: Math.sqrt(Math.max(squares / Math.max(count, 1) - mean * mean, 0)), nonFinite: data.length - count };
 }
 
-function field(data: Float32Array | null | undefined, res: number, name: string): Float32Array {
-  assert.ok(data, `${name} was delivered`);
-  assert.equal(data.length, res * res, `${name} holds ${res} x ${res} floats`);
+/** The floats of a delivered target. */
+function field(render: GraphRender, target: string, res: number): Float32Array {
+  const data = render.fields[target]?.data;
+  assert.ok(data, `${target} was delivered`);
+  assert.equal(data.length, res * res, `${target} holds ${res} x ${res} floats`);
   return data;
 }
 
@@ -266,19 +204,18 @@ let referenceRun: Promise<Reference> | null = null;
 /** The 513 results every case compares with, from the first run of the two nodes; made once, whichever case asks first. */
 function reference(): Promise<Reference> {
   referenceRun ??= (async () => {
-    const engine = await engineFor('auto');
-    await engine.trim();
-    const { doc, fbm, talus } = terrain({ talus: TALUS });
-    const alone = await evaluate(engine, doc, [`${fbm}.out`], { resolution: 513 });
-    assert.equal(alone.result.status, 'ok', JSON.stringify(alone.result.errors));
-    const all = await evaluate(engine, doc, [`${fbm}.out`, `${talus}.out`, `${talus}.moved`], { resolution: 513 });
-    assert.equal(all.result.status, 'ok', JSON.stringify(all.result.errors));
+    await (await engineOf()).trim();
+    const doc = terrain({ talus: TALUS });
+    const alone = await evaluate(doc, ['fbm.out'], { res: 513 });
+    assert.equal(alone.report.status, 'ok', errorsOf(alone));
+    const all = await evaluate(doc, ['fbm.out', 'talus.out', 'talus.moved'], { res: 513 });
+    assert.equal(all.report.status, 'ok', errorsOf(all));
     return {
-      fbm: field(alone.data[0], 513, 'fbm.out'),
-      fbmAfter: field(all.data[0], 513, 'fbm.out'),
-      out: field(all.data[1], 513, 'talus.out'),
-      moved: field(all.data[2], 513, 'talus.moved'),
-      endings: [ending(alone.events, fbm), ending(all.events, fbm), ending(all.events, talus)],
+      fbm: field(alone, 'fbm.out', 513),
+      fbmAfter: field(all, 'fbm.out', 513),
+      out: field(all, 'talus.out', 513),
+      moved: field(all, 'talus.moved', 513),
+      endings: [ending(alone, 'fbm'), ending(all, 'fbm'), ending(all, 'talus')],
     };
   })();
   return referenceRun;
@@ -288,14 +225,13 @@ function reference(): Promise<Reference> {
 
 test('ref/fbm: 513 decimated equals 257, and every level is finite and varied', async () => {
   const { fbm: at513 } = await reference();
-  const engine = await engineFor('auto');
-  const { doc, fbm } = terrain();
+  const doc = terrain();
   // Whatever ran before, the node is cached at 513 at most: an entry lives at (key, resolution).
-  await engine.trim({ keepResolution: 513 });
-  const coarse = await evaluate(engine, doc, [`${fbm}.out`], { resolution: 257 });
-  assert.equal(coarse.result.status, 'ok', JSON.stringify(coarse.result.errors));
-  assert.equal(ending(coarse.events, fbm), 'run', 'a result at 513 is no hit at 257');
-  const at257 = field(coarse.data[0], 257, 'fbm.out at 257');
+  await (await engineOf()).trim({ keepResolution: 513 });
+  const coarse = await evaluate(doc, ['fbm.out'], { res: 257 });
+  assert.equal(coarse.report.status, 'ok', errorsOf(coarse));
+  assert.equal(ending(coarse, 'fbm'), 'run', 'a result at 513 is no hit at 257');
+  const at257 = field(coarse, 'fbm.out', 257);
 
   // testing.md 3.4: a generator at two ladder levels, at shared vertices, max <= 1e-6.
   const shared = decimate(at513, 513);
@@ -318,18 +254,16 @@ test('ref/fbm: 513 decimated equals 257, and every level is finite and varied', 
     assert.ok(step < 0.25 * s.std, `${name}: the mean step between neighbours is ${step}, the std ${s.std}`);
   }
 
-  writeGrey('worked-nodes/fbm-513-grey', at513, 513);
-  writeHillshade('worked-nodes/fbm-513-hillshade', at513, 513, SETTINGS.terrainSize, SETTINGS.heightRange);
-  noLeaks(engine);
+  await writeGrey('worked-nodes/fbm-513-grey', at513, 513);
+  await writeHillshade('worked-nodes/fbm-513-hillshade', at513, 513, SETTINGS.terrainSize, SETTINGS.heightRange);
+  await expectNoLeaks();
 });
 
 test('ref/fbm: the generator range rule holds for the node seeds 0, 1 and 2, and the seeds differ', async () => {
-  const engine = await engineFor('auto');
   const results: Float32Array[] = [];
   for (const seed of [0, 1, 2]) {
-    const { doc, fbm } = terrain({ fbm: { seed } });
-    const out = await evaluate(engine, doc, [`${fbm}.out`], { resolution: 257 });
-    const data = field(out.data[0], 257, `fbm.out with seed ${seed}`);
+    const out = await evaluate(terrain({ fbm: { seed } }), ['fbm.out'], { res: 257 });
+    const data = field(out, 'fbm.out', 257);
     const s = statsOf(data);
     // engine.md 1.7; testing.md 3.2 generator-range, no further tolerance.
     assert.equal(s.nonFinite, 0);
@@ -344,16 +278,14 @@ test('ref/fbm: the generator range rule holds for the node seeds 0, 1 and 2, and
     for (let i = 0; i < results[a]!.length; i++) if (results[a]![i] !== results[b]![i]) differing++;
     assert.ok(differing > 0.01 * results[a]!.length, `seeds ${a} and ${b} differ in ${differing} values; more than 1 % must`);
   }
-  noLeaks(engine);
+  await expectNoLeaks();
 });
 
 test('the graph describes a shape in a unit box: seeds change it, the terrain size and the height range do not', async () => {
-  const engine = await engineFor('auto');
   const render = async (opts: Parameters<typeof terrain>[0]): Promise<{ fbm: Float32Array; talus: Float32Array; endings: string[] }> => {
-    const t = terrain({ talus: TALUS, ...opts });
-    const out = await evaluate(engine, t.doc, [`${t.fbm}.out`, `${t.talus}.out`], { resolution: 257 });
-    assert.equal(out.result.status, 'ok', JSON.stringify(out.result.errors));
-    return { fbm: field(out.data[0], 257, 'fbm.out'), talus: field(out.data[1], 257, 'talus.out'), endings: [ending(out.events, t.fbm), ending(out.events, t.talus)] };
+    const out = await evaluate(terrain({ talus: TALUS, ...opts }), ['fbm.out', 'talus.out'], { res: 257 });
+    assert.equal(out.report.status, 'ok', errorsOf(out));
+    return { fbm: field(out, 'fbm.out', 257), talus: field(out, 'talus.out', 257), endings: [ending(out, 'fbm'), ending(out, 'talus')] };
   };
   const differing = (a: Float32Array, b: Float32Array): number => a.reduce((count, v, i) => count + (v === b[i] ? 0 : 1), 0);
   const base = await render({});
@@ -377,7 +309,7 @@ test('the graph describes a shape in a unit box: seeds change it, the terrain si
   const steeper = await render({ settings: { heightRange: 2 * SETTINGS.heightRange } });
   assertIdentical(steeper.fbm, base.fbm, 'fbm.out with the height range doubled');
   assert.ok(differing(steeper.talus, base.talus) > one, 'ref/talus moves more on a terrain twice as steep');
-  noLeaks(engine);
+  await expectNoLeaks();
 });
 
 // ---- ref/talus ------------------------------------------------------------------------------------------------------
@@ -421,170 +353,154 @@ test('ref/talus: relaxes steep pairs, conserves material, accumulates what moved
   assert.equal(changedWhereUntouched, 0, 'where moved is 0 the height is bit-identical to the input');
   assert.ok(touched > 0 && untouched > 0, `the node changes part of the terrain: ${touched} texels moved, ${untouched} did not`);
 
-  writeGrey('worked-nodes/talus-513-grey', relaxed, 513);
-  writeHillshade('worked-nodes/talus-513-hillshade', relaxed, 513, SETTINGS.terrainSize, SETTINGS.heightRange);
-  writeGrey('worked-nodes/talus-513-moved', moved, 513, 'auto');
+  await writeGrey('worked-nodes/talus-513-grey', relaxed, 513);
+  await writeHillshade('worked-nodes/talus-513-hillshade', relaxed, 513, SETTINGS.terrainSize, SETTINGS.heightRange);
+  await writeGrey('worked-nodes/talus-513-moved', moved, 513, 'auto');
 });
 
 test('runs are bit-identical: recycled textures against new ones, a build against a preview, a document from a file', async () => {
   const ref = await reference();
-  const engine = await engineFor('auto');
-  const { doc, fbm, talus } = terrain({ talus: TALUS });
-  const targets = [`${fbm}.out`, `${talus}.out`, `${talus}.moved`];
-  const same = (out: Outcome, what: string): void => {
-    assert.equal(out.result.status, 'ok', `${what}: ${JSON.stringify(out.result.errors)}`);
-    assertIdentical(field(out.data[0], 513, 'fbm.out'), ref.fbm, `fbm.out of ${what}`);
-    assertIdentical(field(out.data[1], 513, 'talus.out'), ref.out, `talus.out of ${what}`);
-    assertIdentical(field(out.data[2], 513, 'talus.moved'), ref.moved, `talus.moved of ${what}`);
+  const engine = await engineOf();
+  const doc = terrain({ talus: TALUS });
+  const targets = ['fbm.out', 'talus.out', 'talus.moved'];
+  const same = (out: GraphRender, what: string, names: readonly string[] = targets): void => {
+    assert.equal(out.report.status, 'ok', `${what}: ${errorsOf(out)}`);
+    assertIdentical(field(out, names[0]!, 513), ref.fbm, `fbm.out of ${what}`);
+    assertIdentical(field(out, names[1]!, 513), ref.out, `talus.out of ${what}`);
+    assertIdentical(field(out, names[2]!, 513), ref.moved, `talus.moved of ${what}`);
   };
 
   // A build neither reads nor writes the cache (runtime.md 2.8): both nodes run, and what it made is FREE afterwards.
   // The second build therefore works on recycled textures, which hold -1e30 (poisonRecycled), not zeros.
   for (const round of ['a build', 'a second build, on recycled textures']) {
-    const build = await evaluate(engine, doc, targets, { resolution: 513, mode: 'build' });
-    assert.deepEqual([ending(build.events, fbm), ending(build.events, talus), build.result.timing.nodesRun], ['run', 'run', 2], round);
+    const build = await evaluate(doc, targets, { res: 513, mode: 'build' });
+    assert.deepEqual([ending(build, 'fbm'), ending(build, 'talus'), build.report.nodesRun], ['run', 'run', 2], round);
     same(build, round);
-    noLeaks(engine);
   }
 
   // A preview fills the cache where it is not filled yet. The document written to text and read back has the
   // same keys: every node is a cache hit.
-  same(await evaluate(engine, doc, targets, { resolution: 513 }), 'a preview');
-  const reread = parseDoc(serializeDoc(doc), registry);
+  same(await evaluate(doc, targets, { res: 513 }), 'a preview');
+  const reread = parseDoc(serializeDoc(doc), engine.registry);
   assert.equal(reread.problems.length, 0, JSON.stringify(reread.problems.slice(0, 5)));
-  const cached = await evaluate(engine, reread.doc, targets, { resolution: 513 });
-  assert.deepEqual([ending(cached.events, fbm), ending(cached.events, talus), cached.result.timing.nodesRun], ['cached', 'cached', 0]);
-  same(cached, 'the cache');
+  // A document that was read from text is addressed by the ids it holds.
+  const idOf = (type: string): string => Object.values(reread.doc.nodes).find((node) => node.type === type)!.id;
+  const [fbmId, talusId] = [idOf('ref/fbm'), idOf('ref/talus')];
+  const stored = [`${fbmId}.out`, `${talusId}.out`, `${talusId}.moved`];
+  const cached = await evaluate(reread.doc, stored, { res: 513 });
+  assert.deepEqual([ending(cached, fbmId), ending(cached, talusId), cached.report.nodesRun], ['cached', 'cached', 0]);
+  same(cached, 'the cache', stored);
 
   // Nothing cached and nothing FREE: a preview on textures the device has just made.
   await engine.trim();
-  const fresh = await evaluate(engine, doc, targets, { resolution: 513 });
-  assert.deepEqual([ending(fresh.events, fbm), ending(fresh.events, talus), fresh.result.timing.nodesRun], ['run', 'run', 2]);
+  const fresh = await evaluate(doc, targets, { res: 513 });
+  assert.deepEqual([ending(fresh, 'fbm'), ending(fresh, 'talus'), fresh.report.nodesRun], ['run', 'run', 2]);
   same(fresh, 'a run on an emptied pool');
-  noLeaks(engine);
+  await expectNoLeaks();
 });
 
 test('ref/talus: an output nobody wants is neither allocated nor computed, and wanting it later runs the node again', async () => {
   const ref = await reference();
-  const engine = await engineFor('auto');
-  await engine.trim();
-  const { doc, fbm, talus } = terrain({ talus: TALUS });
+  await (await engineOf()).trim();
+  const doc = terrain({ talus: TALUS });
 
   // testing.md 10.2 graph 03 items 1 and 2: two fields without `moved`, three with it.
-  const alone = await evaluate(engine, doc, [`${talus}.out`], { resolution: 513, outputs: 'needed' });
-  assert.equal(alone.result.status, 'ok', JSON.stringify(alone.result.errors));
-  assert.equal(peakBytes(alone.events, talus), 2 * FIELD_BYTES(513), 'the node held its ping-pong pair and nothing else');
-  assertIdentical(field(alone.data[0], 513, 'talus.out'), ref.out, 'talus.out wanted alone');
+  const alone = await evaluate(doc, ['talus.out'], { res: 513, outputs: 'needed' });
+  assert.equal(alone.report.status, 'ok', errorsOf(alone));
+  assert.equal(alone.report.nodes.talus!.peakBytes, 2 * FIELD_BYTES(513), 'the node held its ping-pong pair and nothing else');
+  assertIdentical(field(alone, 'talus.out', 513), ref.out, 'talus.out wanted alone');
 
-  const both = await evaluate(engine, doc, [`${talus}.out`, `${talus}.moved`], { resolution: 513, outputs: 'needed' });
-  assert.deepEqual([ending(both.events, fbm), ending(both.events, talus)], ['cached', 'run'], 'the entry lacked `moved`');
-  assert.equal(peakBytes(both.events, talus), 3 * FIELD_BYTES(513));
-  assertIdentical(field(both.data[0], 513, 'talus.out'), ref.out, 'talus.out with `moved` wanted');
-  assertIdentical(field(both.data[1], 513, 'talus.moved'), ref.moved, 'talus.moved');
+  const both = await evaluate(doc, ['talus.out', 'talus.moved'], { res: 513, outputs: 'needed' });
+  assert.deepEqual([ending(both, 'fbm'), ending(both, 'talus')], ['cached', 'run'], 'the entry lacked `moved`');
+  assert.equal(both.report.nodes.talus!.peakBytes, 3 * FIELD_BYTES(513));
+  assertIdentical(field(both, 'talus.out', 513), ref.out, 'talus.out with `moved` wanted');
+  assertIdentical(field(both, 'talus.moved', 513), ref.moved, 'talus.moved');
 
-  const again = await evaluate(engine, doc, [`${talus}.out`], { resolution: 513, outputs: 'needed' });
-  assert.equal(ending(again.events, talus), 'cached', 'the entry holds both outputs now');
-  noLeaks(engine);
+  const again = await evaluate(doc, ['talus.out'], { res: 513, outputs: 'needed' });
+  assert.equal(ending(again, 'talus'), 'cached', 'the entry holds both outputs now');
+  await expectNoLeaks();
 });
 
 test('ref/talus is maskable: out is mix(in, relaxed, saturate(mask)), and `moved` is as computed', async () => {
-  const engine = await engineFor('auto');
-  const plain = terrain({ talus: TALUS });
-  const masked = terrain({ talus: TALUS, maskSeed: 7 });
-  const raw = await evaluate(engine, plain.doc, [`${plain.fbm}.out`, `${plain.talus}.out`, `${plain.talus}.moved`], { resolution: 257 });
-  const mix = await evaluate(engine, masked.doc, [`${masked.talus}.out`, `${masked.talus}.moved`, `${masked.mask!}.out`], { resolution: 257 });
-  assert.deepEqual([raw.result.status, mix.result.status], ['ok', 'ok'], JSON.stringify([raw.result.errors, mix.result.errors]));
+  const raw = await evaluate(terrain({ talus: TALUS }), ['fbm.out', 'talus.out', 'talus.moved'], { res: 257 });
+  const mix = await evaluate(terrain({ talus: TALUS, maskSeed: 7 }), ['talus.out', 'talus.moved', 'mask.out'], { res: 257 });
+  assert.deepEqual([raw.report.status, mix.report.status], ['ok', 'ok'], errorsOf(raw) + errorsOf(mix));
   // The mask is in O, not in K (runtime.md 5.4): the node with a mask is the node without one, re-blended.
-  assert.equal(ending(mix.events, masked.talus), 'cached');
+  assert.equal(ending(mix, 'talus'), 'cached');
 
-  const input = field(raw.data[0], 257, 'fbm.out');
-  const relaxed = field(raw.data[1], 257, 'talus.out');
-  const mask = field(mix.data[2], 257, 'the mask');
-  const blended = field(mix.data[0], 257, 'talus.out with a mask');
+  const input = field(raw, 'fbm.out', 257);
+  const relaxed = field(raw, 'talus.out', 257);
+  const mask = field(mix, 'mask.out', 257);
+  const blended = field(mix, 'talus.out', 257);
   const saturate = (v: number): number => Math.min(Math.max(v, 0), 1);
   const { difference, index } = worst(blended, (i) => input[i]! + (relaxed[i]! - input[i]!) * saturate(mask[i]!));
   assert.ok(difference <= 1e-6, `max difference ${difference} at float ${index}; allowed 1e-6`);
   const blendedChange = worst(blended, (i) => relaxed[i]!).difference;
   assert.ok(blendedChange > 1e-4, `the mask changes the output (largest change ${blendedChange})`);
-  assertIdentical(field(mix.data[1], 257, 'talus.moved with a mask'), field(raw.data[2], 257, 'talus.moved'), 'talus.moved with a mask');
-  noLeaks(engine);
+  assertIdentical(field(mix, 'talus.moved', 257), field(raw, 'talus.moved', 257), 'talus.moved with a mask');
+  await expectNoLeaks();
 });
 
 // ---- failure paths of an iterative node ---------------------------------------------------------------------------
 
 test('a budget that does not hold the working state: the node fails with kind "budget", a build fails before it starts', async () => {
-  const engine = await engineFor('auto');
-  await engine.trim();
-  const { doc, fbm, talus } = terrain({ talus: TALUS });
+  await (await engineOf()).trim();
+  const doc = terrain({ talus: TALUS });
   // Room for two fields of 257 x 257 beside what the engine has reserved (testing.md 2.3, fieldBudgetBytes).
-  engine.setBudget(engine.memory().reservedBytes + 600_000);
-  try {
-    const preview = await evaluate(engine, doc, [`${talus}.out`], { resolution: 257 });
-    assert.equal(preview.result.status, 'errors');
-    assert.deepEqual([ending(preview.events, fbm), ending(preview.events, talus)], ['run', 'error:budget']);
-    const error = preview.result.errors[0]!;
-    assert.deepEqual([error.nodeId, error.nodeType, error.kind], [talus, 'ref/talus', 'budget']);
-    assert.match(error.message, /^Needs \d+ KB more GPU memory at 257 × 257: budget \d+ (KB|MB), \d+ KB in use by this node, \d+ KB pinned$/);
-    assert.ok(preview.data[0] === null, 'a failed target delivers no field');
-    noLeaks(engine);
+  const preview = await evaluate(doc, ['talus.out'], { res: 257, fieldBudgetBytes: 600_000 });
+  assert.equal(preview.report.status, 'errors');
+  assert.deepEqual([ending(preview, 'fbm'), ending(preview, 'talus')], ['run', 'error:budget']);
+  const error = preview.report.nodes.talus!.error!;
+  assert.deepEqual([error.nodeId, error.nodeType, error.kind], ['talus', 'ref/talus', 'budget']);
+  assert.match(error.message, /^Needs \d+ KB more GPU memory at 257 × 257: budget \d+ (KB|MB), \d+ KB in use by this node, \d+ KB pinned$/);
+  assert.equal(preview.fields['talus.out'], undefined, 'a failed target delivers no field');
 
-    // runtime.md 5.3 step 6: fbm.out, talus.out and talus.moved are alive together, which is three fields.
-    const build = await evaluate(engine, doc, [`${talus}.out`, `${talus}.moved`], { resolution: 257, mode: 'build' });
-    assert.equal(build.result.status, 'errors');
-    assert.equal(build.events.filter((e) => e.type === 'node-start').length, 0, 'no node runs');
-    assert.deepEqual(build.result.errors.map((e) => e.kind), ['budget']);
-    noLeaks(engine);
-  } finally {
-    engine.setBudget(BUDGET);
-  }
-  const ok = await evaluate(engine, doc, [`${talus}.out`], { resolution: 257 });
-  assert.deepEqual([ok.result.status, ending(ok.events, fbm), ending(ok.events, talus)], ['ok', 'cached', 'run'], 'the engine goes on');
-  noLeaks(engine);
+  // runtime.md 5.3 step 6: fbm.out, talus.out and talus.moved are alive together, which is three fields.
+  const build = await evaluate(doc, ['talus.out', 'talus.moved'], { res: 257, mode: 'build', fieldBudgetBytes: 600_000 });
+  assert.equal(build.report.status, 'errors');
+  assert.equal(build.report.events.filter((e) => e.type === 'node-start').length, 0, 'no node runs');
+  assert.deepEqual(Object.values(build.report.nodes).flatMap((node) => (node.error ? [node.error.kind] : [])), ['budget']);
+
+  const ok = await evaluate(doc, ['talus.out'], { res: 257 });
+  assert.deepEqual([ok.report.status, ending(ok, 'fbm'), ending(ok, 'talus')], ['ok', 'cached', 'run'], 'the engine goes on');
+  await expectNoLeaks();
 });
 
 // ---- slicing: the two engines with forced slice sizes, last (testing.md 2.1) --------------------------------------
 
 test('slicing and cancellation: tiles one workgroup high, aborted in the loop, then bit-identical to one slice', async () => {
-  const { doc, fbm, talus } = terrain({ talus: TALUS });
-  const targets = [`${talus}.out`, `${talus}.moved`];
+  const doc = terrain({ talus: TALUS });
+  const targets = ['talus.out', 'talus.moved'];
 
-  const small = await engineFor('small');
   // Abort when the second slice of the node's loop has completed (testing.md 10.2 graph 03 item 5).
   const controller = new AbortController();
   let seen = 0;
-  onSlice = (slice) => {
-    if (slice.nodeId === talus && ++seen === 2) controller.abort();
-  };
-  let aborted: Outcome;
-  try {
-    aborted = await evaluate(small, doc, targets, { resolution: 257, signal: controller.signal });
-  } finally {
-    onSlice = null;
-  }
-  assert.equal(aborted.result.status, 'aborted');
-  assert.deepEqual([ending(aborted.events, fbm), ending(aborted.events, talus)], ['run', 'skipped:aborted']);
-  assert.deepEqual(aborted.data.map((d) => d === null), [true, true], 'an aborted evaluation delivers nothing');
-  noLeaks(small);
+  const aborted = await evaluate(doc, targets, {
+    res: 257, slices: 'small', signal: controller.signal,
+    onSlice: (slice) => {
+      if (slice.nodeId === 'talus' && ++seen === 2) controller.abort();
+    },
+  });
+  assert.equal(aborted.report.status, 'aborted');
+  assert.deepEqual([ending(aborted, 'fbm'), ending(aborted, 'talus')], ['run', 'skipped:aborted']);
+  assert.deepEqual(Object.keys(aborted.fields), [], 'an aborted evaluation delivers nothing');
 
-  slices = [];
-  const tiled = await evaluate(small, doc, targets, { resolution: 257 });
-  assert.equal(tiled.result.status, 'ok', JSON.stringify(tiled.result.errors));
-  assert.deepEqual([ending(tiled.events, fbm), ending(tiled.events, talus)], ['cached', 'run'], 'what had completed before the abort stayed cached');
-  const smallSlices = slices.filter((s) => s.nodeId === talus).length;
-  const fractions = tiled.events.filter((e): e is Extract<EvalEvent, { type: 'node-progress' }> => e.type === 'node-progress' && e.nodeId === talus).map((e) => e.fraction);
+  const tiled = await evaluate(doc, targets, { res: 257, slices: 'small' });
+  assert.equal(tiled.report.status, 'ok', errorsOf(tiled));
+  assert.deepEqual([ending(tiled, 'fbm'), ending(tiled, 'talus')], ['cached', 'run'], 'what had completed before the abort stayed cached');
+  const smallSlices = tiled.report.nodes.talus!.slices;
+  const fractions = tiled.report.nodes.talus!.progress;
   assert.ok(fractions.every((f, i) => f >= 0 && f <= 1 && (i === 0 || f >= fractions[i - 1]!)), 'progress is within 0..1 and does not decrease');
-  const fbmTiled = await evaluate(small, doc, [`${fbm}.out`], { resolution: 257 });
-  noLeaks(small);
+  const fbmTiled = await evaluate(doc, ['fbm.out'], { res: 257, slices: 'small' });
 
-  const one = await engineFor('one');
-  const whole = await evaluate(one, doc, targets, { resolution: 257 });
-  assert.equal(whole.result.status, 'ok', JSON.stringify(whole.result.errors));
-  const oneSlices = slices.filter((s) => s.nodeId === talus).length;
+  const whole = await evaluate(doc, targets, { res: 257, slices: 'one' });
+  assert.equal(whole.report.status, 'ok', errorsOf(whole));
+  const oneSlices = whole.report.nodes.talus!.slices;
   // 13 iterations of 33 tiles each against a loop that fits one slice.
   assert.ok(smallSlices > 100 && oneSlices <= 3, `${smallSlices} slices with the small target, ${oneSlices} with one`);
-  assertIdentical(field(tiled.data[0], 257, 'talus.out, small slices'), field(whole.data[0], 257, 'talus.out, one slice'), 'talus.out, small slices against one');
-  assertIdentical(field(tiled.data[1], 257, 'talus.moved, small slices'), field(whole.data[1], 257, 'talus.moved, one slice'), 'talus.moved, small slices against one');
-  const fbmWhole = await evaluate(one, doc, [`${fbm}.out`], { resolution: 257 });
-  assertIdentical(field(fbmTiled.data[0], 257, 'fbm.out, small slices'), field(fbmWhole.data[0], 257, 'fbm.out, one slice'), 'fbm.out, small slices against one');
-  noLeaks(one);
+  assertIdentical(field(tiled, 'talus.out', 257), field(whole, 'talus.out', 257), 'talus.out, small slices against one');
+  assertIdentical(field(tiled, 'talus.moved', 257), field(whole, 'talus.moved', 257), 'talus.moved, small slices against one');
+  const fbmWhole = await evaluate(doc, ['fbm.out'], { res: 257, slices: 'one' });
+  assertIdentical(field(fbmTiled, 'fbm.out', 257), field(fbmWhole, 'fbm.out', 257), 'fbm.out, small slices against one');
+  await expectNoLeaks();
 });

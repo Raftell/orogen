@@ -92,7 +92,7 @@ const BROKEN: Readonly<Record<string, Expectation>> = {
   // Batches also differ between 257 and 513: a kernel new to a ladder level fills its first slices by texels (runtime.md 3.4).
   'bad-slicing': { fails: ['slicing'], mayFail: ['abort', 'deterministic', 'resolution'], says: { slicing: /^output "out" with slices "small" against R129: 16641 of 16641 values are not bit-identical/ } },
 };
-const SOUND = ['good-shelf', 'good-tolerance', 'good-any', 'good-tone'];
+const SOUND = ['good-shelf', 'good-tolerance', 'good-any', 'good-tone', 'good-disc', 'good-file', 'good-stamp', 'good-pack', 'good-solid', 'good-band', 'good-switch'];
 
 test('the child ran every suite and failed, as a run with broken nodes does', () => {
   assert.ok(child, 'the child was started');
@@ -142,6 +142,42 @@ test('an opt-out is reported as skipped with its reason, and listed in the repor
   assert.equal(tolerance.checks.resolution!.result, 'passed');
   assert.deepEqual(tolerance.optOuts.map((o) => [o.check, o.kind, o.value]), [['resolution', 'tolerance', 0.2]]);
   assert.deepEqual(report('bad-tolerance').optOuts, []);
+});
+
+test('the generator checks: no required input, a height as the primary output and no file parameter', () => {
+  // A mask made from nothing and a node with a file parameter are no generators: no range rule, and the
+  // resolution check is the one of every other node, tolerance included.
+  const disc = report('good-disc');
+  assert.equal(disc.checks['generator-range']!.result, 'not-applicable');
+  assert.equal(disc.checks.resolution!.result, 'passed');
+  assert.deepEqual(disc.optOuts.map((o) => [o.check, o.kind, o.value]), [['resolution', 'tolerance', 0.02]], 'a tolerance is accepted where the node is no generator');
+  const file = report('good-file');
+  assert.equal(file.checks['generator-range']!.result, 'not-applicable', 'its heights span a tenth of the range, as those of ref/bad-range, which fails');
+  assert.equal(file.checks.resolution!.result, 'passed');
+  // An optional input does not make a node less of a generator: both checks run, with the input connected.
+  const stamp = report('good-stamp');
+  assert.deepEqual([stamp.checks['generator-range']!.result, stamp.checks.resolution!.result, stamp.checks['optional-unbound']!.result], ['passed', 'passed', 'passed']);
+  // The resolution check of a generator is the exact one: ref/bad-px fails it by its message.
+  assert.match(report('bad-px').checks.resolution!.message ?? '', /a generator is a function of uv, allowed 1e-6$/);
+});
+
+test('the port shapes of the catalog pass: channels as optional inputs, a colour from nothing, a mask in, several `any` inputs', () => {
+  // The first input of ref/good-pack is optional and named `r`; with every input connected its alpha is a field, so `alpha` is skipped with its reason.
+  const pack = report('good-pack');
+  assert.deepEqual(pack.checks.alpha, { result: 'skipped', reason: 'The alpha channel is the fourth packed field, as the description says.' });
+  assert.deepEqual([pack.checks['optional-unbound']!.result, pack.checks['generator-range']!.result], ['passed', 'not-applicable']);
+  assert.ok(existsSync(path.join(OUTPUT, 'nodes', 'ref', 'good-pack', 'out.png')));
+  // A colour from nothing is no generator; its alpha is checked.
+  const solid = report('good-solid');
+  assert.deepEqual([solid.checks.alpha!.result, solid.checks['generator-range']!.result, solid.checks.resolution!.result], ['passed', 'not-applicable', 'passed']);
+  // A mask in, a mask and a data field out: each output has its picture.
+  const band = report('good-band');
+  assert.deepEqual([band.checks['mask-range']!.result, band.checks.wants!.result], ['passed', 'passed']);
+  for (const picture of ['out', 'raw']) assert.ok(existsSync(path.join(OUTPUT, 'nodes', 'ref', 'good-band', `${picture}.png`)), `${picture}.png`);
+  // Two `any` inputs get two fields in the field variant: the second input, which the default mode passes on, is no copy of the first.
+  const both = report('good-switch');
+  assert.deepEqual(withResult(both, 'failed'), []);
+  for (const picture of ['out', 'out-color']) assert.ok(existsSync(path.join(OUTPUT, 'nodes', 'ref', 'good-switch', `${picture}.png`)), `${picture}.png`);
 });
 
 test('an export node gets the meta check alone, and that check asks the export rules', () => {
@@ -232,7 +268,7 @@ test('only the five skippable checks can be skipped, and only where they apply',
   assert.throws(() => conformance(talus, { skip: { seed: REASON } }), /does not apply/);
   assert.throws(() => conformance(talus, { skip: { 'generator-range': REASON } }), /does not apply/);
   // A tolerance replaces 0.01 for a node that reads its input: a generator has none, and a skipped check takes none.
-  assert.throws(() => conformance(fbm, { resolutionTol: { value: 0.05, reason: REASON } }), /a generator agrees at shared vertices within 1e-6/);
+  assert.throws(() => conformance(fbm, { resolutionTol: { value: 0.05, reason: REASON } }), /resolutionTol on a generator: a generator agrees at shared vertices within 1e-6/);
   assert.throws(() => conformance(talus, { resolutionTol: { value: 0.05, reason: REASON }, skip: { resolution: REASON } }), /both declared/);
 });
 

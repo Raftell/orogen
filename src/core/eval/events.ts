@@ -3,7 +3,7 @@ import type { EvaluateResult } from './evaluator.ts';
 
 export type EvalEvent =
   | { readonly type: 'eval-start'; readonly requestId: number; readonly resolution: number; readonly mode: 'preview' | 'build';
-      readonly plan: readonly { readonly nodeId: string; readonly state: 'cached' | 'run' | 'bypassed' | 'blocked' }[];
+      readonly plan: readonly { readonly nodeId: string; readonly state: 'cached' | 'run' | 'bypassed' | 'blocked' | 'unused' }[];
       readonly outputPeakBytes: number | null }                                 // build only
   | { readonly type: 'node-start'; readonly requestId: number; readonly nodeId: string }
   | { readonly type: 'node-progress'; readonly requestId: number; readonly nodeId: string;

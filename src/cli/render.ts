@@ -19,8 +19,9 @@ import { describeError, exitCodeOf, HARD_CEILING_MS, overran, type RenderResult,
 
 /**
  * Evaluates the plan's node at `res` in build mode with every output as a target, and writes the pictures of
- * each output as soon as it is delivered: `nodes/<category>/<name>/<output>-<res>[-3d|-crop].png` in the sink.
- * Resolves whatever the status; rejects when a picture cannot be written, and for a malformed plan.
+ * each output as soon as it is delivered: `nodes/<category>/<name>/<output>-<res>[-masked][-3d|-crop].png` in
+ * the sink, with `-masked` for the masked variant of a node type. Resolves whatever the status; rejects when a
+ * picture cannot be written, and for a malformed plan.
  */
 export async function renderPlan(
   cli: CliEngine, sink: FileSink, plan: RenderPlan,
@@ -74,7 +75,7 @@ export async function renderPlan(
         }
         const port = outputs[index - first]!;
         for (const { suffix, draw } of picturesOf(port, field, terrain, scale, opts.crop)) {
-          const file = `nodes/${plan.type}/${port.name}-${opts.res}${suffix}.png`;
+          const file = `nodes/${plan.type}/${port.name}-${opts.res}${plan.masked ? '-masked' : ''}${suffix}.png`;
           const picture = draw();
           await writePicture(sink, file, picture);
           files.push(file);
@@ -104,7 +105,7 @@ export async function render(command: RenderCommand, signal: AbortSignal): Promi
   let plan: RenderPlan;
   let source: FileSource;
   if (command.source.kind === 'type') {
-    plan = typeDocument(registry, command.source.type, { params: command.params, maxParams: command.maxParams, seed: command.seed });
+    plan = typeDocument(registry, command.source.type, { params: command.params, maxParams: command.maxParams, seed: command.seed, masked: command.masked });
     // A relative `file` parameter given with --param is taken from the working directory.
     source = NodeFileSource(process.cwd());
   } else {

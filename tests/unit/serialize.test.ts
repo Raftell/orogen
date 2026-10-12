@@ -8,6 +8,7 @@ import {
   DocFormatError, newDoc, newId, parseDoc, serializeDoc,
   type DocProblem, type Edge, type GraphDoc, type NodeInstance,
 } from '../../src/core/runtime.ts';
+import { MAX_NESTING } from '../../src/core/graph/serialize.ts';
 import { combine, node, registry } from './graph-fixtures.ts';
 import { createRegistry } from '../../src/core/api.ts';
 
@@ -45,6 +46,62 @@ test('parseDoc throws DocFormatError for text that is no project of this version
   fails(JSON.stringify(file({ format: 'gaea' })), /"format" is not "orogen"/);
   fails(JSON.stringify(file({ version: 2 })), /written by a newer version of Orogen/);
   fails(JSON.stringify(file({ version: 1.5 })), /written by a newer version of Orogen/);
+});
+
+// ---- nesting -------------------------------------------------------------------------------------------------------
+
+/** `depth` objects or arrays inside one another around the number 1, as text. */
+const nested = (depth: number, kind: 'object' | 'array'): string =>
+  (kind === 'object' ? `${'{"v":'.repeat(depth)}1${'}'.repeat(depth)}` : `${'['.repeat(depth)}1${']'.repeat(depth)}`);
+/** A project file whose node `n` has the given text as the value of three params: a gradient, a float and one the node lacks. */
+const deepFile = (type: string, value: string): string =>
+  `{"format":"orogen","version":1,"settings":${JSON.stringify(SETTINGS)},`
+  + `"nodes":{"n":{"id":"n","type":"${type}","version":1,"position":{"x":0,"y":0},"params":{"strength":${value},"extra":${value},"mode":"add"}}},"edges":{},"groups":{},"ui":{}}`;
+
+test('nesting: a value more than 32 objects and arrays deep is removed with a problem, and the document serialises', () => {
+  // The document is level 1, nodes 2, the node 3, its params 4: a param value may nest 28 levels of its own.
+  assert.equal(MAX_NESTING, 32);
+  for (const kind of ['object', 'array'] as const) {
+    for (const type of ['ref/combine', 'legacy/unknown']) {
+      const kept = parseDoc(deepFile(type, nested(28, kind)), registry);
+      assert.deepEqual(messages(kept.problems).filter((m) => m.includes('nested')), [], `${type}, ${kind}: 28 levels below params are within the bound`);
+      assert.ok(Object.hasOwn(kept.doc.nodes.n!.params, 'extra'));
+
+      // 3000 levels are what serializeDoc could still write, 6000 what it could not, 100 000 far beyond both: 600 kB of text at most.
+      for (const depth of [29, 40, 3000, 6000, 100_000]) {
+        const { doc, problems } = parseDoc(deepFile(type, nested(depth, kind)), registry);
+        const about = problems.filter((p) => p.message.includes('nested'));
+        assert.deepEqual(about.map((p) => p.nodeId), ['n', 'n'], `${type}, ${kind}, ${depth}: one problem per value, under the node`);
+        assert.match(about[0]!.message, /^The value at nodes\.n\.params\.(strength|extra)\.\S*\.\.\. is nested more than 32 levels deep; it is removed$/);
+        const text = serializeDoc(doc);
+        assert.ok(text.length < 20_000, `${type}, ${kind}, ${depth}: the document is written, in ${text.length} characters`);
+        // What was cut is gone for good: the written file reads without a word about nesting, to an equal document.
+        const again = parseDoc(text, registry);
+        assert.deepEqual(messages(again.problems).filter((m) => m.includes('nested')), []);
+        assert.equal(serializeDoc(again.doc), text);
+      }
+    }
+  }
+});
+
+test('nesting: what is cut leaves its object and is null in its array; the values around it stay', () => {
+  // `extra` nests an array at level 32 whose second item is an object at level 33.
+  const chain = `${'{"v":'.repeat(27)}[1,{"too":"deep"},"kept"]${'}'.repeat(27)}`;
+  const { doc, problems } = parseDoc(deepFile('legacy/unknown', '0.5').replace('"extra":0.5', `"extra":${chain},"__proto__":${nested(40, 'object')}`), registry);
+  let at: unknown = doc.nodes.n!.params.extra;
+  for (let level = 0; level < 27; level++) at = (at as { v: unknown }).v;
+  assert.deepEqual(at, [1, null, 'kept']);
+  assert.equal(doc.nodes.n!.params.strength, 0.5);
+  assert.equal(Object.getPrototypeOf(doc.nodes.n!.params), Object.prototype, 'a member named __proto__ is cut as a member');
+  assert.equal(problems.filter((p) => p.message.includes('nested')).length, 2);
+
+  // Many deep values: the first are named, the rest counted.
+  const many = Array.from({ length: 20 }, (_, i) => `"p${i}":${nested(30, 'array')}`).join(',');
+  const wide = parseDoc(deepFile('legacy/unknown', '1').replace('"extra":1', many), registry);
+  const about = messages(wide.problems).filter((m) => m.includes('nested'));
+  assert.equal(about.length, 9);
+  assert.equal(about[8], '12 more values are nested more than 32 levels deep; they are removed');
+  assert.deepEqual(Object.keys(wide.doc.nodes.n!.params).filter((name) => name.startsWith('p')).length, 20, 'each param keeps its 28 levels');
 });
 
 // ---- serializeDoc and round trips ------------------------------------------------------------------------------

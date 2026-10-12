@@ -7,6 +7,7 @@ import {
   addNode, connect, newDoc, newId, parseDoc, setNodeFlags, setParam, setSettings, setView,
   type DocDraft, type FileSource, type GraphDoc, type PortRef, type ProjectSettings,
 } from '../../src/core/runtime.ts';
+import { inputFeeds, MASK_SLOPES, MASK_TERRAIN, terrainParams, type Feed } from '../../src/cli/document.ts';
 import { NodeFileSource } from '../../src/platform/node/files.ts';
 import { currentRegistry, exclusive, liveEngine, REPOSITORY, TEST_SETTINGS, useNodes, type Slices } from './engine.ts';
 import { evaluate, identityIds, sessionClosed, sessionOpened, sessionsOpen, type EvalReport, type IdMap, type SliceListener } from './evaluate.ts';
@@ -136,9 +137,10 @@ export function makeDoc(spec: GraphSpec): GraphDoc {
 }
 
 /**
- * A document with one instance of every given node, for whole-registry tests (8.4). A wiring type the
- * registry lacks is left out: its inputs take the `ref/fbm` itself, and without `ref/combine` there is no
- * chain and no view.
+ * A document with one instance of every given node, for whole-registry tests (8.4), each wired as the masked
+ * variant of `orogen render` wires it (inputFeeds): every input connected, each height from a terrain of its
+ * own. A wiring type the registry lacks is left out: its inputs take the terrain itself, and without
+ * `ref/combine` there is no chain and no view.
  */
 export function registryDoc(defs: readonly NodeDef[]): GraphDoc {
   useNodes(defs);
@@ -154,33 +156,45 @@ export function registryDoc(defs: readonly NodeDef[]): GraphDoc {
   ordered.forEach((def, i) => instances.set(def.type, addNode(draft, registry, def.type, { x: 320, y: 160 * i })));
 
   let wiringRows = 0;
-  const wiring = new Map<string, string>();
+  const made = new Map<string, string>();
   /**
-   * The node that feeds the inputs of one kind: the instance of the type when its only input is the one that
-   * is wired here (two nodes with one key would be one result, and the second a cache hit), else one more node.
+   * The node behind one feed. The instance of the wiring type stands in for the feed it equals: ref/fbm at its
+   * defaults is the first terrain, and a type whose one input the rule below wires from that terrain is the feed
+   * made of it. A second node there would have the instance's key: one result, and the second a cache hit.
    */
-  const feed = (type: string, from: (() => string) | null): string => {
-    let id = wiring.get(type);
+  const feedNode = (key: string, type: string, params: Readonly<Record<string, ParamValue>>, from: string | null): string => {
+    let id = made.get(key);
     if (id !== undefined) return id;
     const def = registry.get(type)!;
     const instance = instances.get(type);
-    if (instance !== undefined && def.inputs.length <= 1) id = instance;
+    const only = def.inputs.length === 1 ? inputFeeds(def, true)[def.inputs[0]!.name] : undefined;
+    const same = Object.keys(params).length === 0 && (from === null
+      ? def.inputs.length === 0
+      : only?.kind === 'terrain' && only.index === 0 && from === made.get('terrain 0'));
+    if (instance !== undefined && same) id = instance;
     else {
       id = addNode(draft, registry, type, { x: 0, y: 160 * wiringRows++ });
-      if (from && def.inputs[0]) connect(draft, registry, { node: from(), port: 'out' }, { node: id, port: def.inputs[0].name });
+      for (const [name, value] of Object.entries(params)) setParam(draft, registry, id, name, value);
+      if (from !== null && def.inputs[0]) connect(draft, registry, { node: from, port: 'out' }, { node: id, port: def.inputs[0].name });
     }
-    wiring.set(type, id);
+    made.set(key, id);
     return id;
   };
-  const heights = (): string => feed('ref/fbm', null);
-  const masks = (): string => (registry.get('ref/slope-mask') ? feed('ref/slope-mask', heights) : heights());
-  const colors = (): string => (registry.get('ref/colorize') ? feed('ref/colorize', heights) : heights());
+  const terrainOf = (index: number): string => feedNode(`terrain ${index}`, 'ref/fbm', terrainParams(index), null);
+  const sourceOf = (feed: Feed): string => {
+    if (feed.kind === 'terrain') return terrainOf(feed.index);
+    if (feed.kind === 'mask') {
+      return registry.get('ref/slope-mask') ? feedNode('mask', 'ref/slope-mask', MASK_SLOPES, feedNode('mask terrain', 'ref/fbm', MASK_TERRAIN, null)) : terrainOf(0);
+    }
+    return registry.get('ref/colorize') ? feedNode(`color ${feed.index}`, 'ref/colorize', {}, terrainOf(feed.index)) : terrainOf(feed.index);
+  };
 
   for (const def of ordered) {
     const id = instances.get(def.type)!;
-    for (const port of def.inputs) {
-      const from = port.type === 'color' ? colors() : port.type === 'field' && port.role === 'mask' ? masks() : heights();
-      if (from !== id) connect(draft, registry, { node: from, port: 'out' }, { node: id, port: port.name });
+    for (const [port, feed] of Object.entries(inputFeeds(def, true))) {
+      if (feed === null) continue;
+      const from = sourceOf(feed);
+      if (from !== id) connect(draft, registry, { node: from, port: 'out' }, { node: id, port });
     }
   }
 

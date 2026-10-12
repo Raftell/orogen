@@ -8,6 +8,8 @@ import { describeError, HARD_CEILING_MS, type RenderResult, type WrittenPicture 
 export interface GalleryEntry {
   readonly def: NodeDef;
   readonly result: RenderResult;
+  /** The masked variant (testing.md 2.4), for a node that has one and rendered without it; else null. */
+  readonly masked: RenderResult | null;
   /** The text of conformance/<category>/<name>.json in the output folder; null when it holds none. */
   readonly conformance: string | null;
 }
@@ -24,7 +26,7 @@ const needsFile = (def: NodeDef): boolean => def.params.some((param) => param.ki
 
 /** Whether this entry makes `gallery` exit with 1. */
 export function countsAsFailure(entry: GalleryEntry): boolean {
-  return entry.result.status !== 'ok' && !needsFile(entry.def);
+  return (entry.result.status !== 'ok' || (entry.masked !== null && entry.masked.status !== 'ok')) && !needsFile(entry.def);
 }
 
 const esc = (text: unknown): string => String(text)
@@ -166,6 +168,17 @@ function image(picture: WrittenPicture, alt: string): string {
   return `<a href="${src}"><img src="${src}" width="${picture.width}" height="${picture.height}" alt="${esc(alt)}" loading="lazy"></a>`;
 }
 
+/** The second figure of a node with a masked variant: outputs[0] with the optional mask inputs connected, or why there is none. */
+function maskedFigure(def: NodeDef, masked: RenderResult | null, primary: string): string {
+  if (masked === null) return '';
+  const main = masked.pictures[primary];
+  if (masked.status !== 'ok' || main === undefined) return `<div class="failed"><p>Not rendered with its mask connected.</p>${masked.errors.map((error) => `<pre>${esc(describeError(error, false))}</pre>`).join('')}</div>`;
+  const view = masked.views[primary];
+  const inputs = [...def.inputs.filter((port) => port.role === 'mask' && port.optional).map((port) => port.name), ...(def.maskable ? ['mask'] : [])];
+  return `<figure class="masked">${image(main, `${primary} of ${def.type} under a mask`)}${view ? image(view, `${primary} of ${def.type} under a mask, over its height input`) : ''}`
+    + `<figcaption>${esc(primary)} with ${inputs.map((name) => `<code>${esc(name)}</code>`).join(', ')} connected to a slope mask of the first terrain's broad shape</figcaption></figure>`;
+}
+
 function nodeArticle(entry: GalleryEntry, res: number): string {
   const { def, result } = entry;
   const primary = def.outputs[0]?.name ?? '';
@@ -184,13 +197,14 @@ function nodeArticle(entry: GalleryEntry, res: number): string {
     ...result.engineErrors.map((message) => `<span class="failed">GPU error outside every scope: ${esc(message)}</span>`),
   ] : [];
   return [
-    `<article class="node${result.status === 'ok' ? '' : ' broken'}" id="${esc(anchor(def.type))}">`,
+    `<article class="node${result.status === 'ok' && (entry.masked === null || entry.masked.status === 'ok') ? '' : ' broken'}" id="${esc(anchor(def.type))}">`,
     `<header><h3>${esc(def.title)}</h3><code class="type">${esc(def.type)}</code>${flags}</header>`,
     `<p class="description">${esc(def.description)}</p>`,
     def.keywords && def.keywords.length > 0 ? `<p class="keywords">${def.keywords.map((word) => `<span>${esc(word)}</span>`).join('')}</p>` : '',
     main !== undefined
       ? `<figure>${image(main, `${primary} of ${def.type}`)}${view ? image(view, `${primary} of ${def.type} over its height input`) : ''}<figcaption>${esc(primary)} at ${res} × ${res}: ${measuredItems.join(' · ')}</figcaption></figure>`
       : errorBox(def, result),
+    maskedFigure(def, entry.masked, primary),
     '<h4>Ports</h4>',
     `<table><thead><tr><th></th><th>Name</th><th>Label</th><th>Type</th></tr></thead><tbody>\n${portRows('input', def.inputs, {})}\n${portRows('output', def.outputs, result.pictures)}\n</tbody></table>`,
     '<h4>Parameters</h4>',

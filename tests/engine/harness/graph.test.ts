@@ -325,7 +325,9 @@ test('registryDoc: a wiring type the registry lacks is left out, and without ref
   const has = (type: string): boolean => engine.registry.get(type) !== undefined;
   const doc = registryDoc([firstByte, fbm, talus, dim]);
   const count = (type: string): number => Object.values(doc.nodes).filter((node) => node.type === type).length;
-  assert.deepEqual([count('ref/fbm'), count('ref/talus'), count('ref/h-dim'), count('ref/h-byte')], [1, 1, 1, 1], 'one instance each');
+  // ref/talus is maskable: its mask is a slope mask of a terrain of its own, the broad shape of the first.
+  assert.deepEqual([count('ref/talus'), count('ref/h-dim'), count('ref/h-byte')], [1, 1, 1], 'one instance each');
+  assert.deepEqual([count('ref/fbm'), count('ref/slope-mask')], has('ref/slope-mask') ? [2, 1] : [1, 0], 'the instance of ref/fbm is the first terrain');
   assert.equal(count('ref/colorize'), has('ref/colorize') ? 1 : 0);
   assert.equal(count('ref/combine'), has('ref/combine') ? 3 : 0, 'a link for every instance after the first, or none');
   assert.equal(doc.ui.view !== undefined, has('ref/combine'), 'the view is the end of the chain');
@@ -335,6 +337,7 @@ test('registryDoc: a wiring type the registry lacks is left out, and without ref
     return edge && doc.nodes[edge.from.node]!.type;
   };
   assert.equal(feed('ref/talus', 'in'), 'ref/fbm');
+  assert.equal(feed('ref/talus', 'mask'), has('ref/slope-mask') ? 'ref/slope-mask' : 'ref/fbm', 'the mask of a maskable node is wired');
   assert.equal(feed('ref/h-dim', 'in'), has('ref/colorize') ? 'ref/colorize' : 'ref/fbm', 'without ref/colorize a colour input takes the fbm itself: the evaluator converts');
 
   // Naming every node as a target evaluates the document with or without a chain (tests/graphs/registry.test.ts).

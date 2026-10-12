@@ -8,7 +8,10 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 
 import { FieldAccessError, ops, type Field, type ResampleFilter } from '../../../src/core/api.ts';
-import { assertClose, assertIdentical, grid, hills, rangeOf, resampleReference, sampled, speckle, startOps, upload, worstOf } from './rig.ts';
+import { BLUR_COARSE_ERROR } from '../../../src/core/ops/blur.ts';
+import {
+  assertClose, assertIdentical, gaussianReference, grid, hills, rangeOf, resampleReference, sampled, speckle, startOps, upload, worstOf,
+} from './rig.ts';
 
 const rig = await startOps();
 after(() => rig.dispose());
@@ -279,6 +282,73 @@ test('an input of the node is resampled without being changed, at an evaluation 
   assert.ok(worst.difference < TOLERANCE, `the plane is off by ${worst.difference}`);
 });
 
+test('ring: a result with a ring is the grid continued by one cell past the terrain, and a source with one is read as that grid', async () => {
+  const n = 65, size = 33, side = size + 2;
+  const source = grid(n, n, (x, y) => speckle(x, y, 21));
+  for (const filter of ['tent', 'bilinear', 'nearest', 'bspline'] as const) {
+    let ringed: Float32Array | null = null, plain: Float32Array | null = null, up: Float32Array | null = null;
+    await rig.run(async (ctx) => {
+      const src = upload(ctx, 'field', n, source);
+      const coarse = ops.resample(ctx, src, { size, filter, ring: { out: true } });
+      assert.deepEqual([coarse.kind, coarse.width, coarse.height, coarse.readOnly], ['field', side, side, false], 'one texel more on every side');
+      ringed = await ctx.read(coarse);
+      plain = await ctx.read(ops.resample(ctx, src, { size, filter }));
+      const fine = ops.resample(ctx, coarse, { size: n, filter: 'bilinear', ring: { src: true } });
+      assert.deepEqual([fine.width, fine.height], [n, n], 'the size counts vertices, with a ring on the source too');
+      up = await ctx.read(fine);
+    });
+    // The vertices are those of the grid without a ring, bit for bit; the ring is what the filter gives one cell
+    // further out when the source continues with its border texels.
+    assertIdentical(grid(size, size, (x, y) => ringed![(y + 1) * side + x + 1]!), plain!, `${filter}: the vertices of the grid with a ring`);
+    assertClose(ringed!, resampleReference(source, n, n, 1, size, filter, { out: 1 }), TOLERANCE, `${filter}: every texel, the ring included`);
+    assertClose(up!, resampleReference(ringed!, side, side, 1, n, 'bilinear', { src: 1 }), TOLERANCE, `${filter}: back up from the grid with a ring`);
+    // Up the ladder from a grid with a ring, a shared vertex is that grid's vertex, not its ring.
+    assertIdentical(grid(size, size, (x, y) => up![2 * y * n + 2 * x]!), plain!, `${filter}: the shared vertices after the way back up`);
+  }
+  // A color field, and a ring on both ends at once: 35 x 35 with a ring onto 19 x 19 with a ring.
+  // Multiples of 1/256, which the 16-bit floats of a color field hold exactly; a result is rounded to their 11 bits.
+  const tinted = grid(side, side, (x, y) => [...[1, 2, 3].map((c) => Math.floor(speckle(x, y, c) * 256) / 256), 1]);
+  let both: Float32Array | null = null;
+  await rig.run(async (ctx) => {
+    const out = ops.resample(ctx, upload(ctx, 'color', side, tinted), { size: 17, ring: { src: true, out: true } });
+    assert.deepEqual([out.kind, out.width], ['color', 19]);
+    both = await ctx.read(out);
+  });
+  assertClose(both!, resampleReference(tinted, side, side, 4, 17, 'tent', { src: 1, out: 1 }), 1 / 1024, 'a color field with a ring on both ends');
+});
+
+test('ring: a wide blur a node builds on a coarser grid is right at the border with a ring, and wrong without one', async () => {
+  // What ops.blur does for a sigma of 21 texels at 257 (blur.ts): down 4:1 with a triangle, a Gaussian of the
+  // variance that is missing there, and back up with the B-spline. Speckle is the hard case for the border.
+  const n = 257, sigma = 21, size = 65, ratio = (n - 1) / (size - 1);
+  const coarseSigma = Math.sqrt((sigma * sigma) / (ratio * ratio) - 0.5 + 1 / (6 * ratio * ratio));
+  const source = grid(n, n, (x, y) => speckle(x, y, 2));
+  let withRing: Float32Array | null = null, without: Float32Array | null = null, whole: Float32Array | null = null;
+  await rig.run(async (ctx) => {
+    const src = upload(ctx, 'field', n, source);
+    const build = (ring: boolean): Field<'field'> => {
+      const small = ops.resample(ctx, src, { size, filter: 'tent', ring: { out: ring } });
+      // ops.blur takes a length of the field it blurs: this many texels of `small`.
+      const blurred = ops.blur(ctx, small, coarseSigma / (small.width - 1));
+      const out = ops.resample(ctx, blurred, { size: n, filter: 'bspline', ring: { src: ring } });
+      ctx.release(small);
+      ctx.release(blurred);
+      return out;
+    };
+    withRing = await ctx.read(build(true));
+    without = await ctx.read(build(false));
+    whole = await ctx.read(ops.blur(ctx, src, sigma / (n - 1)));
+  }, { res: n });
+  assertIdentical(withRing!, whole!, 'the public ring option builds what ops.blur builds');
+  const reference = gaussianReference(source, n, 1, sigma);
+  const offWith = worstOf(withRing!, reference), offWithout = worstOf(without!, reference);
+  assert.ok(offWith.difference <= BLUR_COARSE_ERROR, `with a ring the blur is off by ${offWith.difference} of the range; the bound is ${BLUR_COARSE_ERROR}`);
+  // Measured on a GTX 1660 Ti: off by 0.00015 of the range with a ring, by 0.070 without, at a corner texel.
+  assert.ok(offWithout.difference > 10 * BLUR_COARSE_ERROR, `without a ring the blur is off by ${offWithout.difference}`);
+  const x = offWithout.index % n, y = Math.floor(offWithout.index / n);
+  assert.ok(Math.min(x, y, n - 1 - x, n - 1 - y) < 3 * sigma, `the error without a ring is at the border: (${x}, ${y})`);
+});
+
 test('what resample refuses: a size that is no field side, an unknown filter, a field that is neither a field nor a color', async () => {
   await rig.run((ctx) => {
     const src = ctx.alloc('field', { size: 9, clear: 0 });
@@ -286,6 +356,14 @@ test('what resample refuses: a size that is no field side, an unknown filter, a 
       assert.throws(() => ops.resample(ctx, src, { size }), (e: Error) => e instanceof RangeError && /whole number of texels from 1 to 8192/.test(e.message), String(size));
     }
     assert.throws(() => ops.resample(ctx, src, { size: 9, filter: 'cubic' as ResampleFilter }), (e: Error) => e instanceof TypeError && /unknown filter "cubic"/.test(e.message));
+    // A ring continues a grid by one cell: the grid has at least two vertices a side, and the result fits a field.
+    assert.throws(() => ops.resample(ctx, src, { size: 9, ring: true as unknown as { out: boolean } }), (e: Error) => e instanceof TypeError && /ring is \{ src\?: boolean; out\?: boolean \}/.test(e.message));
+    assert.throws(() => ops.resample(ctx, src, { size: 9, ring: { out: 1 as unknown as boolean } }), TypeError);
+    for (const size of [1, 8191, 8192]) {
+      assert.throws(() => ops.resample(ctx, src, { size, ring: { out: true } }), (e: Error) => e instanceof RangeError && /with ring\.out the size is \d+; .* from 2 to 8190/.test(e.message), String(size));
+    }
+    const tiny = ctx.alloc('field', { size: 3, clear: 0 });
+    assert.throws(() => ops.resample(ctx, tiny, { size: 9, ring: { src: true } }), (e: Error) => e instanceof RangeError && /it is 3x3; a grid with a ring has at least 4 texels a side/.test(e.message));
     const pair = ctx.alloc('vec2', { size: 9, clear: 0 });
     assert.throws(() => ops.resample(ctx, pair as unknown as Field<'field'>, { size: 5 }), (e: Error) => e instanceof FieldAccessError && /of kind "vec2"; it must be a "field" or a "color"/.test(e.message));
   });

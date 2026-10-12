@@ -12,7 +12,7 @@ import { normalizeParams } from '../graph/params.ts';
 import { previewResolution } from '../graph/settings.ts';
 import { outputKind } from '../graph/validate.ts';
 import type { FileSource } from '../io/files.ts';
-import { budgetBytes } from './budget.ts';
+import { budgetBytes, budgetInForce } from './budget.ts';
 import type { EngineEvent } from './events.ts';
 import { createRecovery, type RecoveryOutcome } from './recovery.ts';
 import { createScheduler, THUMBNAIL_NODE_LIMIT_MS, type ScheduledRequest } from './scheduler.ts';
@@ -61,8 +61,10 @@ interface Run {
   readonly controller: AbortController;
   /** The generation of the document it evaluates (below). */
   readonly generation: number;
-  /** The nodes that ended node-done: the engine had their outputs[0] at hand for a thumbnail (5.12 rule 1). */
+  /** The nodes that ended node-done and were used: the engine had their outputs[0] at hand for a thumbnail (5.12 rule 1). */
   readonly done: string[];
+  /** The nodes the evaluation left unused (5.3 step 5): nothing of theirs was at hand. */
+  readonly unused: Set<string>;
   /** The device it runs on. */
   readonly gpu: GpuContext;
 }
@@ -211,6 +213,19 @@ export function createSession(opts: {
       if (e.reason === 'device-lost') lostNode = e.nodeId;
       runningNode = null;
     } else if (e.type === 'eval-end') runningNode = null;
+  }
+
+  // ---- the budget (2.4) ------------------------------------------------------------------------------------------------
+  /**
+   * Gives the engine the budget of the preferences, and never one below what it has reserved plus room for
+   * fields. What is reserved grows with the session (the staging buffer, the atlas, the renderer's textures), so
+   * this is asked again before every piece of work. Without preferences the engine keeps the budget it was made with.
+   */
+  function applyBudget(): void {
+    if (!prefs || lost || disposed) return;
+    const memory = engine.memory();
+    const next = budgetInForce(budgetBytes(current.caps, prefs), memory.reservedBytes);
+    if (next !== memory.budgetBytes) engine.setBudget(next);
   }
 
   // ---- Engine.trim -----------------------------------------------------------------------------------------------------
@@ -406,7 +421,8 @@ export function createSession(opts: {
       showNothing(request);
       return;
     }
-    const run: Run = { request, requestId: ++requestId, controller: new AbortController(), generation, done: [], gpu: current };
+    applyBudget();
+    const run: Run = { request, requestId: ++requestId, controller: new AbortController(), generation, done: [], unused: new Set(), gpu: current };
     running = run;
     lostNode = null;
     emit({ type: 'request-start', requestId: run.requestId, revision: request.revision, purpose: request.purpose });
@@ -424,7 +440,8 @@ export function createSession(opts: {
         outputs: request.outputs, cache: request.cache, thumbnails: true,
         onEvent: (e) => {
           track(e);
-          if (e.type === 'node-done') run.done.push(e.nodeId);
+          if (e.type === 'eval-start') for (const node of e.plan) if (node.state === 'unused') run.unused.add(node.nodeId);
+          if (e.type === 'node-done' && !run.unused.has(e.nodeId)) run.done.push(e.nodeId);
           emit(e);
           if (thumbnails && e.type === 'eval-start' && !run.controller.signal.aborted) leaveOutSlow(run, e);
         },
@@ -462,13 +479,15 @@ export function createSession(opts: {
     const view = shown;
     if (!view || lost || building || disposed) return null;
     if (typeof ref?.node !== 'string' || typeof ref.port !== 'string') return null;
+    applyBudget();
     if (outputKind(view.doc, registry, ref) !== 'field') return null;
     const held = view.height && samePort(view.height.ref, ref) ? view.height.handle
       : view.overlay && samePort(view.overlay.ref, ref) ? view.overlay.handle : null;
     // A view target of a field port is that port's content itself: the handle on screen is what is asked for.
     if (held?.kind === 'field') return engine.stats(held);
 
-    // Any other port is found through the cache, by an evaluation that stops before it would run a node.
+    // Any other port is found through the cache, by an evaluation that stops before it would run a node. Only the
+    // port's own node has to be cached: a node it reads is unused by this evaluation, evicted or not (5.3 step 5).
     const controller = new AbortController();
     const result = await engine.evaluate(view.doc, view.transient ? [{ ref }, ...view.targets] : [{ ref }], {
       resolution: view.resolution, mode: 'preview', requestId: ++requestId, signal: controller.signal, thumbnails: false,
@@ -545,6 +564,7 @@ export function createSession(opts: {
       while (active) await active;
       await trim(undefined);
       if (disposed) throw new Error(DISPOSED);
+      applyBudget();
       id = ++requestId;
       lostNode = null;
       emit({ type: 'request-start', requestId: id, revision: scheduler.latest?.revision ?? 0, purpose: 'build' });
@@ -629,10 +649,7 @@ export function createSession(opts: {
     try {
       await engine.replaceDevice(gpu);
       if (disposed) return;
-      if (!gpu.lost) {
-        binder.init(gpu, engine);
-        if (prefs) engine.setBudget(budgetBytes(gpu.caps, prefs));
-      }
+      if (!gpu.lost) binder.init(gpu, engine);
     } catch (thrown) {
       if (disposed) return;
       if (!gpu.lost) {
@@ -648,6 +665,7 @@ export function createSession(opts: {
     lost = false;
     scheduler.setDeviceLost(false);
     guarded(() => {
+      applyBudget();
       emit({ type: 'device-ready', epoch: engine.epoch, caps: gpu.caps, budgetBytes: engine.memory().budgetBytes });
       scheduler.requestFull();
       kick();
@@ -765,7 +783,7 @@ export function createSession(opts: {
     setPreferences(next) {
       if (disposed) return;
       prefs = { vramBytes: next?.vramBytes ?? null, budgetFraction: next?.budgetFraction ?? Number.NaN };
-      engine.setBudget(budgetBytes(current.caps, prefs));
+      applyBudget();
       emitMemory();
     },
 

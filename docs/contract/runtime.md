@@ -374,6 +374,19 @@ card, and for `draining`. On the target machine (10 GB) the default budget is
 about 6 GB. Headless, `budgetBytes` is an explicit option of `createEngine`
 (5.1).
 
+**The budget in force.** The session (section 7) applies
+`max(budget, reservedBytes + 64 MiB)`. A budget below what the engine has
+reserved leaves nothing for a field: every allocation fails, the scratch of
+`inspect` included, and preferences can ask for one (a `vramBytes` given in
+the wrong unit). The 64 MiB (`MIN_FIELD_BYTES`) are sixteen fields of a
+1009² preview; a document that needs more fails node by node with kind
+`'budget'`, which names the shortfall. What is reserved grows while a session
+runs (the staging buffer, the thumbnail atlas, the renderer's textures), so the
+session computes the figure again before every evaluation, inspection and
+build, and after `setPreferences` and a device replacement. The `memory` and
+`device-ready` events carry the budget in force. `Engine.setBudget` itself
+applies what it is given.
+
 Measured: Dawn in Node reports no `memoryHeaps`, so `caps.vramBytes` is `null`
 there and the formula gives 4 GiB × 0.6 = 2.4 GiB. That is less than the state
 of the largest simulations at 8129 (`simulation.md` 1.5). A headless caller
@@ -588,7 +601,10 @@ between the beginning and the end of the slice's compute passes, from
 the wall time from the slice's beginning to the resolution of
 `onSubmittedWorkDone()`. A slice begins at its submit when no other slice was
 unfinished then, and otherwise when the completion of the slice before it was
-seen.
+seen. The device's timer has a resolution, and a slice shorter than it
+measures 0 or one step: measured on the GTX 1660 Ti under Dawn, the steps are
+65.536 µs. A measured duration of 0 is therefore the measurement of a short
+slice, not the sign of one that was not timed.
 
 The wall time includes the latency with which a completion is reported, and
 that latency can exceed the slice. Measured in Electron with the viewport
@@ -834,6 +850,15 @@ of Orogen`). Otherwise it returns a document and a list of problems:
 | a collection (`nodes`, `edges`, `groups`, `ui`) missing or not an object | an empty one | yes |
 | an entry that is not an object of its collection's shape, or whose key cannot be an id | removed | yes |
 | a member of the wrong type in the document (`version`), a node, a group or `ui`; an `id` that differs from its record key | `version` 1, `position` (0, 0), `params` empty, a group's `title` empty, an optional member removed; the key | yes |
+| an object or array nested more than 32 deep, the document itself counted as the first | removed from its object; `null` in its array | yes: the first 8 by their place, the rest as a count |
+
+A document nests at most 32 objects and arrays (`MAX_NESTING`). What Orogen
+writes nests 7: a gradient stop's colour lies in the stop, the gradient, the
+params, the node, `nodes` and the document. The loader cuts deeper values
+before it looks at anything else, without recursion, so no later walk of a
+document, `serializeDoc` among them, meets a nesting it cannot follow: a
+parameter value nested some thousands deep was accepted by `JSON.parse` and
+failed `JSON.stringify` with `RangeError`.
 
 `serializeDoc` returns `JSON.stringify(doc, null, 2)` plus a newline. Members
 keep the order in which the document holds them, so a node the loader left
@@ -1018,7 +1043,7 @@ interface EvaluateResult {
 | `mode` | required | Selects the slice target (3.5) and the memory policy (2.8). A node cannot observe it and it is in no key |
 | `requestId` | required | An integer greater than that of every earlier call on this engine. Echoed in every event and in the result |
 | `signal` | none | Cancels the evaluation (3.7) |
-| `outputs` | `'all'` in preview, `'needed'` in build | `'needed'`: an output is wanted when a node of the plan reads it or a target names it. `'all'`: every output of every node of the plan is treated as a target, so `ctx.wants()` is true everywhere and viewing another port of an evaluated node never re-runs it |
+| `outputs` | `'all'` in preview, `'needed'` in build | Which outputs of a needed node (5.3 step 5) are wanted. `'needed'`: those that a target names or a reader of this evaluation reads. `'all'`: every output, so `ctx.wants()` is true wherever a node runs and viewing another port of an evaluated node never re-runs it. Neither value makes a node needed: only a target or a reader does |
 | `cache` | `'keep'` | Preview only. `'transient'` marks the entries this evaluation creates or hits (5.4) |
 | `thumbnails` | `true` in preview, `false` in build | 5.12 |
 | `onEvent` | none | Called synchronously, in order. It must not throw |
@@ -1031,7 +1056,7 @@ interface EvaluateResult {
 2. One evaluation runs at a time. A call made while another runs starts when that one has settled. Pre-empting is the caller's job: abort, then call.
 3. `status`: `'device-lost'` when the device was lost; else `'aborted'` when the signal aborted before the last node finished; else `'errors'` when at least one node failed; else `'ok'`.
 4. The document is not retained after the promise settles.
-5. `timing.nodesRun` counts the nodes whose `evaluate()` ran and ended `node-done`, `timing.nodesCached` the nodes that were cache hits. A bypassed node is in neither.
+5. `timing.nodesRun` counts the nodes whose `evaluate()` ran and ended `node-done`, `timing.nodesCached` the nodes the plan of `eval-start` calls `cached`. A bypassed node and an unused one (5.3 step 5) are in neither.
 
 **Ownership of the result.** `fields[i]` is a handle retained for the caller,
 who calls `release()` on it exactly once, or `null`. It is `null` for a node
@@ -1057,8 +1082,8 @@ being consumed.
 1. **Order.** The plan is the depth-first post-order from the targets, in the order given, visiting each node's connected inputs in declaration order (the `mask` input of a `maskable` node last). Each node appears once. Nodes no target depends on are not in the plan. A bypassed node (5.6) is in the plan but is never run.
 2. **Blocked nodes.** Before any GPU work, each node of the plan is checked: unknown type, version newer than the build, cycle, unconnected required input, parameter error (5.8). A node that fails a check, and every node with an input connected to a failed or skipped node, will not run. This includes optional inputs: a node is never evaluated as if a failing input were unconnected. An edge that 4.3 rule 5 makes the evaluator ignore counts as no connection: its consumer is checked as unconnected, so a required input reports `missing-input` and the consumer is not skipped as downstream of the edge's source.
 3. **Keys.** For every remaining node the key is computed (5.4), awaiting its `externalKey` at most once per call.
-4. **Wanted outputs**, by the `outputs` option.
-5. **Cache lookup** (preview). A node whose entry holds every wanted output is `cached`. The evaluation takes its references (2.2) on every published texture the plan will read.
+4. **Needed nodes and wanted outputs**, from the targets back through the plan. A node is **needed** when a target names it, when a node that will run reads one of its outputs, or when a blocked node (step 2) reads one: a reader that will not run is a reader still, and its sources are evaluated as they are when a reader fails while it runs. Content the evaluator makes itself reads what it is made from in the same way: a conversion its source, a mask blend the node's own result, the mask and `inputs[0]` (5.6); what the cache holds of such content reads nothing. The wanted outputs of a needed node follow from the `outputs` option (5.2). A node that is not needed wants nothing: every node that reads it is a cache hit, or not needed itself.
+5. **Cache lookup** (preview). A needed node whose entry holds every wanted output is `cached`; a needed node without such an entry will run. A node that is not needed never runs, whatever the cache holds of it: it is `cached` when the cache holds what readers receive at its `outputs[0]`, and `unused` when it does not. An entry that was evicted under the budget is therefore not made again for readers that hold their own results; it is made when a reader runs or a target names the node. The evaluation takes its references (2.2) on every published texture it will read. Entries are used (5.4) in plan order, a source before its readers, and what the cache holds of a node that is not needed is used like a hit, so that the entries upstream of an edit keep their place in the eviction order (2.7) and their generation (5.4). In a build nothing is cached: every node whose result a target or a running node reads will run, and a node whose result nothing reads (the mask of a `maskable` node whose `outputs[0]` nobody wants) is `unused`.
 6. **Memory check** (build). The evaluator computes `outputPeakBytes`: the largest sum, over the steps of the plan, of the bytes of all wanted outputs, conversions and mask blends that are alive at that step, with each one alive from the step that produces it to the step of its last reader or its delivery. Aliases are counted as textures. When `outputPeakBytes + reservedBytes + pinnedBytes > budget`, no node runs, every target fails, and the node at whose step the peak occurs gets an error of kind `'budget'`. Every other node of the plan that could have run is skipped with reason `'upstream'`, naming that node, also when it is not downstream of it: the reason says which node stopped the build. A node's own working memory is not in this sum. A node whose working state does not fit fails with kind `'budget'` when it allocates that state: before its first loop (`engine.md` 1.4), or, for a coarse-to-fine node, at its last refinement (`simulation.md` 1.5). The nodes before it in the plan have run by then.
 7. **Compilation.** The kernels of all nodes that will run are compiled in parallel with `createComputePipelineAsync`, each once per device epoch. A node one of whose kernels fails joins the blocked nodes.
 8. `eval-start` is emitted, then the nodes run one at a time in plan order (5.5).
@@ -1130,7 +1155,7 @@ rule 2 of 5.3. Computing all keys of a 150-node document was measured at 4 to
 | constant | `['const', kind]` | one texture, cleared to the constant |
 
 1. The cache is per node, not per output. A node entry is created by one run, holds every output that run produced, and is evicted as a unit.
-2. A node entry is a **hit** when it holds every output this evaluation wants. Otherwise the node runs again, with every output wanted that this evaluation wants or the old entry held, and the new entry replaces the old one.
+2. A node entry is a **hit** when it holds every output this evaluation wants. Otherwise the node, when it is needed (5.3 step 4), runs again, with every output wanted that this evaluation wants or the old entry held, and the new entry replaces the old one.
 3. An entry is **used** when it is created or hit. Recency is the order of last use.
 4. Nothing from a node that failed or was cancelled is cached.
 5. The cache lives in GPU memory only. It is not written to disk, and it is emptied when the device is lost.
@@ -1256,7 +1281,7 @@ interface NodeError {
 | `watchdog` | one dispatch of a kernel that cannot be tiled is estimated above the hard ceiling (3.4) | as given there |
 | `io` | `ctx.readFile` or `externalKey` fails with a `FileError` (6.1) | the error's message |
 | `node-exception` | `evaluate()` or `externalKey` throws or rejects with anything else | the error's message |
-| `device-lost` | the node was running at two device losses in a row (5.9) | `The GPU was reset twice while this node was running` |
+| `device-lost` | the node was running at two device losses in a row without completing between them (5.9 rule 6) | `The GPU was reset twice while this node was running` |
 | `internal` | a conversion, a mask blend or a constant fails. It is reported on the node it was made for: the reader of a converted input, the node whose output is blended, the node a converted target names | the error's message |
 
 **Isolation.** A failed node fails alone. Every node that reads it, directly or
@@ -1305,7 +1330,7 @@ did not check would finish the graph, cache dead textures and report success.
 3. The engine then forgets everything that lived on the device, without calling into it: the cache, the pool's textures and ledger (all byte counts return to zero), pipelines, learned rates, the arena, the staging buffer and the thumbnail atlas. Existing `FieldHandle`s are dead (2.2).
 4. Until `replaceDevice`, `evaluate()` settles at once with `'device-lost'`; `read`, `stats`, `reserve` and `trim` throw or reject with `DeviceLostError`; `memory()` reports the forgotten ledger, every byte count zero. `keys`, `lastTiming`, `onThumbnail`, `setBudget` and `setFiles` need no device and work as before, and `dispose()` ends the engine without calling into the lost device.
 5. `replaceDevice(gpu)` takes a context from a new `openGpu` call, increments `epoch`, compiles the engine's kernels and resolves. The document was never on the GPU, so nothing is lost but time.
-6. The engine records the node that was running when the device was lost. If the same node, with the same key, is running at the next loss as well, it is not run a third time: it fails with kind `'device-lost'` until its key changes. Before that second attempt its slice target and the hard ceiling are halved for that node. A loss at which another node, or none, was running ends the row.
+6. The engine records the node that was running when the device was lost, with its key. The record ends when that node completes a run with that key (`node-done`, not from the cache), and at a loss at which another node, or none, was running. While it stands, the slice target and the hard ceiling are halved for that node. If the same node, with the same key, is running at the next loss while the record stands, it is not run a third time: it fails with kind `'device-lost'` until its key changes. A node that was running at one loss, then ran through, and is running again at a later loss is not refused: a node that completes is not what loses the device, and the later loss begins a record of its own.
 
 Recovery in the application (who opens the new device, how often) is in 7.8.
 
@@ -1314,7 +1339,7 @@ Recovery in the application (who opens the new device, how often) is in 7.8.
 ```ts
 type EvalEvent =
   | { readonly type: 'eval-start'; readonly requestId: number; readonly resolution: number; readonly mode: 'preview' | 'build';
-      readonly plan: readonly { readonly nodeId: string; readonly state: 'cached' | 'run' | 'bypassed' | 'blocked' }[];
+      readonly plan: readonly { readonly nodeId: string; readonly state: 'cached' | 'run' | 'bypassed' | 'blocked' | 'unused' }[];
       readonly outputPeakBytes: number | null }                                 // build only
   | { readonly type: 'node-start'; readonly requestId: number; readonly nodeId: string }
   | { readonly type: 'node-progress'; readonly requestId: number; readonly nodeId: string;
@@ -1330,7 +1355,7 @@ type EvalEvent =
 ```
 
 1. Events of one request arrive in order, begin with `eval-start`, end with `eval-end`, and none arrives after the promise has settled.
-2. Every node of the plan gets exactly one final event: `node-done`, `node-error` or `node-skipped`. Cached and bypassed nodes get `node-done` with `cached: true` and `wallMs: 0`. Of several nodes with one key (5.13) the plan of `eval-start` names the one that runs as `run` and the others as `cached`; when that one is skipped for a failure that became known only while the evaluation ran, the next of them runs in its place, with `node-start` and `node-done` as for any node that runs. In `eval-start`, `blocked` is a node that will not run: it failed a check of 5.3, reads one that did, or the evaluation cannot start at all (the memory check of a build, a lost device, a signal that has already aborted).
+2. Every node of the plan gets exactly one final event: `node-done`, `node-error` or `node-skipped`. Cached, bypassed and unused nodes get `node-done` with `cached: true` and `wallMs: 0`; `unused` in `eval-start` says that nothing of the node was at hand (5.3 step 5). Of several nodes with one key (5.13) the plan of `eval-start` names the one that runs as `run` and the others as `cached`; when that one is skipped for a failure that became known only while the evaluation ran, the next of them runs in its place, with `node-start` and `node-done` as for any node that runs. In `eval-start`, `blocked` is a node that will not run: it failed a check of 5.3, reads one that did, or the evaluation cannot start at all (the memory check of a build, a lost device, a signal that has already aborted).
 3. `node-progress` is emitted at most 10 times per second per node, `eval-progress` at most 4 times per second. Fractions are in 0..1 and do not decrease.
 4. `wallMs` runs from `node-start` to `node-done`. `gpuMs` is the sum of the measured GPU time of the node's slices; it is `null` without `timestamp-query`, and when a slice of the node could not be timed (one more than the timing buffers the stream may hold, 2 MiB of them, was in flight). `peakBytes` is the most pool memory the invocation held as WORKING.
 5. Every event is plain data and can be structured-cloned.
@@ -1372,18 +1397,18 @@ interface Thumbnail {
 }
 ```
 
-1. Thumbnails are a by-product. With `thumbnails: true`, for every node of the plan whose `outputs[0]` is available in this evaluation (cached or just published), a thumbnail is made when it would be better than the last one delivered for that node id: a different `contentKey`, or the same key at a higher resolution. An evaluation never runs a node only to make a thumbnail.
+1. Thumbnails are a by-product. With `thumbnails: true`, for every node of the plan whose `outputs[0]` is available in this evaluation (cached or just published), a thumbnail is made when it would be better than the last one delivered for that node id: a different `contentKey`, or the same key at a higher resolution. An evaluation never runs a node only to make a thumbnail: an `unused` node (5.3 step 5) gets none.
 2. A thumbnail is 128 × 128. Texel `(i, j)` takes the source texel nearest to `uv = (i, j) / 127`. The source is sampled once per thumbnail texel into a 128² scratch field and shaded from that; it is never box-filtered. Measured: 150 thumbnails from 2048² sources with one readback take 24 ms this way and about 1 s with a box filter.
 3. Shading, by `outputs[0]`:
 
 | Output | Pixel |
 | --- | --- |
-| `field`, role `height` | grey `saturate(dot(n, L))`, with `n` the normal from central differences of the 128² samples in metres (cell `terrainSize / 127`, heights times `heightRange`) and `L = normalize(vec3f(-0.5, -0.5, 0.7))`, the direction towards the light |
+| `field`, role `height` | grey `0.10 + 0.80 · ((1 + dot(n, L)) / 2)²`, with `n` the normal from central differences of the 128² samples in metres (cell `terrainSize / 127`, heights times `heightRange`) and `L = normalize(vec3f(-1, -1, √2))`, the direction towards the light. This is the wrapped shading of the test pictures (`testing.md` 2.7): 0.68 on level ground, within 0.10..0.90 everywhere. `saturate(dot(n, L))` is 0 on every slope above 45° that faces away from the light and drew a terrain of physical steepness in two tones |
 | `field`, role `mask` | grey `saturate(v)` |
 | `field`, role `data` | grey `(v − min) / (max − min)` over the 128² samples; 0.5 when they are equal |
 | `color` | `rgb` clamped to 0..1 and encoded to sRGB; alpha ignored |
 
-4. Thumbnails are written to cells of one `rgba8unorm` atlas of 2048 × 2048 (256 cells), which only stages them. The atlas is read back when an evaluation has ended and at most every 250 ms during one, or earlier when all cells are in use. The readback does not delay the evaluation's result. A row of 128 RGBA texels is 512 bytes, which needs no padding. The atlas is made with the first thumbnail; under a budget it does not fit beside what is reserved, working and pinned, no thumbnail is made and the evaluation is not disturbed.
+4. Thumbnails are written to cells of one `rgba8unorm` atlas of 2048 × 2048 (256 cells), which only stages them. The atlas is read back when an evaluation has ended and at most every 250 ms during one, or earlier when all cells are in use. The readback does not delay the evaluation's result. A row of 128 RGBA texels is 512 bytes, which needs no padding. The atlas is made with the first thumbnail; under a budget it does not fit beside what is reserved, working and pinned, no thumbnail is made and the evaluation is not disturbed. When `setBudget` lowers the budget to one the atlas no longer fits in by that rule, the engine reads back what the atlas stages, destroys it and takes its 16 MiB out of `reserved`: at once when no evaluation runs, else when the running one has settled. It is made again with the first thumbnail it fits for.
 5. Each thumbnail read back is delivered once to `onThumbnail` listeners, per node id. The engine keeps no pixels afterwards.
 
 ### 5.13 Guarantees in one place
@@ -1398,6 +1423,7 @@ interface Thumbnail {
 | Two nodes have the same key | one of them runs and the others are cache hits; in a build they read its content. The one that runs is the first in plan order that nothing keeps from running: a node that is skipped for a source the others do not read (its mask, which is not in `K`) leaves the run to the next. When the one that runs fails, the others fail the same way without running |
 | The signal aborts during a node | the node publishes nothing; nodes that completed stay cached |
 | A cached output is evicted while a viewer holds its handle | the handle stays valid; the texture is freed when the handle is released |
+| A node's entry was evicted and every node that reads it is a cache hit | the node is `unused`: it does not run, and gets `node-done` with `cached: true`. It runs when a reader runs or a target names it |
 | `evaluate()` is called during a build | it waits, like any second call |
 
 ### 5.14 Test hooks
@@ -1642,10 +1668,10 @@ requests from 1 (5.2), so an engine that was evaluated directly with a higher
 | `beginGesture`, `endGesture` | Bracket a continuous edit: a slider scrub, a curve or colour drag. Evaluations in between are drafts (7.3). Calls do not nest; a second `beginGesture` is ignored |
 | `setPaused` | `true` aborts the running preview and starts no other until `false`. Documents are still recorded. Default `false` |
 | `requestThumbnails` | The node ids whose thumbnails the graph currently shows. Replaces the previous list. The session refreshes stale ones when idle (7.3) |
-| `inspect` | Statistics of a port's content in the shown result, at its resolution. `null` when nothing is shown, when that port is not a `field`, when it or a node it reads is not cached at that resolution, while a build runs and while the device is lost. Runs between evaluations. It runs no node and is not in the event stream: a port the view does not name is looked up by an evaluation that the session aborts at `eval-start` unless every node of its plan is cached |
+| `inspect` | Statistics of a port's content in the shown result, at its resolution. `null` when nothing is shown, when that port is not a `field`, when its node's result is not cached at that resolution, while a build runs and while the device is lost. Runs between evaluations. It runs no node and is not in the event stream: a port the view does not name is looked up by an evaluation that targets it, which the session aborts at `eval-start` when a node of its plan would run. The nodes the port's node reads need not be cached: that evaluation leaves them `unused` (5.3 step 5) |
 | `build` | 7.6 |
 | `cancelBuild` | Aborts the running build. Does nothing when none runs |
-| `setPreferences` | Recomputes the budget (2.4) and applies it |
+| `setPreferences` | Recomputes the budget and applies the budget in force (2.4) |
 | `retryDevice` | Restarts device recovery after it gave up (7.8) |
 | `subscribe` | Every `EngineEvent` (7.7), in order |
 | `dispose` | Aborts everything, releases all handles, disposes the engine |
@@ -1743,7 +1769,7 @@ targets (7.4). It is made when:
 6. **What is shown.** An evaluation that completes with status `'ok'` or `'errors'` and delivered every view target replaces the shown content, and `view-updated` is emitted. Evaluations complete in the order requested, so the shown revision never goes backwards. An aborted evaluation shows nothing, and so does one in which a view target failed: the failed node's error says why. While a newer revision is being evaluated the viewport keeps the last shown content, which the session holds by its handles; it is stale but never blank and never another node's data.
 7. **Draft and updating states.** The interface knows the document's revision and receives the shown revision and level in `view-updated`: shown revision behind means *updating*; `draft: true` means the shown result is coarser than the preview resolution.
 8. **Keys.** After every `setDocument` the session computes `Engine.keys` and emits `keys` (7.7). Latest wins here too: a document that is replaced while its keys are computed gets none, and the keys of the latest one follow. The keys are computed and emitted again, under the same revision, when a watched file changed and when `setProject` replaced the files, because a file's identity is in its node's key (5.4). A thumbnail is stale when its `contentKey` differs from the node's key.
-9. **Idle thumbnails.** When nothing runs or waits and no gesture is active, the session evaluates `outputs[0]` of the requested nodes whose last delivered thumbnail is stale, at the **thumbnail resolution**: the coarsest ladder level of `buildResolution` that is at least 128, or level 0 when none is. A node whose predicted time at that resolution (5.10) exceeds 100 ms is left out unless it is cached; its thumbnail stays stale until a view evaluation runs it. The session learns what is cached from the `eval-start` of the thumbnail evaluation: when a node that would run is predicted above the limit, the session aborts that evaluation before its first node and makes the next without that node and without the nodes that read it, since evaluating those would run it. A node that failed in an idle evaluation is not evaluated for its thumbnail again until its key changes.
+9. **Idle thumbnails.** When nothing runs or waits and no gesture is active, the session evaluates `outputs[0]` of the requested nodes whose last delivered thumbnail is stale, at the **thumbnail resolution**: the coarsest ladder level of `buildResolution` that is at least 128, or level 0 when none is. A node whose predicted time at that resolution (5.10) exceeds 100 ms is left out unless it is cached; its thumbnail stays stale until a view evaluation runs it. The session learns what is cached from the `eval-start` of the thumbnail evaluation: when a node that would run is predicted above the limit, the session aborts that evaluation before its first node and makes the next without that node and without the nodes that read it, since evaluating those would run it. A node that failed in an idle evaluation is not evaluated for its thumbnail again until its key changes. A node that a view evaluation left `unused` (5.3 step 5) had nothing at hand to make a thumbnail from: it is stale like any other, and evaluated here.
 
 ### 7.4 The view
 
@@ -1916,7 +1942,7 @@ increase, so one comparison settles it.
 1. When `gpu.lost` becomes true the session emits `device-lost`, calls `renderer.setContent(null)`, drops its handles without releasing them, and lets the running evaluation settle with `'device-lost'` (5.9).
 2. It then calls `reopenGpu()`: at once, again after 1 s, again after 5 s. The first success is passed to `Engine.replaceDevice` and `renderer.init`; the session emits `device-ready` and requests a full evaluation. Measured on Dawn: a replacement device is ready in about 75 ms. A device that is lost while the engine moves onto it is one more loss, announced and counted like any other. The session destroys no `GpuContext` that was in use: `reopenGpu` is the platform's, and in Node it destroys the lost context before it opens the next (1.5 rule 4). Only a context that arrives already lost, or after `dispose`, is destroyed by the session, because nothing else holds it.
 3. Three failures in a row, or a third device loss within 120 s, end automatic recovery: the session emits `engine-error` with `fatal: true` and waits for `retryDevice()`. The limit is deliberate. Windows stops with a system error after five GPU resets within 60 s, and Chromium refuses a page a new adapter after repeated GPU process crashes; a loop that kept retrying would reach both.
-4. A node that was running at two losses in a row is not run again (5.9 rule 6).
+4. A node that was running at two losses in a row, without completing between them, is not run again (5.9 rule 6).
 5. Imported files are read again from disk by their nodes. Nothing the user made is held only on the GPU.
 
 ---

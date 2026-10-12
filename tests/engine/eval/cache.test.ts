@@ -303,6 +303,94 @@ test('eviction: least recently used first under the budget; content behind a han
   }
 });
 
+test('a node whose entry was evicted does not run again while every reader is a cache hit: it is unused', async () => {
+  const small = await startEngine(DEFS);
+  try {
+    const bytes = 65 * 65 * 4;
+    const chain = (gain = 2): GraphDoc => small.doc({
+      a: { type: 'ref/constant', params: { value: 1 } },
+      b: { type: 'ref/gain', params: { gain }, inputs: { in: 'a.out' } },
+      c: { type: 'ref/gain', params: { gain: 10 }, inputs: { in: 'b.out' } },
+    });
+    const other = small.doc({ n: { type: 'ref/constant', params: { value: 99 } } });
+    const states = (events: Parameters<typeof eventsOf>[0]): string[] => eventsOf(events, 'eval-start')[0]!.plan.map((p) => `${p.nodeId} ${p.state}`);
+    // Room for three fields beside what the engine reserves: the chain fills it.
+    await small.run(other, ['n.out']);
+    await small.engine.trim();
+    small.engine.setBudget(small.engine.memory().reservedBytes + 3 * bytes + 100);
+    assert.deepEqual(endings((await small.run(chain(), ['c.out'])).events), { a: 'run', b: 'run', c: 'run' });
+    // A fourth field evicts the least recently used entry: a, the source of the chain.
+    await small.run(other, ['n.out']);
+    assert.equal(small.engine.memory().cacheBytes, 3 * bytes);
+    calls.clear();
+
+    const again = await small.run(chain(), ['c.out']);
+    assert.deepEqual(states(again.events), ['a unused', 'b cached', 'c cached'], 'b is a hit that nothing reads; a is gone, and nothing reads it');
+    assert.deepEqual(endings(again.events), { a: 'cached', b: 'cached', c: 'cached' }, 'every node of the plan gets its final event');
+    assert.deepEqual([again.result.status, again.result.timing.nodesRun, again.result.timing.nodesCached], ['ok', 0, 2]);
+    assert.equal(eventsOf(again.events, 'node-start').length, 0);
+    assert.equal(calls.size, 0, 'no node ran');
+    assertUniform(again.data[0], 20, 'c.out from the cache');
+    // The same with every output wanted, as a preview asks by default: 'all' makes no node run.
+    assert.deepEqual(states((await small.run(chain(), ['c.out'], { outputs: 'all' })).events), ['a unused', 'b cached', 'c cached']);
+    assert.deepEqual(states((await small.run(chain(), ['c.out', 'b.out'], { outputs: 'needed' })).events), ['a unused', 'b cached', 'c cached']);
+    assert.equal(calls.size, 0);
+
+    // A reader that runs needs it, and so does a target that names it.
+    const edited = await small.run(chain(3), ['c.out']);
+    assert.deepEqual(states(edited.events), ['a run', 'b run', 'c run']);
+    assertUniform(edited.data[0], 30, 'c.out after the edit');
+    await small.run(other, ['n.out']);
+    await small.run(small.doc({ m: { type: 'ref/constant', params: { value: 98 } } }), ['m.out']);
+    const named = await small.run(chain(3), ['a.out']);
+    assert.deepEqual(states(named.events), ['a run']);
+    assertUniform(named.data[0], 1, 'a.out');
+    small.noLeaks();
+
+    // A build has no cache: every node a target depends on runs, whatever a preview left.
+    await small.engine.trim();
+    small.engine.setBudget(64 * 1048576);
+    assert.deepEqual(states((await small.run(chain(), ['c.out'], { mode: 'build' })).events), ['a run', 'b run', 'c run']);
+    small.noLeaks();
+  } finally {
+    await small.dispose();
+  }
+});
+
+test('a hit that nothing reads is not run again for an output it lacks; a reader that fails a check still has its sources evaluated', async () => {
+  await t.engine.trim();
+  wantsExtra.length = 0;
+  const doc = t.doc({
+    a: { type: 'ref/constant', params: { value: 5 } },
+    split: { type: 'ref/split', inputs: { in: 'a.out' } },
+    c: { type: 'ref/gain', params: { gain: 2 }, inputs: { in: 'split.out' } },
+  });
+  const states = (events: Parameters<typeof eventsOf>[0]): string[] => eventsOf(events, 'eval-start')[0]!.plan.map((p) => `${p.nodeId} ${p.state}`);
+  // The entry of `split` holds "out" alone.
+  await t.run(doc, ['c.out'], { outputs: 'needed' });
+  assert.deepEqual(wantsExtra, [false]);
+  // With every output wanted, `split` would have to run again for "extra" if anything needed it. Its one reader is a hit.
+  const all = await t.run(doc, ['c.out'], { outputs: 'all' });
+  assert.deepEqual(states(all.events), ['a cached', 'split cached', 'c cached']);
+  assert.deepEqual([wantsExtra, all.result.timing.nodesCached], [[false], 3], 'what the cache holds of a node that is not needed is a hit');
+  // Named by a target it is needed, and then every output is wanted.
+  const viewed = await t.run(doc, ['split.out'], { outputs: 'all' });
+  assert.deepEqual(states(viewed.events), ['a cached', 'split run']);
+  assert.deepEqual(wantsExtra, [false, true]);
+
+  // A reader that will not run is a reader still: its source is evaluated, as it is when the reader fails while it runs.
+  await t.engine.trim();
+  calls.clear();
+  const broken = t.doc({
+    a: { type: 'ref/constant', params: { value: 6 } },
+    open: { type: 'ref/sum', inputs: { b: 'a.out' } },
+  });
+  const blocked = await t.run(broken, ['open.out']);
+  assert.deepEqual(endings(blocked.events), { a: 'run', open: 'error:missing-input' });
+  assert.equal(calls.get('ref/constant'), 1);
+  t.noLeaks();
+});
+
 test('a build neither reads nor writes the cache, shares content of one key, and frees outputs as it goes', async () => {
   await t.engine.trim();
   const doc = chainOf(3, 2);

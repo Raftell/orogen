@@ -5,8 +5,9 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 
 import { defineKernel, defineNode } from '../../../src/core/api.ts';
+import { drawPreview } from '../../../src/cli/preview.ts';
 import type { GraphDoc, Thumbnail } from '../../../src/core/runtime.ts';
-import { constantNode, gainNode, MIB, rampNode, startEngine, tintNode } from './rig.ts';
+import { constantNode, gainNode, MIB, rampNode, SETTINGS, startEngine, tintNode } from './rig.ts';
 
 const planeKernel = defineKernel({
   name: 'test/plane',
@@ -98,31 +99,51 @@ test('every node of the plan whose outputs[0] is available gets a thumbnail: 128
   assert.ok(t.engine.memory().reservedBytes >= 16 * MIB, 'the atlas is in the ledger');
 });
 
-test('a height is shaded by its slope in metres, lit from the top left', async () => {
-  // heightRange / terrainSize is 1 / 4: a ramp with gain 4 rises at 45 degrees.
+test('a height is shaded by its slope in metres, lit from the top left, with mid-tones on every slope', async () => {
+  // heightRange / terrainSize is 1 / 4: a ramp with gain 4 rises at 45 degrees, one with 16 at 76 and one with 64 at 86.
   const doc = t.doc({
     level: { type: 'ref/constant', params: { value: 0.3 } },
     east: { type: 'ref/ramp', params: { gainX: 4, gainY: 0 } },
     west: { type: 'ref/ramp', params: { gainX: -4, gainY: 0 } },
     south: { type: 'ref/ramp', params: { gainX: 0, gainY: 4 } },
+    cliff: { type: 'ref/ramp', params: { gainX: -16, gainY: 0 } },
+    wall: { type: 'ref/ramp', params: { gainX: -64, gainY: -64 } },
   });
   const from = delivered.length;
   // At 128 every thumbnail texel reads a texel of its own; a coarser source repeats texels, which shades as steps.
-  await evaluate(doc, ['level.out', 'east.out', 'west.out', 'south.out'], 128);
-  const { level, east, west, south } = byNode(await thumbnails(from, 4));
-  // dot(n, L) with L = normalize(-0.5, -0.5, 0.7): 0.7035 for a level surface.
-  const light = (nx: number, ny: number): number => {
-    const length = Math.hypot(nx, ny, 1) * Math.hypot(0.5, 0.5, 0.7);
-    return Math.round(255 * Math.min(1, Math.max(0, (-0.5 * nx - 0.5 * ny + 0.7) / length)));
+  await evaluate(doc, ['level.out', 'east.out', 'west.out', 'south.out', 'cliff.out', 'wall.out'], 128);
+  const { level, east, west, south, cliff, wall } = byNode(await thumbnails(from, 6));
+  // 0.10 + 0.80 ((1 + n·L) / 2)^2 with L = normalize(-1, -1, sqrt 2), for a surface with the slope (sx, sy): 0.68 when level.
+  const light = (sx: number, sy: number): number => {
+    const wrapped = 0.5 + 0.5 * ((0.5 * sx + 0.5 * sy + Math.SQRT1_2) / Math.hypot(sx, sy, 1));
+    return Math.round(255 * (0.10 + 0.80 * wrapped * wrapped));
   };
-  for (const [i, j] of [[0, 0], [64, 64], [127, 127], [127, 0]] as const) {
-    near(pixel(level!, i, j), [light(0, 0), light(0, 0), light(0, 0), 255], `level at (${i}, ${j})`);
+  assert.equal(light(0, 0), Math.round(255 * 0.6828), 'level ground');
+  const shaded: readonly (readonly [string, Thumbnail, number, number])[] = [
+    ['level', level!, 0, 0],
     // Rising towards +X: the normal leans towards -X, where the light is.
-    near(pixel(east!, i, j), [light(-1, 0), light(-1, 0), light(-1, 0), 255], `east at (${i}, ${j})`);
-    near(pixel(west!, i, j), [light(1, 0), light(1, 0), light(1, 0), 255], `west at (${i}, ${j})`);
-    near(pixel(south!, i, j), [light(0, -1), light(0, -1), light(0, -1), 255], `south at (${i}, ${j})`);
+    ['east', east!, 1, 0], ['west', west!, -1, 0], ['south', south!, 0, 1], ['cliff', cliff!, -4, 0], ['wall', wall!, -16, -16],
+  ];
+  for (const [name, thumbnail, sx, sy] of shaded) {
+    for (const [i, j] of [[0, 0], [64, 64], [127, 127], [127, 0]] as const) {
+      near(pixel(thumbnail, i, j), [light(sx, sy), light(sx, sy), light(sx, sy), 255], `${name} at (${i}, ${j})`);
+    }
   }
-  assert.ok(pixel(east!, 9, 9)[0]! > pixel(level!, 9, 9)[0]! && pixel(level!, 9, 9)[0]! > pixel(west!, 9, 9)[0]!);
+  const tone = (thumbnail: Thumbnail): number => pixel(thumbnail, 9, 9)[0]!;
+  assert.ok(tone(east!) > tone(level!) && tone(level!) > tone(west!));
+  // A slope above 45 degrees that faces away from the light is not black, and a steeper one is darker still:
+  // max(n·L, 0) draws all three in one tone. Every tone lies within 0.10..0.90.
+  assert.ok(tone(west!) > tone(cliff!) + 20 && tone(cliff!) > tone(wall!) + 10 && tone(wall!) >= 25, `${tone(west!)}, ${tone(cliff!)}, ${tone(wall!)}`);
+  assert.ok(tone(east!) <= 230);
+
+  // The shading of the test pictures (testing.md 2.7), from the same 128 x 128 samples.
+  const heights = new Float32Array(128 * 128);
+  for (let y = 0; y < 128; y++) for (let x = 0; x < 128; x++) heights[y * 128 + x] = (-4 * x) / 127;
+  const picture = drawPreview({ kind: 'field', width: 128, height: 128, channels: 1, data: heights }, { style: 'hillshade', terrainSize: SETTINGS.terrainSize, heightRange: SETTINGS.heightRange });
+  for (const [i, j] of [[0, 0], [64, 64], [127, 127]] as const) {
+    const at = (j * 128 + i) * 3;
+    near(pixel(west!, i, j), [picture.rgb[at]!, picture.rgb[at + 1]!, picture.rgb[at + 2]!, 255], `the thumbnail against the harness's hillshade at (${i}, ${j})`);
+  }
   t.noLeaks();
 });
 
@@ -201,6 +222,52 @@ test('more thumbnails than the atlas has cells are read back in several batches'
   }
   assert.equal(wrong, 0, 'every thumbnail shows its own node');
   t.noLeaks();
+});
+
+test('a budget that shrinks below what the atlas fits in gives the atlas back, after what it stages is read back', async () => {
+  const ATLAS = 16 * MIB;
+  const own = await startEngine([constantNode, gainNode], { budgetBytes: 64 * MIB });
+  try {
+    const heard: string[] = [];
+    own.engine.onThumbnail((x) => heard.push(x.nodeId));
+    const graph = (value: number) => own.doc({ level: { type: 'ref/constant', params: { value } }, gain: { type: 'ref/gain', inputs: { in: 'level.out' } } });
+    const delivered = async (count: number): Promise<void> => {
+      for (let tries = 0; tries < 400 && heard.length < count; tries++) await new Promise((resolve) => setTimeout(resolve, 5));
+    };
+    await own.run(graph(0.25), ['gain.out'], { thumbnails: true });
+    await delivered(2);
+    const withAtlas = own.engine.memory().reservedBytes;
+    assert.ok(withAtlas >= ATLAS, 'the atlas is in the ledger');
+
+    // A budget it still fits in changes nothing; neither does one that grows.
+    own.engine.setBudget(withAtlas + 4 * MIB);
+    own.engine.setBudget(96 * MIB);
+    assert.equal(own.engine.memory().reservedBytes, withAtlas);
+
+    // Thumbnails that are staged and not yet read back, and then a budget below what is reserved.
+    const staged = own.evaluate(graph(0.5), ['gain.out'], { thumbnails: true });
+    const result = await staged;
+    for (const field of result.result.fields) field?.release();
+    own.engine.setBudget(withAtlas - 1);
+    assert.equal(own.engine.memory().reservedBytes <= withAtlas - ATLAS + ATLAS / 4, true, `the 16 MiB are given back at once: ${own.engine.memory().reservedBytes} of ${withAtlas} bytes are reserved`);
+    await delivered(4);
+    assert.deepEqual(heard, ['level', 'gain', 'level', 'gain'], 'what the atlas staged was read back before it went');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.ok(own.engine.memory().reservedBytes <= withAtlas - ATLAS, 'the readback buffer is gone too');
+
+    // Under that budget there are no thumbnails; with room again the atlas is made again.
+    await own.run(graph(0.75), ['gain.out'], { thumbnails: true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(heard.length, 4);
+    own.engine.setBudget(64 * MIB);
+    await own.run(graph(1), ['gain.out'], { thumbnails: true });
+    await delivered(6);
+    assert.equal(heard.length, 6);
+    assert.ok(own.engine.memory().reservedBytes >= ATLAS);
+    own.noLeaks();
+  } finally {
+    await own.dispose();
+  }
 });
 
 test('under a budget the atlas does not fit, an evaluation makes no thumbnails and is not disturbed', async () => {

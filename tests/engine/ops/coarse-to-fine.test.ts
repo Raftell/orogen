@@ -1,6 +1,7 @@
 // ops.coarseToFine (engine.md section 5, simulation.md section 2): level selection, the call sequence, the share
 // of progress and of work per level, determinism, cancellation, and a relaxation that converges through the
-// driver where the same work at full resolution alone does not.
+// driver where the same work at full resolution alone does not. The refinement and the budget rule are the refine
+// module of the simulate category (simulation.md 2.4, 2.5), which refine.test.ts tests by itself.
 //
 // The first tests give the driver a context that only has what it reads (the ladder, the terrain size, the
 // signal, progress), which lets them state the levels of 8129 without a texture. The others run a toy node on
@@ -13,20 +14,10 @@ import { after, test } from 'node:test';
 import { defineKernel, defineNode, ops, type Field, type LadderLevel, type OpContext } from '../../../src/core/api.ts';
 import { ladder } from '../../../src/core/graph/ladder.ts';
 import fbmNode from '../../../src/core/nodes/ref/fbm.ts';
+import { levelBudget, levelInput, refineHeight, refineHeightKernel } from '../../../src/core/nodes/simulate/_refine.ts';
 import { endings, eventsOf, SETTINGS, startEngine } from '../eval/rig.ts';
 import { writeGrey, writeHillshade } from '../pictures.ts';
 import { assertIdentical, grid, rangeOf, worstOf } from './rig.ts';
-
-// ---- the iteration-budget rule of simulation.md 2.5, as a reference ----------------------------------------------
-
-/** Iterations per level, index = LadderLevel.index: one iteration at level i counts ratio^i base iterations. */
-function levelBudget(total: number, levels: number, perLevel: number, ratio: 0.5 | 0.25): { iterations: number[]; equivalent: number } {
-  const finer = levels - 1;
-  const tail = (n: number): number => (n * ratio * (1 - ratio ** finer)) / (1 - ratio);
-  const detail = finer > 0 ? Math.min(perLevel, Math.floor(total / 2)) : 0;
-  const base = total < 0.5 ? 0 : Math.ceil(total - tail(detail));
-  return { iterations: [base, ...Array.from({ length: finer }, () => detail)], equivalent: base + tail(detail) };
-}
 
 // ---- a toy simulation on the engine ----------------------------------------------------------------------------
 
@@ -48,25 +39,6 @@ fn compute(px: vec2i, uv: vec2f) -> f32 {
   if (any(px == vec2i(0)) || any(px == last)) { return here; }
   let mean = 0.25 * (h_at(px + vec2i(1, 0)) + h_at(px - vec2i(1, 0)) + h_at(px + vec2i(0, 1)) + h_at(px - vec2i(0, 1)));
   return mix(here, mean, 0.8);
-}`,
-});
-
-// The standard refinement of simulation.md 2.4 without jitter and detail: the fine input plus the change the
-// coarse level made, interpolated at px / 2.
-const refineKernel = defineKernel({
-  name: 'test/refine',
-  inputs: { fineBase: 'field', coarse: { kind: 'field', size: 'any' }, coarseBase: { kind: 'field', size: 'any' } },
-  outputs: { out: 'field' },
-  cost: 9,
-  code: /* wgsl */ `
-fn delta(c: vec2i) -> f32 { return coarse_at(c) - coarseBase_at(c); }
-
-fn compute(px: vec2i, uv: vec2f) -> f32 {
-  let c = clamp(vec2f(px) * 0.5, vec2f(0.0), vec2f(coarse_res()) - vec2f(1.0));
-  let i = vec2i(floor(c));
-  let f = c - floor(c);
-  let d = mix(mix(delta(i), delta(i + vec2i(1, 0)), f.x), mix(delta(i + vec2i(0, 1)), delta(i + vec2i(1, 1)), f.x), f.y);
-  return fineBase_at(px) + d;
 }`,
 });
 
@@ -95,11 +67,11 @@ function resetTrace(): void {
 interface State { h: Field<'field'>; spare: Field<'field'>; base: Field<'field'> }
 
 /**
- * simulation.md 2.4: the node input on the grid of `level`; the input itself when it already has that size.
- * With `sampled` the coarser levels take the input's own values at the shared vertices instead of a filtered input.
+ * The node input on the grid of `level`: levelInput of the refine module, or with `sampled` the input's own values
+ * at the shared vertices instead of a filtered input.
  */
-const levelInput = (ctx: OpContext, input: Field<'field'>, level: LadderLevel, sampled: boolean): Field<'field'> =>
-  (input.width === level.res ? input : ops.resample(ctx, input, { size: level.res, filter: sampled ? 'nearest' : 'auto' }));
+const inputAt = (ctx: OpContext, input: Field<'field'>, level: LadderLevel, sampled: boolean): Field<'field'> =>
+  (sampled && input.width !== level.res ? ops.resample(ctx, input, { size: level.res, filter: 'nearest' }) : levelInput(ctx, input, level));
 
 /** The skeleton of simulation.md 2.7 around the toy step. */
 const relaxNode = defineNode({
@@ -114,7 +86,7 @@ const relaxNode = defineNode({
     { kind: 'float', name: 'total', unit: 'none', default: 100, min: 0, max: 100_000, help: 'The work, as steps on the base level.' },
     { kind: 'bool', name: 'sampled', default: false, help: 'Whether a coarser level samples the input instead of filtering it.' },
   ],
-  kernels: [relaxStep, refineKernel],
+  kernels: [relaxStep, refineHeightKernel],
   async evaluate(ctx) {
     const { size, total, sampled } = ctx.params;
     const input = ctx.input('in');
@@ -124,12 +96,12 @@ const relaxNode = defineNode({
       begin(level) {
         const planned = levelBudget(total, level.count, DETAIL_ITERATIONS, 0.25);
         budget = planned.iterations;
-        trace.budget = planned.iterations;
+        trace.budget = [...planned.iterations];
         trace.equivalent = planned.equivalent;
         trace.iterations = planned.iterations.map(() => 0);
         trace.calls.push(`begin ${level.res}`);
         trace.levels.push(level);
-        const base = levelInput(ctx, input, level, sampled);
+        const base = inputAt(ctx, input, level, sampled);
         return { base, h: ctx.clone(base), spare: ctx.alloc('field', { like: base }) };
       },
       async simulate(level, s) {
@@ -150,9 +122,9 @@ const relaxNode = defineNode({
         trace.calls.push(`refine ${coarse.res} ${fine.res}`);
         trace.levels.push(fine);
         ctx.release(s.spare);
-        const base = levelInput(ctx, input, fine, sampled);
-        const h = ctx.alloc('field', { like: base });
-        ctx.run(refineKernel, { in: { fineBase: base, coarse: s.h, coarseBase: s.base }, out: { out: h } });
+        const base = inputAt(ctx, input, fine, sampled);
+        // The standard refinement of simulation.md 2.4, without jitter and detail.
+        const h = refineHeight(ctx, { coarse: s.h, coarseBase: s.base, fineBase: base, jitter: false, salt: 0, detail: 0 });
         ctx.release(s.h);
         if (s.base !== input) ctx.release(s.base);
         return { base, h, spare: ctx.alloc('field', { like: h }) };
@@ -614,11 +586,11 @@ test('pictures: a terrain relaxed through the driver, and by as many iterations 
   const count = trace.iterations.reduce((sum, n) => sum + n, 0);
   const alone = await relax(t, res, { size: 1e-4, total: count }, { source: 'fbm' });
   const input = (await t.run(t.doc({ src: { type: 'ref/fbm', params: { seed: 5 } } }), ['src.out'], { resolution: res, mode: 'build' })).data[0]!;
-  writeHillshade('ops/coarse-to-fine-input-hillshade', input, res, SETTINGS.terrainSize, SETTINGS.heightRange);
-  writeHillshade('ops/coarse-to-fine-driven-hillshade', driven.out, res, SETTINGS.terrainSize, SETTINGS.heightRange);
-  writeHillshade('ops/coarse-to-fine-alone-hillshade', alone.out, res, SETTINGS.terrainSize, SETTINGS.heightRange);
-  writeGrey('ops/coarse-to-fine-driven-grey', driven.out, res);
-  writeGrey('ops/coarse-to-fine-change-grey', grid(res, res, (x, y) => driven.out[y * res + x]! - input[y * res + x]!), res, 'auto');
+  await writeHillshade('ops/coarse-to-fine-input-hillshade', input, res, SETTINGS.terrainSize, SETTINGS.heightRange);
+  await writeHillshade('ops/coarse-to-fine-driven-hillshade', driven.out, res, SETTINGS.terrainSize, SETTINGS.heightRange);
+  await writeHillshade('ops/coarse-to-fine-alone-hillshade', alone.out, res, SETTINGS.terrainSize, SETTINGS.heightRange);
+  await writeGrey('ops/coarse-to-fine-driven-grey', driven.out, res);
+  await writeGrey('ops/coarse-to-fine-change-grey', grid(res, res, (x, y) => driven.out[y * res + x]! - input[y * res + x]!), res, 'auto');
 
   // The border ring is held on every level: there the result is the input.
   const ring = (data: Float32Array): Float32Array => Float32Array.from([...data.subarray(0, res), ...data.subarray(res * (res - 1))]);

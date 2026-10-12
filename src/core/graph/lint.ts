@@ -25,6 +25,8 @@ const ENUM_VALUE = /^[a-z0-9][A-Za-z0-9-]*$/;
 const STARTS_CAPITAL_OR_DIGIT = /^[\p{Lu}\p{N}]/u;
 const ENDS_IN_PUNCTUATION = /\p{P}$/u;
 const REFERENCE = ' (Reference)';
+/** The words Title Case leaves small inside a title, and the signs that join two names: "Bias and Gain", "Hue / Saturation". */
+const SMALL_WORDS: readonly string[] = ['a', 'an', 'and', 'as', 'at', 'by', 'for', 'in', 'of', 'on', 'or', 'the', 'to', '/', '&'];
 const FORBIDDEN_WORDS: readonly string[] = ['px', 'pixel', 'pixels', 'texel', 'texels', 'iterations', 'iters', 'steps', 'passes'];
 /** First words that end in "s" and are no verb in the third person. */
 const NOT_VERBS: readonly string[] = ['This', 'Its', 'Thus', 'Always', 'Plus', 'Various', 'Across', 'Is', 'Was', 'Has'];
@@ -150,7 +152,9 @@ function lintTitle(def: NodeDef, fail: (detail: string) => void): void {
     return;
   }
   if (title.length > 24) fail(`"${title}" has ${title.length} characters; a title has at most 24`);
-  const small = title.split(/\s+/).find((word) => word !== '' && !STARTS_CAPITAL_OR_DIGIT.test(word));
+  const words = title.split(/\s+/).filter((word) => word !== '');
+  // Title Case: the first and the last word are capitalised whatever they are.
+  const small = words.find((word, i) => !STARTS_CAPITAL_OR_DIGIT.test(word) && (i === 0 || i === words.length - 1 || !SMALL_WORDS.includes(word)));
   if (small !== undefined) fail(`the word "${small}" of "${title}" does not begin with a capital letter or a digit`);
   if (ENDS_IN_PUNCTUATION.test(title)) fail(`"${title}" ends in punctuation`);
 }

@@ -219,10 +219,10 @@ test('pictures: a terrain, a narrow blur of it and a wide one', async () => {
     narrow = await ctx.read(ops.blur(ctx, input, 0.004));
     wide = await ctx.read(ops.blur(ctx, input, 0.04));
   }, { res: n, sources: { fbm: { type: 'ref/fbm', params: { seed: 5 } } }, inputs: { in: 'fbm.out' } });
-  writeHillshade('ops/blur-source-hillshade', terrain!, n, SETTINGS.terrainSize, SETTINGS.heightRange);
-  writeHillshade('ops/blur-narrow-hillshade', narrow!, n, SETTINGS.terrainSize, SETTINGS.heightRange);
-  writeHillshade('ops/blur-wide-hillshade', wide!, n, SETTINGS.terrainSize, SETTINGS.heightRange);
-  writeGrey('ops/blur-wide-grey', wide!, n);
+  await writeHillshade('ops/blur-source-hillshade', terrain!, n, SETTINGS.terrainSize, SETTINGS.heightRange);
+  await writeHillshade('ops/blur-narrow-hillshade', narrow!, n, SETTINGS.terrainSize, SETTINGS.heightRange);
+  await writeHillshade('ops/blur-wide-hillshade', wide!, n, SETTINGS.terrainSize, SETTINGS.heightRange);
+  await writeGrey('ops/blur-wide-grey', wide!, n);
   // A blur removes detail: the largest second difference along a row falls with sigma.
   const roughness = (data: Float32Array): number => {
     let worst = 0;

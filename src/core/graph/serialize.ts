@@ -9,6 +9,15 @@ export class DocFormatError extends Error {
   override name = 'DocFormatError';
 }
 
+/**
+ * How many objects and arrays a project file nests at most, the document itself counted (runtime.md 4.5). What
+ * the product writes nests 7 deep: a gradient stop's colour. Whatever walks a document by recursion, JSON.stringify
+ * in serializeDoc first of all, is safe below this bound and fails with RangeError some thousands of levels down.
+ */
+export const MAX_NESTING = 32;
+/** Values cut for their nesting that are reported one by one; the rest are counted. */
+const NESTING_PROBLEMS = 8;
+
 /** NodeGroup.color (runtime.md 4.1). */
 export const GROUP_COLOR = /^#[0-9a-fA-F]{6}$/;
 
@@ -157,6 +166,38 @@ function readUi(doc: Raw, report: Report): GraphDoc['ui'] {
   return patched<GraphDoc['ui']>(raw, set, drop);
 }
 
+/**
+ * Removes every object and array that lies deeper than MAX_NESTING from the value JSON.parse returned: from its
+ * object, or as null in its array. Returns where each was, as the names from the document down. Without
+ * recursion: the depth of the text is what this bounds.
+ */
+function limitNesting(root: Raw): string[][] {
+  const cut: string[][] = [];
+  const open: { readonly value: object; readonly depth: number; readonly path: readonly string[] }[] = [{ value: root, depth: 1, path: [] }];
+  for (let at = open.pop(); at !== undefined; at = open.pop()) {
+    const { value, depth, path } = at;
+    const list = Array.isArray(value);
+    for (const [name, child] of Object.entries(value)) {
+      if (typeof child !== 'object' || child === null) continue;
+      if (depth < MAX_NESTING) {
+        open.push({ value: child, depth: depth + 1, path: [...path, name] });
+        continue;
+      }
+      cut.push([...path, name]);
+      // By definition and not by assignment: a member named __proto__ is a member here, not the prototype.
+      if (list) Object.defineProperty(value, name, { value: null, writable: true, enumerable: true, configurable: true });
+      else Reflect.deleteProperty(value, name);
+    }
+  }
+  return cut;
+}
+
+/** Where a value was, for a message: its first names, each shortened. */
+function shownPath(path: readonly string[]): string {
+  const names = path.slice(0, 5).map((name) => (name.length > 32 ? `${name.slice(0, 29)}...` : name));
+  return `${names.join('.')}${path.length > names.length ? '...' : ''}`;
+}
+
 export function parseDoc(text: string, registry: NodeRegistry): { readonly doc: GraphDoc; readonly problems: readonly DocProblem[] } {
   let raw: unknown;
   try {
@@ -170,6 +211,15 @@ export function parseDoc(text: string, registry: NodeRegistry): { readonly doc: 
   const problems: DocProblem[] = [];
   const report: Report = (problem) => { problems.push(problem); };
   if (raw.version !== 1) report({ message: '"version" is not 1; the file is read as version 1' });
+
+  const tooDeep = limitNesting(raw);
+  for (const path of tooDeep.slice(0, NESTING_PROBLEMS)) {
+    const owner = path.length > 1 && path[0] === 'nodes' ? { nodeId: path[1]! } : path.length > 1 && path[0] === 'edges' ? { edgeId: path[1]! } : {};
+    report({ ...owner, message: `The value at ${shownPath(path)} is nested more than ${MAX_NESTING} levels deep; it is removed` });
+  }
+  if (tooDeep.length > NESTING_PROBLEMS) {
+    report({ message: `${tooDeep.length - NESTING_PROBLEMS} more values are nested more than ${MAX_NESTING} levels deep; they are removed` });
+  }
 
   const settings = normalizeSettings(isPlainObject(raw.settings) ? raw.settings : {});
   for (const message of settings.problems) report({ message });

@@ -188,6 +188,74 @@ conformance(defineNode({
   },
 }), { skip: { 'generator-range': 'Outputs a single shallow shape by design; its span is 0.1.' } });
 
+// What is no generator although it has no required input (testing.md 3.2): a mask made from nothing, and a node
+// with a `file` parameter. Neither is held to the height range, and both may declare a tolerance.
+const disc = defineKernel({
+  name: 'ref/good-disc',
+  outputs: { out: 'field' },
+  code: 'fn compute(px: vec2i, uv: vec2f) -> f32 { return saturate((0.1 - distance(uv, vec2f(0.5))) / 0.05); }',   // 0 on nine tenths of the terrain
+});
+conformance(defineNode({
+  type: 'ref/good-disc',
+  title: 'Good Disc (Reference)',
+  category: 'ref',
+  description: 'Generates a small disc as a mask.',
+  inputs: [],
+  outputs: [{ name: 'out', type: 'field', role: 'mask' }],
+  params: [],
+  kernels: [disc],
+  evaluate(ctx) {
+    const out = ctx.alloc('field');
+    ctx.run(disc, { out: { out } });
+    ctx.output('out', out);
+  },
+}), { resolutionTol: { value: 0.02, reason: 'A mask producer is no generator: the option is accepted, and this exact mask needs none of it.' } });
+
+const level = defineKernel({
+  name: 'ref/good-file',
+  outputs: { out: 'field' },
+  code: 'fn compute(px: vec2i, uv: vec2f) -> f32 { return 0.1 + 0.1 * uv.y; }',
+});
+conformance(defineNode({
+  type: 'ref/good-file',
+  title: 'Good File (Reference)',
+  category: 'ref',
+  description: 'Generates what a file would hold: heights of any range.',
+  inputs: [],
+  outputs: [{ name: 'out', type: 'field' }],
+  params: [{ kind: 'file', name: 'file', default: '', filters: ['png'], help: 'The file whose heights the node returns.' }],
+  kernels: [level],
+  evaluate(ctx) {
+    const out = ctx.alloc('field');
+    ctx.run(level, { out: { out } });
+    ctx.output('out', out);
+  },
+}));
+
+// A generator with an optional input, as a node that stamps into a terrain when one is connected: the generator
+// checks apply, with every input connected.
+const stamp = defineKernel({
+  name: 'ref/good-stamp',
+  inputs: { base: { kind: 'field', default: 0.5 } },
+  outputs: { out: 'field' },
+  code: 'fn compute(px: vec2i, uv: vec2f) -> f32 { return base_at(px) - 0.1 * saturate(1.0 - 8.0 * distance(uv, vec2f(0.5))); }',
+});
+conformance(defineNode({
+  type: 'ref/good-stamp',
+  title: 'Good Stamp (Reference)',
+  category: 'ref',
+  description: 'Generates a dent, in the terrain connected to it or in a flat field.',
+  inputs: [{ name: 'in', type: 'field', optional: true }],
+  outputs: [{ name: 'out', type: 'field' }],
+  params: [],
+  kernels: [stamp],
+  evaluate(ctx) {
+    const out = ctx.alloc('field');
+    ctx.run(stamp, { in: { base: ctx.input('in') }, out: { out } });
+    ctx.output('out', out);
+  },
+}));
+
 // ---- deterministic -------------------------------------------------------------------------------------------------
 
 const leaky = defineKernel({
@@ -614,5 +682,116 @@ conformance(defineNode({
       luts: { shape: ctx.lut(bakeCurve(p.curve), 'f32'), ramp: ctx.lut(bakeGradient(p.gradient), 'vec4f') },
     });
     ctx.output('out', out);
+  },
+}));
+
+// ---- the port shapes of the catalog that the nodes above do not have (nodes.md) -----------------------------------
+
+// The channels of a colour as four optional inputs, the first of them the node's primary input (color/pack-channels).
+// It writes alpha on purpose, which is the one legitimate reason to skip `alpha`.
+const pack = defineKernel({
+  name: 'ref/good-pack',
+  inputs: { r: { kind: 'field', default: 0 }, g: { kind: 'field', default: 0 }, b: { kind: 'field', default: 0 }, a: { kind: 'field', default: 1 } },
+  outputs: { out: 'color' },
+  code: 'fn compute(px: vec2i, uv: vec2f) -> vec4f { return vec4f(r_at(px), g_at(px), b_at(px), a_at(px)); }',
+});
+conformance(defineNode({
+  type: 'ref/good-pack',
+  title: 'Good Pack (Reference)',
+  category: 'ref',
+  description: 'Packs four fields into the channels of one colour; alpha is the fourth field.',
+  inputs: [
+    { name: 'r', type: 'field', role: 'data', optional: true }, { name: 'g', type: 'field', role: 'data', optional: true },
+    { name: 'b', type: 'field', role: 'data', optional: true }, { name: 'a', type: 'field', role: 'data', optional: true },
+  ],
+  outputs: [{ name: 'out', type: 'color' }],
+  params: [],
+  kernels: [pack],
+  evaluate(ctx) {
+    const out = ctx.alloc('color');
+    ctx.run(pack, { in: { r: ctx.input('r'), g: ctx.input('g'), b: ctx.input('b'), a: ctx.input('a') }, out: { out } });
+    ctx.output('out', out);
+  },
+}), { skip: { alpha: 'The alpha channel is the fourth packed field, as the description says.' } });
+
+// A colour made from nothing (color/constant): no generator, and no height range to keep.
+const solid = defineKernel({
+  name: 'ref/good-solid',
+  outputs: { out: 'color' },
+  params: { tint: 'vec3f' },
+  code: 'fn compute(px: vec2i, uv: vec2f) -> vec4f { return vec4f(P.tint, 1.0); }',
+});
+conformance(defineNode({
+  type: 'ref/good-solid',
+  title: 'Good Solid (Reference)',
+  category: 'ref',
+  description: 'Fills a colour field with one colour.',
+  inputs: [],
+  outputs: [{ name: 'out', type: 'color' }],
+  params: [{ kind: 'color', name: 'color', default: [0.5, 0.25, 0.125], help: 'The colour of every texel.' }],
+  kernels: [solid],
+  evaluate(ctx) {
+    const out = ctx.alloc('color');
+    ctx.run(solid, { out: { out }, params: { tint: ctx.params.color } });
+    ctx.output('out', out);
+  },
+}));
+
+// A mask as the primary input, a mask and a data field out (select/distance, select/edge).
+const band = defineKernel({
+  name: 'ref/good-band',
+  inputs: { src: MASK_INPUT },
+  outputs: { out: 'field', raw: 'field' },
+  code: 'fn compute(px: vec2i, uv: vec2f) -> Out { let v = src_at(px); return Out(saturate(4.0 * v * (1.0 - v)), v - 0.5); }',
+});
+conformance(defineNode({
+  type: 'ref/good-band',
+  title: 'Good Band (Reference)',
+  category: 'ref',
+  description: 'Selects the soft edge of a mask and gives its signed level.',
+  inputs: [{ name: 'in', type: 'field', role: 'mask' }],
+  outputs: [{ name: 'out', type: 'field', role: 'mask' }, { name: 'raw', type: 'field', role: 'data' }],
+  params: [],
+  kernels: [band],
+  evaluate(ctx) {
+    const out = ctx.alloc('field');
+    const raw = ctx.wants('raw') ? ctx.alloc('field') : null;
+    ctx.run(band, { in: { src: ctx.input('in') }, out: { out, raw } });
+    ctx.output('out', out);
+    if (raw) ctx.output('raw', raw);
+  },
+}));
+
+// Several inputs of type `any`, all but the first optional, and the output of the kind of the first (adjust/switch).
+const pick = (kind: 'field' | 'color') => defineKernel({
+  name: `ref/good-switch#${kind}`,
+  inputs: { a: kind, b: { kind, default: 0 } },
+  outputs: { out: kind },
+  params: { second: 'u32' },
+  code: 'fn compute(px: vec2i, uv: vec2f) -> out_t { if (P.second == 1u && b_bound()) { return b_at(px); } return a_at(px); }',
+});
+const picks = { field: pick('field'), color: pick('color') };
+conformance(defineNode({
+  type: 'ref/good-switch',
+  title: 'Good Switch (Reference)',
+  category: 'ref',
+  description: 'Passes one of its inputs through.',
+  inputs: [{ name: 'a', type: 'any' }, { name: 'b', type: 'any', optional: true }],
+  outputs: [{ name: 'out', type: { sameAs: 'a' } }],
+  params: [{ kind: 'enum', name: 'mode', default: 'b', options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }], help: 'The input that is passed on.' }],
+  kernels: [picks.field, picks.color],
+  evaluate(ctx) {
+    const a = ctx.input('a');
+    const b = ctx.input('b');
+    const second = ctx.params.mode === 'b';
+    if (a.kind === 'field') {
+      const out = ctx.alloc('field');
+      ctx.run(picks.field, { in: { a, b: b?.kind === 'field' ? b : null }, out: { out }, params: { second } });
+      ctx.output('out', out);
+    } else {
+      const out = ctx.alloc('color');
+      ctx.run(picks.color, { in: { a, b: b?.kind === 'color' ? b : null }, out: { out }, params: { second } });
+      ctx.output('out', out);
+    }
   },
 }));

@@ -8,9 +8,10 @@ import { nodes } from '../core/nodes/index.ts';
 import { createRegistry } from '../core/runtime.ts';
 import { NodeFileSink, NodeFileSource } from '../platform/node/files.ts';
 import type { GalleryCommand } from './args.ts';
-import { typeDocument } from './document.ts';
+import { hasMaskedVariant, typeDocument } from './document.ts';
 import { countsAsFailure, galleryPage, mib, ms, type GalleryEntry, type GalleryInfo } from './gallery-page.ts';
 import { renderPlan } from './render.ts';
+import type { RenderResult } from './result.ts';
 
 /** A conformance report is a few kilobytes; a larger file under that name is not shown. */
 const CONFORMANCE_MAX_BYTES = 1 << 20;
@@ -46,12 +47,19 @@ export async function gallery(command: GalleryCommand, signal: AbortSignal): Pro
           break;
         }
         const result = await renderPlan(cli, sink, typeDocument(registry, def.type), { res: command.res, crop: null, signal });
-        if (result.status === 'aborted' || result.status === 'device-lost') {
-          stopped = result.status;
+        // The second variant, with the optional mask inputs connected: what the node does under a mask.
+        let masked: RenderResult | null = null;
+        if (result.status === 'ok' && hasMaskedVariant(def) && !signal.aborted) {
+          masked = await renderPlan(cli, sink, typeDocument(registry, def.type, { masked: true }), { res: command.res, crop: null, signal });
+        }
+        const ended = masked?.status === 'aborted' || masked?.status === 'device-lost' ? masked.status : result.status;
+        if (ended === 'aborted' || ended === 'device-lost') {
+          stopped = ended;
           break;
         }
-        entries.push({ def, result, conformance: readConformance(command.out, def.type) });
-        const outcome = result.status === 'ok' ? `${ms(result.wallMs)}, peak ${mib(result.peakBytes)}` : `failed: ${result.errors[0]?.message ?? result.status}`;
+        entries.push({ def, result, masked, conformance: readConformance(command.out, def.type) });
+        const failed = result.status !== 'ok' ? result : masked && masked.status !== 'ok' ? masked : null;
+        const outcome = failed ? `failed${failed === masked ? ' with its mask connected' : ''}: ${failed.errors[0]?.message ?? failed.status}` : `${ms(result.wallMs)}, peak ${mib(result.peakBytes)}`;
         process.stderr.write(`orogen gallery: ${i + 1}/${defs.length} ${def.type}: ${outcome}\n`);
       }
     } finally {

@@ -13,7 +13,7 @@ import type { Img, LadderLevel, ResampleFilter } from './types.ts';
 
 export const ops: {
   copy<K extends FieldKind>(ctx: OpContext, src: Field<K>, dst: Field<NoInfer<K>>): void;
-  resample<K extends Img>(ctx: OpContext, src: Field<K>, opts: { size: number; filter?: ResampleFilter }): Field<K>;
+  resample<K extends Img>(ctx: OpContext, src: Field<K>, opts: { size: number; filter?: ResampleFilter; ring?: { readonly src?: boolean; readonly out?: boolean } }): Field<K>;
   blur<K extends Img>(ctx: OpContext, src: Field<K>, sigma: number): Field<K>;
   blend<K extends Img>(ctx: OpContext, a: Field<K>, b: Field<NoInfer<K>>, mask: Field<'field'> | number): Field<K>;
   slope(ctx: OpContext, height: Field<'field'>): Field<'field'>;

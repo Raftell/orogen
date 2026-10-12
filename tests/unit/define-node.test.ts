@@ -124,8 +124,8 @@ test('2: roles, optional, any and sameAs', () => {
 
 test('2: the conventions for in, a, out and mask', () => {
   rejected({ outputs: [{ name: 'result', type: 'field' }] }, 'the first output must be named "out", not "result"');
-  rejected({ inputs: [{ name: 'src', type: 'field' }] }, 'the first input must be named "in" or "a", not "src"');
-  rejected({ inputs: [{ name: 'mask', type: 'field', role: 'mask', optional: true }] }, 'the first input must be named "in" or "a", not "mask"');
+  rejected({ inputs: [{ name: 'src', type: 'field' }] }, 'the first input must be named "in", "a" or "r", not "src"');
+  rejected({ inputs: [{ name: 'mask', type: 'field', role: 'mask', optional: true }] }, 'the first input must be named "in", "a" or "r", not "mask"');
   const mask = 'input "mask" must be an optional field with role "mask"';
   rejected({ inputs: [{ name: 'in', type: 'field' }, { name: 'mask', type: 'field', role: 'mask' }] }, mask);
   rejected({ inputs: [{ name: 'in', type: 'field' }, { name: 'mask', type: 'field', optional: true }] }, mask);
@@ -133,6 +133,10 @@ test('2: the conventions for in, a, out and mask', () => {
   rejected({ inputs: [{ name: 'in', type: 'field' }, { name: 'mask', type: 'field', role: 'data', optional: true }] }, mask);
   assert.ok(define(base({ inputs: [{ name: 'a', type: 'field' }, { name: 'b', type: 'field' }, { name: 'mask', type: 'field', role: 'mask', optional: true }] })));
   assert.ok(define(base({ inputs: [], outputs: [] })));
+  // The channels of a colour: r, g, b, a, all optional, as color/pack-channels of the catalog declares them.
+  const channels = ['r', 'g', 'b', 'a'].map((name) => ({ name, type: 'field', role: 'data', optional: true }));
+  assert.ok(define(base({ inputs: channels, outputs: [{ name: 'out', type: 'color' }] })));
+  rejected({ inputs: channels.slice(1) }, 'the first input must be named "in", "a" or "r", not "g"');
 });
 
 test('3: ranges and defaults of float, int and vec2', () => {
@@ -289,7 +293,7 @@ test('7: version and migrate, and the settings a node uses', () => {
 test('the checks run in the order of the list: the first broken rule is reported', () => {
   rejected(
     { inputs: [{ name: 'src', type: 'field' }], params: [float({ default: 9 })], maskable: true, outputs: [], version: 2 },
-    'the first input must be named "in" or "a", not "src"',
+    'the first input must be named "in", "a" or "r", not "src"',
   );
   rejected({ params: [float({ default: 9 })], maskable: true, outputs: [], version: 2 }, 'param "reach": default 9 is outside 0..1');
   rejected({ maskable: true, outputs: [], version: 2 }, 'maskable needs inputs[0] and outputs[0] of the same type');
