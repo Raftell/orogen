@@ -408,7 +408,7 @@ test('ref/talus: relaxes steep pairs, conserves material, accumulates what moved
   assert.ok(afterRun.worst < before.worst, `the worst excess went from ${before.worst} to ${afterRun.worst}`);
   assert.ok(afterRun.pairs <= before.pairs, `${afterRun.pairs} pairs exceed the talus slope after the run, ${before.pairs} before`);
 
-  // `moved` accumulates |net| of every iteration: it is never negative, and where it is 0 nothing was exchanged.
+  // `moved` accumulates the height that crossed the texel: it is never negative, and where it is 0 nothing was exchanged.
   let negative = 0, untouched = 0, changedWhereUntouched = 0, touched = 0;
   for (let i = 0; i < moved.length; i++) {
     if (moved[i]! < 0) negative++;
@@ -524,7 +524,7 @@ test('a budget that does not hold the working state: the node fails with kind "b
     assert.deepEqual([ending(preview.events, fbm), ending(preview.events, talus)], ['run', 'error:budget']);
     const error = preview.result.errors[0]!;
     assert.deepEqual([error.nodeId, error.nodeType, error.kind], [talus, 'ref/talus', 'budget']);
-    assert.match(error.message, /^Needs \d+ MB more GPU memory at 257 × 257: budget \d+ MB, \d+ MB in use by this node, \d+ MB pinned$/);
+    assert.match(error.message, /^Needs \d+ KB more GPU memory at 257 × 257: budget \d+ (KB|MB), \d+ KB in use by this node, \d+ KB pinned$/);
     assert.ok(preview.data[0] === null, 'a failed target delivers no field');
     noLeaks(engine);
 

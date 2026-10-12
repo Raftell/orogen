@@ -8,5 +8,7 @@ export function buildGraph(graph: GraphDoc | GraphSpec | string, opts?: {
   readonly files?: FileSource;
   readonly signal?: AbortSignal;
 }): Promise<{ readonly result: BuildResult; readonly sink: MemorySink; readonly events: readonly BuildEvent[] }> {
-  throw new Error('not implemented: buildGraph');
+  return Promise.reject(new Error(
+    'buildGraph belongs to the export stage: it runs buildProject of src/export/build.ts (export-unreal.md 3.1), which does not exist yet',
+  ));
 }

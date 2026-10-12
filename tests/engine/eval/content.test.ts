@@ -346,6 +346,32 @@ test('maskable: nothing is added without a mask; a colour mask is read as luma; 
   t.noLeaks();
 });
 
+test('maskable: where the mask is 1 the output is the node\'s result and where it is 0 the input, bit for bit', async () => {
+  await t.engine.trim();
+  // Values with every bit of their mantissa in use: a + t * (b - a) at t = 1 is not b for all of them.
+  const terrain = { type: 'ref/ramp', params: { gainX: 0.37, gainY: 0.211, base: 0.103 } };
+  const doc = (mask: number) => t.doc({
+    terrain,
+    mask: { type: 'ref/constant', params: { value: mask } },
+    plain: { type: 'ref/gain', params: { gain: 3.7 }, inputs: { in: 'terrain.out' } },
+    masked: { type: 'ref/gain', params: { gain: 3.7 }, inputs: { in: 'terrain.out', mask: 'mask.out' } },
+  });
+  const differing = (a: Float32Array, b: Float32Array): number => {
+    const x = new Uint32Array(a.buffer, a.byteOffset, a.length), y = new Uint32Array(b.buffer, b.byteOffset, b.length);
+    let count = x.length === y.length ? 0 : Infinity;
+    for (let i = 0; i < x.length && i < y.length; i++) if (x[i] !== y[i]) count++;
+    return count;
+  };
+  // A mask is saturated on reading: above 1 it is 1 and below 0 it is 0.
+  for (const [mask, kept] of [[1, 1], [2.5, 1], [0, 2], [-3, 2]] as const) {
+    const out = await t.run(doc(mask), ['masked.out', 'plain.out', 'terrain.out']);
+    assert.equal(out.result.status, 'ok', JSON.stringify(out.result.errors));
+    assert.equal(differing(out.data[0]!, out.data[kept]!), 0, `mask ${mask}: texels that are not ${kept === 1 ? 'the result' : 'the input'} bit for bit`);
+    assert.ok(differing(out.data[1]!, out.data[2]!) > 4000, 'the result is not the input');
+  }
+  t.noLeaks();
+});
+
 test('pass-through: an input given as an output is an alias, with a key of its own; its mask blend is skipped', async () => {
   await t.engine.trim();
   calls.clear();

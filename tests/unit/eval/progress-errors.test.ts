@@ -59,7 +59,13 @@ test('the kind of a node error follows from what was thrown', () => {
   const budget = nodeErrorFrom(new BudgetExceededError('does not fit', { requestedBytes: 25 * 1048576, kind: 'field', width: 2560, height: 2560, report }), at, 513, 0);
   // 30 working + 50 pinned + 10 reserved + 25 asked for, against 100.
   assert.deepEqual([budget.kind, budget.message, budget.detail], ['budget', 'Needs 15 MB more GPU memory at 513 × 513: budget 100 MB, 30 MB in use by this node, 50 MB pinned', 'does not fit']);
-  assert.equal(budgetMessage(1, 65, 3 * 1048576, 0, 0), 'Needs 1 MB more GPU memory at 65 × 65: budget 3 MB, 0 MB in use by this node, 0 MB pinned');
+  // Below 1 MB a size is given in kilobytes: megabytes would read "0 MB in use" for the fields of a preview.
+  assert.equal(budgetMessage(1, 65, 3 * 1048576, 0, 0), 'Needs 1 KB more GPU memory at 65 × 65: budget 3 MB, 0 MB in use by this node, 0 MB pinned');
+  assert.equal(
+    budgetMessage(264_196, 257, 600_000, 528_392, 16_900),
+    'Needs 259 KB more GPU memory at 257 × 257: budget 586 KB, 516 KB in use by this node, 17 KB pinned',
+  );
+  assert.equal(budgetMessage(1048576 + 1, 513, 1048576, 1048575, 1572864), 'Needs 2 MB more GPU memory at 513 × 513: budget 1 MB, 1024 KB in use by this node, 2 MB pinned');
 
   const oom = nodeErrorFrom(new GpuOutOfMemoryError('The GPU reported out of memory: x'), at, 513, 64 * 1048576);
   assert.deepEqual([oom.kind, oom.message], ['out-of-memory', 'Out of GPU memory at 513 × 513 (budget 64 MB). Lower the resolution or raise the GPU memory budget']);

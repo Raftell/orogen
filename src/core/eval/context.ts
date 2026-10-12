@@ -382,11 +382,18 @@ export function createInvocation(parts: EngineParts, init: InvocationInit): Invo
     },
 
     lengthToPx(length, grid) {
+      alive();
       const n = grid === undefined ? res : typeof grid === 'number' ? grid : grid.width;
       return length * (n - 1);
     },
-    lengthToMetres: (length) => length * settings.terrainSize,
-    heightToMetres: (height) => height * settings.heightRange,
+    lengthToMetres(length) {
+      alive();
+      return length * settings.terrainSize;
+    },
+    heightToMetres(height) {
+      alive();
+      return height * settings.heightRange;
+    },
 
     alloc(kind, opts) {
       enter();

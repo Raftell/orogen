@@ -41,13 +41,23 @@ export function byContext<E extends Error>(error: E): E {
 
 const MIB = 1048576;
 const megabytes = (bytes: number): string => String(Math.round(bytes / MIB));
+/**
+ * A byte count for a person: whole megabytes from 1 MB up and whole kilobytes below, where megabytes would read
+ * "0 MB" for the fields of a preview. `up` rounds up, for an amount that is lacking.
+ */
+function size(bytes: number, up = false): string {
+  const round = up ? Math.ceil : Math.round;
+  if (!(bytes > 0)) return '0 MB';
+  if (bytes >= MIB) return `${round(bytes / MIB)} MB`;
+  return `${Math.max(1, round(bytes / 1024))} KB`;
+}
 const firstLine = (text: string): string => text.split('\n')[0]!;
 const kernelIn = (message: string): string | undefined => /^kernel "([^"]+)"/.exec(message)?.[1];
 
 /** runtime.md 5.8: the message of kind 'budget'. `neededBytes` is what the budget lacks. */
 export function budgetMessage(neededBytes: number, resolution: number, budgetBytes: number, workingBytes: number, pinnedBytes: number): string {
-  return `Needs ${Math.max(1, Math.ceil(neededBytes / MIB))} MB more GPU memory at ${resolution} × ${resolution}: `
-    + `budget ${megabytes(budgetBytes)} MB, ${megabytes(workingBytes)} MB in use by this node, ${megabytes(pinnedBytes)} MB pinned`;
+  return `Needs ${size(Math.max(1, neededBytes), true)} more GPU memory at ${resolution} × ${resolution}: `
+    + `budget ${size(budgetBytes)}, ${size(workingBytes)} in use by this node, ${size(pinnedBytes)} pinned`;
 }
 
 /** runtime.md 5.8: the message of kind 'out-of-memory'. */

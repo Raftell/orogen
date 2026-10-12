@@ -36,13 +36,13 @@ src/core/nodes/index.ts                  imports the nine category indexes; expo
 src/core/nodes/<category>/index.ts       export const nodes: readonly NodeDef[]
 src/core/nodes/<category>/<name>.ts      one node; its NodeDef is the default export
 src/core/nodes/<category>/_<name>.ts     private modules of the category: libraries, shared kernels, CPU tasks, helpers
-src/cli/                                 the command-line program (8.6): main.ts probe.ts render.ts gallery.ts preview.ts
+src/cli/                                 the command-line program (8.6): main.ts probe.ts render.ts gallery.ts preview.ts, and the modules they share
 
 tests/helpers/                           the harness (section 2)
 tests/tools/                             verify.ts expect.ts ownership.ts (5.3, 10.3, 7.1)
 tests/env/                               max.env lavapipe.env warp.env (8.2)
-tests/unit/                              GPU-free tests of core code; registry lint; import boundaries
-tests/engine/                            GPU tests of the kernel system, evaluator, pool and shared ops
+tests/unit/                              GPU-free tests of core code and of the command line (cli/); registry lint; import boundaries
+tests/engine/                            GPU tests of the kernel system, evaluator, pool, shared ops and the session (session/); the command line as child processes (cli/)
 tests/nodes/<category>/<name>.test.ts    GPU tests of one node (section 5)
 tests/nodes/<category>/unit/*.test.ts    GPU-free tests of the category's CPU code
 tests/nodes/<category>/assets/           small data files of the category's tests
@@ -126,9 +126,10 @@ createEngine({
 ```
 
 `defs` holds the reference nodes (`src/core/nodes/ref/index.ts`), the harness's
-source node `ref/harness-source`, and every `NodeDef` the test file has handed
-to the harness: the argument of `conformance`, `renderNode`, `traceNode`,
-`renderLadder`, `registryDoc` and `useNodes`.
+two source nodes, `ref/harness-source` and `ref/harness-source-color`, and
+every `NodeDef` the test file has handed to the harness: the argument of
+`conformance`, `renderNode`, `traceNode`, `renderLadder`, `registryDoc` and
+`useNodes`.
 
 ```ts
 /** Adds definitions to the registry of this process's engine. For a test whose graph names nodes by type
@@ -156,7 +157,7 @@ of the harness call in progress (2.3, 2.4) and counts slices for the reports.
 - An adapter name that matches nothing fails `getEngine()` with the factory's `GpuUnavailableError`; nothing falls back silently.
 - With the test settings a cell is 16 m at resolution 257, 8 m at 513 and 32 m at 129.
 - Test resolutions are 129, 257, 513, 1025 and 2049, and 33 in the `short-ladder` check (3.2). They are levels of one ladder (`engine.md` 1.5), so every vertex of a coarser one is a vertex of the finer ones. A harness function that takes `res` accepts any resolution legal under `engine.md` 1.5.
-- Values a test file passes to a node come from the test process. To feed CPU data to a node's input the harness uses a private node type, `ref/harness-source`, that uploads a field with `ctx.write`. It exists in test processes only.
+- Values a test file passes to a node come from the test process. To feed CPU data to a node's input the harness uses two private node types that upload with `ctx.write`: `ref/harness-source` for a field and `ref/harness-source-color` for a colour, because an output port has one kind (`engine.md` 4.2). They exist in test processes only.
 
 ### 2.2 Field data and fixtures
 
@@ -249,7 +250,7 @@ interface EvalReport {
   readonly nodesRun: number;
   readonly nodesCached: number;
   readonly slices: number;
-  readonly longestSliceMs: number;
+  readonly longestSliceMs: number;             // the longest slice whose duration was measured (runtime.md 3.5); 0 when none was
 }
 
 declare class NodeFailure extends Error { readonly error: NodeError; readonly report: EvalReport }
@@ -265,7 +266,8 @@ declare function traceNode(def: NodeDef, opts?: RenderOptions): Promise<{
 port name. `traceNode` does the same and also returns what the evaluation did.
 
 Both build a document that holds the node, with the id `node`, and one source
-node per connected input, and evaluate it with `mode: 'build'` and one target
+node per connected input (`src0`, `src1`, … in the order of the inputs, and
+`srcmask` for the mask), and evaluate it with `mode: 'build'` and one target
 per wanted output. A build evaluation neither reads nor writes the cache, so
 the node always runs, and `ctx.wants()` is true exactly for the targets
 (`runtime.md` 2.8, 5.2).
@@ -361,7 +363,7 @@ declare function buildGraph(graph: GraphDoc | GraphSpec | string, opts?: {
 
 - Node and source ids in a `GraphSpec` match `/^[a-z][a-z0-9]*$/`. The commands generate the document's own node ids; the harness remembers which belongs to which spec id, and targets, `setParam` and reports use the spec's ids. For a project file they use the ids in the file.
 - A maskable node's mask is connected like any input, under the name `mask`.
-- `registryDoc` creates, for every given node that has outputs, one instance at default parameters. Its inputs are wired by port: height and data inputs and `any` inputs to a `ref/fbm`, mask inputs to a `ref/slope-mask` of that, colour inputs to a `ref/colorize` of that. A chain of `ref/combine` nodes then takes `outputs[0]` of every instance, nodes with a `file` parameter last, and `ui.view` shows the end of the chain: evaluating the view evaluates every node.
+- `registryDoc` creates, for every given node that has outputs, one instance at default parameters. Its inputs are wired by port: height and data inputs and `any` inputs to a `ref/fbm`, mask inputs to a `ref/slope-mask` of that, colour inputs to a `ref/colorize` of that. A chain of `ref/combine` nodes then takes `outputs[0]` of every instance, nodes with a `file` parameter last, and `ui.view` shows the end of the chain: evaluating the view evaluates every node. A wiring type the registry lacks is left out: its inputs take the `ref/fbm` itself, and without `ref/combine` the document has no chain and no view, so a test names every node as a target.
 - Every harness evaluation passes `thumbnails: false`.
 - `renderGraph` is one evaluation on an emptied cache (`Engine.trim()` first). It resolves when the evaluation ends, whatever its status: a failed or skipped target is absent from `fields` and described in `report`. It rejects only for a malformed call.
 - `openGraph` keeps the cache between `evaluate()` calls, for tests of cache hits and of what an edit re-evaluates. `close()` calls `Engine.trim()` and `expectNoLeaks()`.
@@ -462,7 +464,7 @@ and from the command line. Files are written with the 8-bit PNG encoder of
 | Style | Image | Content |
 | --- | --- | --- |
 | `grey` | field size, RGB 8-bit | `range` mapped linearly to black..white. Below the range: blue. Above: red. Non-finite: magenta |
-| `hillshade` | field size | Lambert shading of the physical surface: gradients from central differences with `terrainSize` and `heightRange`, light direction (towards the light) `normalize(−1, −1, √2)`, intensity `0.15 + 0.85·max(n·L, 0)`. With `height`, the shaded terrain is tinted by `f` |
+| `hillshade` | field size | Wrapped Lambert shading of the physical surface: gradients from central differences with `terrainSize` and `heightRange`, light direction (towards the light) `normalize(−1, −1, √2)`, intensity `0.10 + 0.80·((1 + n·L) / 2)²`: 0.68 on level ground, within 0.10..0.90 everywhere. The term is wrapped because `max(n·L, 0)` is 0 on every slope above 45° that faces away from the light, and a terrain of physical steepness is then drawn in two tones (`ref/fbm` at 513 has a mean slope of 44° with the test settings). With `height`, the shaded terrain is tinted by `f` |
 | `3d` | 768 × 512 | orthographic view of the surface in true proportions, from 30° above the horizon, looking towards −Y and turned 25° about Z, so that row 0 is at the back. +X runs to the right: the view is never a mirror image of `grey` (`engine.md` 1.8). Same light; the terrain's sides are drawn down to height 0; background `#1a1a1a` |
 | `color` | field size | linear RGB encoded as sRGB, clamped; alpha ignored |
 | `sheet` | 1808 × 512 | `grey` and `hillshade` scaled to 512 × 512 (nearest neighbour) and `3d`, side by side |
@@ -482,8 +484,12 @@ After an evaluation has settled and every `FieldHandle` of its result is
 released, nothing is WORKING and nothing is pinned (`runtime.md` 2.2, 5.5).
 `renderNode`, `traceNode`, `renderGraph`, `buildGraph` and
 `GraphSession.close()` call `expectNoLeaks()` themselves. After a build
-evaluation, and after `close()`, they also require `cacheBytes === 0`. A test
-calls it directly only when it drives the `Engine` itself.
+evaluation, and after `close()`, they also require `cacheBytes === 0`:
+`renderNode` and `traceNode` first empty a cache that no open `GraphSession`
+holds, which is what a preview `renderGraph` leaves. While a `GraphSession` is
+open its entries are the cache, and a build evaluation is required to leave
+`cacheBytes` no larger than it found it. A test calls `expectNoLeaks()`
+directly only when it drives the `Engine` itself.
 
 ### 2.9 Driving the application
 
@@ -717,7 +723,7 @@ conformance(def, {
 Rules:
 
 1. A reason is one or two sentences of at least 20 characters that a reviewer can check. `conformance` throws at registration for a missing or shorter reason and for `resolutionTol.value` outside `(0, 0.5]`. Two unrelated fields compare at about 1.4, so a tolerance above 0.5 checks nothing.
-2. A skipped check appears in the test output as skipped, with its reason. The suite also writes `conformance/<category>/<name>.json` under the output folder: the adapter and profile, the result of every check, every opt-out with its reason, and the budget estimate. The gallery shows it (8.6), and the reviewer of the node approves each opt-out.
+2. A skipped check appears in the test output as skipped, with its reason. The suite also writes `conformance/<category>/<name>.json` under the output folder: the adapter and profile, the result of every check, every opt-out with its reason, the budget estimate, and the `params` of the conformance call. The gallery shows it (8.6), and the reviewer of the node approves each opt-out.
 3. `resolutionDependent: true` (`engine.md` 4.6) is not an opt-out of this document: it is part of the node's definition and is shown to the user. The gallery marks every node that sets it, and the reviewer checks that depending on whole-field statistics is the node's purpose; the flag is never set to avoid the `resolution` check.
 4. There is no other way to exclude a node or a check. `test.skip`, `test.todo` and `--test-skip-pattern` are not used in `tests/nodes/`, except for the blocked-test marker of 7.4.
 
@@ -839,6 +845,7 @@ Rules for test code:
 - Expected values come from an analytic property or from a fixture (a constant stays constant, a ramp has a known slope, a sum is conserved), never from a number copied out of a previous run of the same node.
 - Numbers that the same code computed in two runs on one device may be bit-compared. Anything else uses the tolerances of 3.4, a CPU task compared with a GPU kernel included.
 - No sleeping, no timing assertions, no dependence on the order of test cases.
+- Every top-level `await` of a test file (an engine, a device, a fixture) comes before its first `test()` call. `node:test` otherwise runs the cases registered so far and then the `after` hooks while the module still awaits, and the hook of the harness destroys the device: the later cases compute, and every readback rejects with a bare `AbortError`.
 
 An export node's test file contains `conformance(def)` and nothing else; what
 an export node writes is tested through builds, in `tests/export/`.
@@ -861,7 +868,12 @@ failure:
 | 5 | the same on the machine's software adapter (`tests/env/lavapipe.env` on Linux, `tests/env/warp.env` on Windows), profile `core` | every case passes |
 | 6 | `orogen render <type> --res 513` | a picture of every output is written |
 | 7 | `orogen render <type> --res 4033 --crop 768` | `render` exits with 0 (8.6): a one-to-one crop of every output is written, `longestSliceMs` is at most the hard ceiling of `runtime.md` 3.5 (500 ms), and the run emitted no `engine-error` event |
-| 8 | `orogen render <type> --res 4033 --max-params` | the same condition, with every `float`, `int` and `vec2` parameter at its `max` (the last run of 3.3) |
+| 8 | `orogen render <type> --res 4033 --max-params --out <output folder>/max-params` | the same condition, with every `float`, `int` and `vec2` parameter at its `max` (the last run of 3.3). Its pictures have the file names of step 7 and go to a folder of their own, so that those at the defaults stay |
+
+Steps 6 to 8 pass the `params` of the node's conformance call as `--param`,
+read from the report of 3.6 rule 2 with a file as an absolute path: a node
+whose defaults cannot run, an import node without a file, is rendered the way
+the suite ran it.
 
 It ends by printing a summary: the adapter of each step, the number of cases
 and skips, every opt-out with its reason, the `budget` estimate, the paths of
@@ -1188,8 +1200,8 @@ What each layer contains:
 
 | Layer | Contains |
 | --- | --- |
-| Unit | uniform packing against the WGSL layout rules; the TypeScript hashes and `mixSeed` against fixed vectors; curves and bakers; `defineKernel`, `defineLib`, `defineNode` validation and their messages; `parseDoc`, `serializeDoc`, `normalizeParams` and migration; the document commands; the stores (`docStore` through transactions, `engineStore` as a reduction of recorded `EngineEvent`s); `planBuild`, encoders and decoders (round trips), the manifest; the registry lint and import boundaries; CPU task functions |
-| GPU `tests/engine/` | every rule of `engine.md` and `runtime.md` that a node cannot break by itself: generated WGSL and accessors, the standard library (vertex-centred bilinear, clamping, `slopeAt`), TypeScript and WGSL hashes agreeing on 1000 inputs, per-run uniforms within one slice, call order, binding validation, tiles, the pool (states, reuse, budget, eviction), the out-of-memory retry with `failAllocAfter`, device loss, cache hits, keys and transient entries, `wants` re-runs, the maskable blend, bypass, conversion, progressive previews, thumbnails, CPU tasks, file identity, and every shared op including the coarse-to-fine driver |
+| Unit | uniform packing against the WGSL layout rules; the TypeScript hashes and `mixSeed` against fixed vectors; curves and bakers; `defineKernel`, `defineLib`, `defineNode` validation and their messages; `parseDoc`, `serializeDoc`, `normalizeParams` and migration; the document commands; the stores (`docStore` through transactions, `engineStore` as a reduction of recorded `EngineEvent`s); `planBuild`, encoders and decoders (round trips), the manifest; the registry lint and import boundaries; CPU task functions; the arguments of the command line and its usage errors, the document `render` evaluates, the gallery page |
+| GPU `tests/engine/` | every rule of `engine.md` and `runtime.md` that a node cannot break by itself: generated WGSL and accessors, the standard library (vertex-centred bilinear, clamping, `slopeAt`), TypeScript and WGSL hashes agreeing on 1000 inputs, per-run uniforms within one slice, call order, binding validation, tiles, the pool (states, reuse, budget, eviction), the out-of-memory retry with `failAllocAfter`, device loss, cache hits, keys and transient entries, `wants` re-runs, the maskable blend, bypass, conversion, progressive previews, thumbnails, CPU tasks, file identity, and every shared op including the coarse-to-fine driver; in `tests/engine/session/` the session (`runtime.md` section 7) on the real engine, with a recording renderer and a build function of the tests' own: latest-wins scheduling and what stays on screen, gestures and draft levels, the view and its loans, idle thumbnails, `inspect`, builds, watched files, device recovery, the event order, both ends of the protocol over a real `MessageChannel`, and the ledger at `dispose`; every subcommand of `orogen` as a child process, with its exit code and the pictures it writes decoded again |
 | GPU `tests/nodes/` | conformance and behaviour of each node |
 | GPU `tests/export/` | builds: the stages, the files, cancellation, the output folder |
 | GPU `tests/graphs/` | the acceptance graphs; `registry.test.ts`, which evaluates `registryDoc(nodes)`, the whole product (`runtime.md` 5.1), at 129 and requires every node to end `done`, except nodes with a `file` parameter |
@@ -1206,14 +1218,14 @@ What each layer contains:
     "check": "tsc -p tsconfig.core.json && tsc -p tsconfig.json",
     "test": "npm run test:unit && npm run test:gpu",
     "test:unit": "node tools/guard.mjs --timeout=600 node --test \"tests/unit/**/*.test.ts\" \"tests/nodes/*/unit/*.test.ts\" \"tests/export/unit/*.test.ts\" \"tests/ui/*/unit/*.test.ts\"",
-    "test:gpu": "node tools/guard.mjs node --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
-    "test:gpu:max": "node tools/guard.mjs node --env-file=tests/env/max.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
-    "test:gpu:lavapipe": "node tools/guard.mjs node --env-file=tests/env/lavapipe.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
-    "test:gpu:warp": "node tools/guard.mjs node --env-file=tests/env/warp.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
-    "test:electron": "node tools/guard.mjs node --test --test-concurrency=1 --test-timeout=300000 \"tests/electron/*.test.ts\"",
-    "test:ui": "node tools/guard.mjs node --test --test-concurrency=1 --test-timeout=300000 \"tests/ui/*/*.test.ts\"",
+    "test:gpu": "node tools/guard.mjs --timeout=3600 --lock node --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
+    "test:gpu:max": "node tools/guard.mjs --timeout=3600 --lock node --env-file=tests/env/max.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
+    "test:gpu:lavapipe": "node tools/guard.mjs --timeout=3600 --lock node --env-file=tests/env/lavapipe.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
+    "test:gpu:warp": "node tools/guard.mjs --timeout=3600 --lock node --env-file=tests/env/warp.env --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
+    "test:electron": "node tools/guard.mjs --timeout=3600 --lock node --test --test-concurrency=1 --test-timeout=300000 \"tests/electron/*.test.ts\"",
+    "test:ui": "node tools/guard.mjs --timeout=3600 --lock node --test --test-concurrency=1 --test-timeout=300000 \"tests/ui/*/*.test.ts\"",
     "orogen": "node src/cli/main.ts",
-    "verify": "node tests/tools/verify.ts",
+    "verify": "node tools/guard.mjs --mem=4G --timeout=3600 --lock node tests/tools/verify.ts",
     "expect": "node tests/tools/expect.ts"
   }
 }
@@ -1225,7 +1237,8 @@ What each layer contains:
 | `tests/env/lavapipe.env` | `OROGEN_GPU_ADAPTER=llvmpipe` |
 | `tests/env/warp.env` | `OROGEN_GPU_ADAPTER=Microsoft` |
 
-- Every test script starts its process through `tools/guard.mjs`, which on Linux puts it in its own memory-capped systemd scope (`OROGEN_GUARD_MEM`, default `3G`; `OROGEN_GUARD_TIMEOUT` seconds, default 1800; a script sets its own defaults with leading `--mem=` and `--timeout=`, as the unit script does with 600 seconds, because `--test-timeout` cannot interrupt a test that hangs synchronously) and elsewhere applies only the time limit. A test that leaks or loops then dies alone. Without the scope the kernel's out-of-memory killer ends the whole process group that launched it, the editor or terminal session included: a 13 GB runaway in one unit test did exactly that. Anything else that runs project code from a shell, a single test file or the command-line program, is started the same way: `tools/guard node --test tests/unit/foo.test.ts`. A run that needs more memory raises the cap explicitly, for example `OROGEN_GUARD_MEM=8G tools/guard npm run orogen -- build ...`.
+- Every test script starts its process through `tools/guard.mjs`, which on Linux puts it in its own memory-capped systemd scope (`OROGEN_GUARD_MEM`, default `2G`; `OROGEN_GUARD_TIMEOUT` seconds, default 1800; a script sets its own defaults with leading `--mem=` and `--timeout=`, as the unit script does with 600 seconds, because `--test-timeout` cannot interrupt a test that hangs synchronously) and elsewhere applies only the time limit. A test that leaks or loops then dies alone. Without the scope the kernel's out-of-memory killer ends the whole process group that launched it, the editor or terminal session included: a 13 GB runaway in one unit test did exactly that. Anything else that runs project code from a shell, a single test file or the command-line program, is started the same way: `tools/guard node --test tests/unit/foo.test.ts`. A run that needs more memory raises the cap explicitly, for example `OROGEN_GUARD_MEM=8G tools/guard npm run orogen -- build ...`.
+- The whole GPU suites and `verify` also pass `--lock`: on Linux such runs queue on one machine-wide lock, so that several people working on one machine do not exhaust the one GPU's memory or disturb each other's measured slice times. While developing, an owner runs the tests of its own folder, unlocked and small: `tools/guard node --test --test-concurrency=1 "tests/nodes/filter/*.test.ts"`. A render above 2049 from the command line takes the lock explicitly: `tools/guard --lock --mem=4G node src/cli/main.ts render ...`.
 - No test hands data-sized values to `assert.deepEqual`, `deepStrictEqual`, `equal` or `strictEqual`: not a field, a pixel buffer, an encoded file or any array whose length grows with a resolution. When such an assertion fails, Node builds a textual diff of both sides; measured here, two 4000-byte arrays with half the bytes different cost 300 MB, and 16 000 bytes passed 1 GB. That is the runaway the guard exists for. Data is compared with the harness functions of 2.5 (or, below the harness, a loop that reports the first difference and a count), and `deepEqual` is kept for small structured values.
 - The glob patterns are quoted so that Node expands them, identically on Linux and Windows. A folder passed to `node --test` instead of a pattern fails.
 - `--env-file` sets the variables for the runner and for every test process, on every platform. A script never relies on `VAR=value command` syntax.
@@ -1319,25 +1332,47 @@ It is one Node process with the engine on the main thread (`runtime.md` 8.1).
 | `build`, `unreal-test` | `export-unreal.md` 3.11 and section 9 | `src/export/cli.ts` |
 | `probe`, `render`, `gallery` | below | `src/cli/` |
 
+`main.ts` imports the module of a subcommand when that subcommand is named.
+For `build` and `unreal-test` it calls the one function `src/export/cli.ts`
+exports for it:
+
+```ts
+/** `args` are the arguments after the subcommand. Resolves with the exit code; does not end the process. */
+declare function runExportCli(subcommand: 'build' | 'unreal-test', args: readonly string[], signal: AbortSignal): Promise<number>;
+```
+
+`main.ts` owns the process. It aborts `signal` at the first SIGINT or SIGTERM
+and exits at once with 130 at the second; when the subcommand has resolved it
+flushes both output streams and calls `process.exit` with the code
+(`runtime.md` 1.5 rule 5). A checkout without `src/export/cli.ts` says so on
+standard error and exits with 2 for `build` and `unreal-test`. Standard output
+of `probe`, `render` and `gallery` carries their result and nothing else: what
+the engine or a node logs on the way, the device line of `OROGEN_GPU_LOG=1`
+included, goes to standard error.
+
 Options of `probe`, `render` and `gallery`:
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `--profile <core or max>` | `OROGEN_GPU_PROFILE`, else `max` | the device profile |
 | `--adapter <substring>` | `OROGEN_GPU_ADAPTER`, else the default adapter | the adapter |
-| `--out <dir>` | `OROGEN_TEST_OUTPUT`, else `test-output` | where files are written (`render`, `gallery`) |
+| `--out <dir>` | `OROGEN_TEST_OUTPUT`, else `test-output` | where files are written (`render`, `gallery`). A relative path is taken from the working directory |
 | `--budget-mb <n>` | the budget formula of `runtime.md` 2.4 with default preferences: 2.4 GiB in Node, whatever the card | the pool budget in MiB (`render`, `gallery`). A run at 8129 of a node with a large state passes it |
 
 `build` takes `--profile`, `--adapter` and `--budget-mb` with the same meanings
 (`export-unreal.md` 3.11). Every subcommand that takes a resolution spells the
-option `--res`. A subcommand that evaluates creates its registry with
-`createRegistry(nodes)` (`runtime.md` 5.1).
+option `--res`; `render` and `gallery` accept any resolution legal under
+`engine.md` 1.5 and refuse another as a usage error. A subcommand that
+evaluates creates its registry with `createRegistry(nodes)` (`runtime.md` 5.1).
 
 Exit codes are those of `export-unreal.md` 3.11: 0 success, 1 a node failed,
 2 usage error, 3 no usable device or device lost, 130 cancelled. `render` also
 exits with 1 when a slice measured above the hard ceiling of `runtime.md` 3.5
 or the run emitted an `engine-error` event; it then prints the kernel names of
-the longest slice on standard error.
+the longest slice on standard error. The command line has no session to emit
+that event (`runtime.md` 7.7): there it is a slice above the ceiling, which the
+`onSlice` hook reports (`runtime.md` 5.14), or a GPU error outside every error
+scope, an `uncapturederror` of the device (`runtime.md` 5.8 rule 5).
 
 ```
 orogen probe
@@ -1355,17 +1390,26 @@ orogen render <project.orogen> --node <id> [--res <n>] [--crop <size>]
 | | First form | Second form |
 | --- | --- | --- |
 | Document | one instance of the node type, its inputs wired as `registryDoc` wires them (2.4): heights and data from `ref/fbm`, masks from `ref/slope-mask`, colours from `ref/colorize`. Settings: `terrainSize` 4096, `heightRange` 1024, `seed` 1 | the project file |
-| Parameters | defaults; with `--max-params`, every `float`, `int` and `vec2` parameter at its `max`; then each `--param`; `--seed` sets the node's `seed` | as stored |
+| Parameters | defaults; with `--max-params`, every `float`, `int` and `vec2` parameter at its `max`; then each `--param`, whose value is one the parameter holds as given: a value `normalizeParams` would change (`runtime.md` 4.4) is a usage error; `--seed` sets the node's `seed` | as stored |
 | Resolution | `--res`, default 513 | `--res`, default the project's preview resolution |
 
 Both evaluate in `mode: 'build'` with every output of the node as a target, so
 they show what a build would do. For every output they write
 `nodes/<category>/<name>/<output>-<res>.png` under `--out`: a `sheet` for a
-field; for a colour, `color` and, when the node has a height input, a `3d`
-view of that input with the colour drawn over it. With `--crop`, they also write a `hillshade` (or
-`color`) of the centre window of that size at one texel per pixel, as
-`<output>-<res>-crop.png`. They print one JSON line on standard output:
-`{ type, res, wallMs, gpuMs, longestSliceMs, peakBytes, files }`.
+field, where a mask or a data output is drawn over the node's first height
+input when that is connected, and a data output with `range: 'auto'`; for a
+colour, `color` and, when the node has a height input, a `3d` view of that
+input with the colour drawn over it, as `<output>-<res>-3d.png`. With `--crop`,
+they also write a `hillshade` (or `color`) of the centre window of that size at
+one texel per pixel, as `<output>-<res>-crop.png`. They print one JSON line on
+standard output, whatever the status of the evaluation:
+`{ type, res, wallMs, gpuMs, longestSliceMs, peakBytes, files }`. `wallMs`,
+`gpuMs` and `peakBytes` are those of the node's `node-done` event
+(`runtime.md` 5.10), and 0, `null` and 0 when the node did not finish;
+`longestSliceMs` is the longest slice of the whole evaluation whose duration
+was measured (`runtime.md` 3.5: every slice with `timestamp-query`; by wall
+clock only the resolved ones, and 0 when there is none), what feeds the node
+included; `files` holds the absolute paths of the pictures written.
 
 ```
 orogen gallery [--category <category>] [--res <n>]
@@ -1377,8 +1421,11 @@ Renders every node of the registry that has outputs as the first form of
 description and keywords, the ports, every parameter (label, unit, default,
 range, help), the flags `maskable` and `resolutionDependent`, the time and
 peak memory, and the content of the node's `conformance/…json` when the output
-folder holds one (3.6). A node that fails is listed with its error. This page
-is what a reviewer reads.
+folder holds one (3.6). A node that fails is listed with its error, and
+`gallery` then exits with 1, unless the node has a `file` parameter: its
+defaults select no file, the exception 8.1 makes for the registry test. After
+a cancellation or a device loss no page is written. `gallery` prints the path
+of the page on standard output. This page is what a reviewer reads.
 
 ---
 
@@ -1504,7 +1551,7 @@ use them.
 | Type | Pattern it shows | Inputs | Outputs | Parameters | Flags |
 | --- | --- | --- | --- | --- | --- |
 | `ref/fbm` | generator: `uv` only, seed, canonical helpers, fixed normalisation | none | `out` | `seed`, `size`, `octaves`, `gain` | |
-| `ref/blur` | separable filter with temporaries: two passes, a temporary released early, a length converted to texels, a bounded tap count, a coarser ladder level for wide radii, one kernel variant per kind | `in` (any) | `out` (same as `in`) | `radius` | `maskable` |
+| `ref/blur` | separable filter with temporaries: two passes, a temporary released early, a length converted to texels, a bounded tap count, `ops.blur` for what one pass cannot hold, one kernel variant per kind | `in` (any) | `out` (same as `in`) | `radius` | `maskable` |
 | `ref/talus` | iterative simulation: `ctx.loop`, ping-pong, in-place accumulator, `ctx.wants`, progressive preview | `in` | `out`, `moved` (data) | `talus`, `reach` | `maskable` |
 | `ref/distance` | CPU-assisted node: `ctx.read`, a CPU task with a transferred buffer, `ctx.write` | `in` (mask) | `out` (data) | none | |
 | `ref/colorize` | colour node with a LUT: `bakeGradient`, a `vec4f` LUT, a colour output, an optional colour input | `in`, `base` (color, optional) | `out` (color) | `gradient`, `strength` | |
@@ -1514,15 +1561,21 @@ use them.
 | `ref/image` | file input: a `file` parameter, `ctx.readFile`, `decodeImage`, upload at the image's size, `ops.resample` | none | `out` | `file` (`png`) | |
 | `ref/fail` | a documented error; an input passed straight to the output | `in` | `out` | `message` (text, default empty) | |
 
-`ref/fbm` and `ref/talus` are the worked nodes of `engine.md` section 6. The
-others behave as follows:
+`ref/fbm` and `ref/talus` are the worked nodes of `engine.md` section 6.
+`ref/talus` declares a `resolutionTol` of 0.2, because it relaxes the slopes it
+finds and a finer level resolves steeper pairs of the same terrain: between 257
+and 513 its `moved`, the height that crossed each texel, differs by 7 % of its
+standard deviation on the `terrain` fixture and by 16 % on a `ref/fbm` of four
+octaves with `talus` 30 and `reach` 0.05, the terrain of graph 03, where `out`
+differs by 0.2 % and by 2 %. Its test file holds `out` to the default 1 % on
+the `terrain` fixture. The others behave as follows:
 
 | Type | Behaviour |
 | --- | --- |
-| `ref/blur` | Gaussian blur with standard deviation `radius`. Below a quarter of a texel it outputs its input unchanged. No pass exceeds 64 loads per texel |
-| `ref/distance` | Euclidean distance, as a length, from each texel to the nearest texel whose input is at least 0.5; 0 on those texels; `√2` everywhere when there is none. Declares a `resolutionTol`, because the boundary of the mask moves by up to one coarse cell between levels |
+| `ref/blur` | Gaussian blur with standard deviation `radius`: weights beyond 3 sigma are dropped and borders clamp. Below a quarter of a texel it outputs its input unchanged. No pass exceeds 64 loads per texel: a radius above 10 texels is handed to `ops.blur`, which computes it on a coarser grid that continues past the terrain as the field's own grid does. A node cannot build that grid from `ops.resample`, whose result ends at the border: a blur on it is wrong by 14 to 21 % of the range at a border whose texels differ from their neighbours. On `ref/fbm`, and on a ring of 1 around 0, the result is the direct Gaussian within 0.3 % of the input's range for radii up to 0.1, and within 0.6 % at 0.25. A constant stays that constant and an opaque colour stays opaque, bit for bit |
+| `ref/distance` | Euclidean distance, as a length, from each texel to the nearest texel whose input is at least 0.5; 0 on those texels; `√2` everywhere when there is none. Declares a `resolutionTol` of 0.03, because the boundary of the mask moves by up to one coarse cell between levels: between 257 and 513 that is 0.5 % of the standard deviation around the disc of the `mask` fixture and 1.3 % on the `terrain` fixture read as a mask |
 | `ref/colorize` | `out = mix(base, gradient(saturate(in)), strength)`, alpha 1. An unconnected `base` is black |
-| `ref/slope-mask` | 0 where the physical slope is at most `slopeMin`, 1 where it is at least `slopeMax`, linear in the slope angle between. Declares a `resolutionTol`, because it measures slope |
+| `ref/slope-mask` | 0 where the physical slope is at most `slopeMin`, 1 where it is at least `slopeMax`, linear in the slope angle between. Declares a `resolutionTol` of 0.08, because it measures slope: between 257 and 513 the mask differs by 0.7 % of its standard deviation on the `terrain` fixture and by 5.6 % on a `ref/fbm` of four octaves, the terrain of the ladder checks in 10.2 |
 | `ref/combine` | `r` = `b`, `a + b`, `a · b`, `max(a, b)` or `min(a, b)` by `mode`; `out = mix(a, r, strength · mask)`. Version 1 stored `amount` in percent; `migrate` turns it into `strength = amount / 100` |
 | `ref/autolevel` | remaps the input's measured minimum and maximum to 0 and 1 |
 | `ref/image` | the first channel of an 8- or 16-bit PNG as heights 0..1, resampled to the evaluation grid. Throws `No file selected` when `file` is empty. Its conformance call passes `params: { file: 'graphs/assets/heights-253.png' }` |

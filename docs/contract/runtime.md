@@ -68,8 +68,8 @@ interface GpuContext {
 declare class GpuUnavailableError extends Error {}    // no adapter, or the device fails the checks of 1.4
 declare class DeviceLostError extends Error {}        // thrown by every engine call on a lost device
 
-/** src/core/gpu/device.ts. The only code that calls requestAdapter() or requestDevice(). */
-declare function openGpu(gpu: GPU, opts: { profile: GpuProfile }): Promise<GpuContext>;
+/** src/core/gpu/device.ts. The only code that calls requestAdapter() or requestDevice(). `log` prints the line of 1.3. */
+declare function openGpu(gpu: GPU, opts: { profile: GpuProfile; log?: boolean }): Promise<GpuContext>;
 
 /** src/platform/node/gpu.ts, which exports it; core does not. The only code that imports the `webgpu` package. */
 declare function createNodeGpu(opts?: { profile?: GpuProfile; adapter?: string }): Promise<GpuContext>;
@@ -79,8 +79,8 @@ declare function createNodeGpu(opts?: { profile?: GpuProfile; adapter?: string }
 2. `openGpu` calls `gpu.requestAdapter({ powerPreference: 'high-performance' })`, then `adapter.requestDevice()` with the profile's features and limits (1.2). It requests a new adapter for every device: an adapter is consumed by `requestDevice`, and a reused one returns a device that is already lost.
 3. `openGpu` rejects with `GpuUnavailableError` when `requestAdapter` returns `null` or when a check of 1.4 fails. The message names the missing item.
 4. `openGpu` installs the `device.lost` handler that sets `lost` and `lostInfo` and calls the listeners, and an `uncapturederror` listener (5.8).
-5. In the application the engine worker calls `openGpu(navigator.gpu, { profile: 'max' })`. The environment variable `OROGEN_GPU_PROFILE=core`, read by the main process and passed to the worker, forces `core` for debugging.
-6. `createNodeGpu` defaults: `profile` from `OROGEN_GPU_PROFILE`, else `'max'`; `adapter` from `OROGEN_GPU_ADAPTER`, else none.
+5. In the application the engine worker calls `openGpu(navigator.gpu, { profile: 'max' })`. The environment variable `OROGEN_GPU_PROFILE=core`, read by the main process and passed to the worker, forces `core` for debugging; `OROGEN_GPU_LOG=1`, passed the same way, sets `log`.
+6. `createNodeGpu` defaults: `profile` from `OROGEN_GPU_PROFILE`, else `'max'`; `adapter` from `OROGEN_GPU_ADAPTER`, else none. It passes `log: true` when `OROGEN_GPU_LOG` is `1`.
 
 ### 1.2 Profiles
 
@@ -143,9 +143,13 @@ interface GpuCaps {
 
 `caps` is filled by `openGpu` from the adapter and the created device. It is
 the only source of capability facts: no code hard-codes a limit, a feature or an
-adapter name. Every process that opens a device logs `caps` once as a single
-JSON line prefixed `[orogen] gpu `. The application shows a permanent warning
-when `caps.software` is true.
+adapter name. `openGpu` logs `caps` as a single JSON line prefixed
+`[orogen] gpu ` only when it is called with `log: true`, which the environment
+variable `OROGEN_GPU_LOG=1` asks for (1.1). Without it a process that opens a
+device prints nothing: the line would bury test output and break the JSON a
+command-line tool prints, and `orogen probe` prints `caps` itself
+(`testing.md` 8.6). The application shows a permanent warning when
+`caps.software` is true.
 
 ### 1.4 What the engine may assume
 
@@ -219,7 +223,10 @@ not be used.
 Every texture behind a field comes from one pool, `src/core/gpu/pool.ts`. WebGPU
 cannot report free video memory, so the pool keeps its own ledger and enforces a
 byte budget. Measured: the ledger's sum equals the driver's per-process figure
-exactly for `r32float`, `rgba32float`, `r16float` and `r8unorm`.
+exactly for `r32float`, `rgba32float`, `r16float` and `r8unorm` at sizes up to
+2048; at 8129 the driver holds 0.9 to 1.1 % more per texture and about 10 MiB
+of its own, 65 MiB on a budget of 6 GiB, which the budget fraction of 2.4
+leaves room for.
 
 ### 2.1 Keys and states
 
@@ -397,18 +404,26 @@ const pending = device.popErrorScope();          // awaited later, never here
 `pending` is recorded against the owner. The evaluator awaits it before the
 owner publishes (5.5); a non-null result is a GPU out-of-memory failure (5.8).
 
+A texture whose creation reported an error is not a texture, and is never
+handed out again. When it leaves WORKING or loses its last reference it is
+destroyed (2.6) in place of becoming FREE, and when the report finds it FREE it
+is destroyed then. A texture that was freed and handed out again before its
+creation had reported is the new owner's failure as well: the report is
+recorded against that owner too.
+
 `acquire` rejects a side outside 1..8192 with `RangeError` before any of the
 steps.
 
 ### 2.6 Destroying a texture
 
-Measured on Dawn: after `destroy()` the driver keeps the memory until one
-further submission has completed; a texture created in between is held in
-addition.
+Measured on Dawn: after `destroy()` the driver keeps the memory until a
+further submission has completed, and now and then until a second one has (a
+255 MiB texture was still held after one empty submission in 1 run of 8, and
+never after two); a texture created in between is held in addition.
 
 1. Before the pool destroys a texture it submits the open slice (3.1), so that no unsubmitted command refers to a destroyed texture.
 2. `destroy()` moves the texture's bytes from `free` to `draining`.
-3. After the last destroy of one `acquire` or `trim` call the pool submits an empty command buffer (a **barrier**). When that submission's `onSubmittedWorkDone()` resolves, the bytes destroyed before it leave `draining`.
+3. After the last destroy of one `acquire` or `trim` call the pool submits a **barrier**: an empty command buffer, and a second one when the first has completed. When the second submission's `onSubmittedWorkDone()` resolves, the bytes destroyed before the barrier leave `draining`.
 4. `committed + draining` may therefore exceed the budget between a destroy and the completion of its barrier, by at most the bytes destroyed in that interval. The evaluator bounds the interval: it awaits a completed submission after every node (5.5), and it calls `trim`, which awaits its barrier, at the points of 2.8 where gigabytes change shape.
 
 ### 2.7 Eviction order
@@ -468,13 +483,15 @@ A **slice** is one `queue.submit()` of the stream: one command buffer and the
 uniform bytes it uses. The **open slice** is the one being encoded.
 
 1. A slice holds the work of one **owner**: one node invocation, or one engine service call. A change of owner closes the open slice.
-2. Consecutive runs in a slice share one compute pass. A clear (a render pass with `loadOp: 'clear'`) or a texture copy ends the pass; the next run begins a new one.
+2. Consecutive runs in a slice share one compute pass. A clear (a render pass with `loadOp: 'clear'`) or a texture copy ends the pass; the next run begins a new one. With `caps.timestampQuery` a pass holds the runs of one kernel at one level (3.3), so that each is timed on its own: a run of another begins a new pass.
 3. A texture view is created once per pool texture. Group-1 bind groups are cached for the duration of one `evaluate()` call of a node, keyed by kernel name and the identities of the bound textures and LUTs in declaration order; the cache is dropped when that call settles.
 4. Every run and every tile contributes a **work estimate** (3.3) to the slice.
 
 The open slice is closed and submitted when any of these happens:
 
 - its estimated time reaches the slice target (3.5);
+- it holds 2^20 texels of kernels the device has not measured (3.4 rule 5);
+- it holds 256 runs (*to calibrate*): on a small grid the estimate alone lets a slice hold thousands of runs, and encoding 4096 of them was measured to hold the thread for 73 ms;
 - the owner changes;
 - the uniform arena is full (3.2);
 - an operation that acts on the queue must keep its place in the order: `ctx.write`, a readback mapping, the pool destroying a texture (`engine.md` 3.11);
@@ -512,11 +529,17 @@ estimate(dispatch) = work × rate[kernel]                        milliseconds
 ```
 
 `rate[kernel]` is the stream's estimate of GPU milliseconds per unit of work for
-that kernel name, kept per device epoch.
+that kernel name at one **level**, kept per device epoch. The level of a run is
+`floor(log2(width × height) / 2)` of the grid it writes: one per factor of two
+in resolution, which for the grids of an evaluation is one per ladder level. A
+kernel is faster per texel on a small grid than on a large one (measured: a
+5-load stencil takes 3.7e-9 ms per unit at 257 and 1.46e-8 at 8129), so one
+rate for all sizes would let a preview or a thumbnail lower the estimate of a
+build.
 
-1. A kernel that has not run on this device starts at `RATE_INITIAL = 1e-7` ms per unit (*to calibrate*). The value is pessimistic on purpose: measured costs on the GTX 1660 Ti are 6e-9 to 1.5e-8 ms per unit. A pessimistic start produces small first tiles, which cost nothing measurable.
-2. When a slice completes with measured duration `dt` (3.5) and estimate `est`, the rate of every kernel in the slice becomes the rate its dispatches in that slice were estimated with, multiplied by `clamp(dt / est, 0.5, 2)`. The factor applies to the rate behind `est`, not to the current one: with two slices in flight (3.6) the second is estimated before the first completes, and multiplying the current rate would apply one correction twice.
-3. When `dt` exceeds the hard ceiling (3.5), the clamp's upper bound does not apply for that update.
+1. A kernel that has not run at a level starts there at `RATE_INITIAL = 1e-7` ms per unit (*to calibrate*), or at the rate it has at the nearest level where it has run, when that is higher. The value is pessimistic on purpose: measured costs of load-bound kernels on the GTX 1660 Ti are 6e-9 to 1.5e-8 ms per unit. A pessimistic start produces small first tiles, which cost nothing measurable. It is not pessimistic for every kernel: one heavy in arithmetic at the default cost measured 1.1e-6 ms per unit, which is what 3.4 rule 5 is for.
+2. When a slice completes, the rate of each kernel in it (at its level) becomes the rate its dispatches in that slice were estimated with, multiplied by `clamp(dt / est, 0.5, 2)`, where `est` is the estimate of that kernel's dispatches and `dt` their measured duration (3.5). The factor applies to the rate behind `est`, not to the current one: with two slices in flight (3.6) the second is estimated before the first completes, and multiplying the current rate would apply one correction twice. A kernel learns from its own time only, never from that of another kernel in the same slice. Measured with one factor for the whole slice: a kernel estimated within 1 % lost a factor of 9.5 by sharing four slices with a kernel new to the device, and its next slices at 8129 took 712 ms. With `caps.timestampQuery` each kernel has passes of its own (3.1 rule 2) and `dt` is their time. Without it a slice has one duration: a slice of one kernel teaches that kernel; in a slice of several, the kernels that have not completed a resolved slice of their own (3.5) take what is left of the duration after the estimates of the others, which keep their rates; when all of them have, or none, the slice's `dt / est` applies to all.
+3. When the duration of the slice exceeds the hard ceiling (3.5), the clamp's upper bound does not apply for that update.
 4. The first slice that uses a new pipeline or a new texture measures several times too long. The clamp absorbs it; no sample is treated specially.
 5. Rates are not persisted and are reset when the device is replaced.
 6. `rate[kernel]` never exceeds `100 × RATE_INITIAL` except through rule 3 (*to calibrate*). The cap keeps a duration that is not the kernel's own (the completion latency of 3.5) from shrinking slices without bound.
@@ -540,6 +563,7 @@ dispatchWorkgroups(ceil(width / wgX), ceil(rowsInTile / wgY))
 2. Tiling never changes a result (`engine.md` 3.14). Measured: output is bit-identical for 1 to 65 bands and the overhead per band is below measurement noise.
 3. A kernel declared `tiled: false` is always one dispatch. When its estimate exceeds the hard ceiling, `ctx.run()` throws and the node fails with kind `'watchdog'` (5.8): `kernel "<name>" cannot be tiled and one dispatch is estimated at <n> ms; the limit is 500 ms`.
 4. The texture copies and clears the stream encodes are not tiled.
+5. A kernel is **measured** at a level while its last measurement there was at most twice its estimate. Until then no tile of it holds more than `2^20` texels (*to calibrate*), whatever its estimate, and a slice is closed when it holds that many texels of such kernels. An estimate is `texels × cost × rate`, and neither factor is known for a kernel that has not run: measured, a kernel heavy in arithmetic at the default cost went out as one dispatch of 515 ms over an 8129 × 8129 grid, and as 32 slices of 13 ms with this bound. A measured kernel is tiled and sliced by its estimate alone. A `tiled: false` kernel is one dispatch either way.
 
 ### 3.5 Slice targets and the hard ceiling
 
@@ -560,8 +584,11 @@ seconds, and such a reset also resets every other program on the card.
 
 **Measured duration of a slice.** With `caps.timestampQuery`, the GPU time
 between the beginning and the end of the slice's compute passes, from
-`timestampWrites`. Otherwise the wall time from the submit to the resolution of
-`onSubmittedWorkDone()`, which is meaningful only with one slice in flight.
+`timestampWrites`; every slice is timed, however many are in flight. Otherwise
+the wall time from the slice's beginning to the resolution of
+`onSubmittedWorkDone()`. A slice begins at its submit when no other slice was
+unfinished then, and otherwise when the completion of the slice before it was
+seen.
 
 The wall time includes the latency with which a completion is reported, and
 that latency can exceed the slice. Measured in Electron with the viewport
@@ -570,8 +597,13 @@ drawing every frame: completions were reported 16 to 50 ms late for more than
 target then raises every rate on every slice. Without `caps.timestampQuery`
 therefore (both rules *to calibrate* on the target machine):
 
-1. `dt` is the wall time minus `latency`, floored at 0. `latency` is the completion time of the most recent barrier (2.6) or empty submission; the stream measures it again with an empty submission whenever it has been idle for 250 ms.
-2. A slice whose wall time is below `2 × latency` is not resolved: its `dt` is unknown but at most its wall time. Such a slice never raises a rate, and lowers one by `clamp(wall / est, 0.5, 1)` in place of the factor of 3.3 rule 2. Measured on Dawn in Node: with `dt` floored at 0 for these slices, every kernel that runs in short slices fell to the floor of 3.3 rule 7 within seven slices.
+1. `dt` is the wall time minus `latency`, floored at 0, for a slice that began at its submit, and the wall time for one that began at a completion, where the latency is in both ends. `latency` is the completion time of the most recent barrier (2.6) or empty submission; the stream measures it again with an empty submission whenever it has been idle for 250 ms.
+2. A slice whose wall time is below `2 × latency` is not **resolved**: its `dt` is unknown but at most its wall time. Such a slice never raises a rate, and lowers one by `clamp(wall / est, 0.5, 1)` in place of the factor of 3.3 rule 2. Measured on Dawn in Node: with `dt` floored at 0 for these slices, every kernel that runs in short slices fell to the floor of 3.3 rule 7 within seven slices.
+3. A completion is timed by when the thread sees it, which is when it happened only while the thread keeps returning to the event loop. While slices are in flight the stream notes each return with a timer; a gap of more than 12 ms (*to calibrate*) is a stall, and a completion seen in a stall or within 12 ms after one was seen late. Such a slice is not resolved, and neither is the one queued behind it, whose beginning was not seen: for both `dt` is at most the time since the beginning that is known, the submit if no other. Measured: a plan of 3000 nodes that awaited nothing saw the completions of its thumbnail slices up to 1162 ms late, reported 1770 of them above the hard ceiling and corrected their rates by rule 3 each time.
+
+Only a resolved duration is held against the hard ceiling and reported as an
+overrun.
+
 
 ### 3.6 Waiting
 
@@ -614,7 +646,7 @@ The abort signal of an evaluation, and the device-lost flag, are checked:
 
 | Where | Effect when set |
 | --- | --- |
-| before each node starts | the node and everything after it is skipped |
+| before each node starts | the node and everything after it is skipped. Nodes that await no GPU work (cache hits, bypassed nodes, pass-throughs, failures) would run as one task of the thread, through which an abort arrives: after 4 ms without a completed submission the evaluator awaits an empty one before the next node |
 | on entry to every `EvalContext` method | the method throws (`engine.md` 4.7) |
 | before `body(i)` and at every batch boundary of `ctx.loop` | `loop` rejects |
 | before every submit | the open slice is discarded; an encoder may be dropped without `finish()` |
@@ -896,6 +928,8 @@ interface Engine {
   /** The last measured duration of a node's evaluate() in this session, by node id. */
   lastTiming(nodeId: string): { readonly resolution: number; readonly wallMs: number } | null;
   onThumbnail(listener: (t: Thumbnail) => void): () => void;     // 5.12
+  /** A slice was measured above the hard ceiling (3.5). Returns the function that removes the listener. */
+  onOverrun(listener: (slice: SliceOverrun) => void): () => void;
 
   memory(): MemoryReport;
   trim(opts?: { keepResolution?: number }): Promise<void>;       // 2.8
@@ -906,6 +940,16 @@ interface Engine {
 }
 ```
 
+```ts
+interface SliceOverrun {
+  readonly nodeId: string | null;        // exactly one of nodeId and service is not null (5.14)
+  readonly service: string | null;
+  readonly kernels: readonly string[];
+  readonly measuredMs: number;
+  readonly ceilingMs: number;            // 500, or 250 for a node that was running at a device loss (5.9 rule 6)
+}
+```
+
 The engine owns the pool, the stream, the pipeline cache, the result cache and
 the evaluator. It is the whole headless product: the command line, the tests
 and the session (section 7) all drive this one object.
@@ -913,6 +957,12 @@ and the session (section 7) all drive this one object.
 `read` and `stats` may be called at any time, also from `onTarget` (5.2); they
 are engine services and take their place in the stream. `trim`, `setFiles`,
 `replaceDevice` and `dispose` wait until the running evaluation has settled.
+`replaceDevice` and `dispose` also wait for every `read` and `stats` that is
+under way, which end on the device they began on: with their result, or with
+`DeviceLostError` when that device is lost. From the moment `dispose` begins,
+after the running evaluation, no call begins: each throws or rejects with
+`The engine is disposed`. `createEngine` rejects with `RangeError` for a
+`budgetBytes` that is not a finite number of at least 0.
 After `dispose()` has resolved, a new engine may be created on the same
 `GpuContext`. `dispose()` also disposes the `CpuRunner` the engine was given
 (6.3): the runner belongs to its engine.
@@ -1160,7 +1210,7 @@ implementation.
 
 1. A read copies the texture to the staging buffer in strips of whole rows of at most 64 MiB: `rows = floor(67 108 864 / align256(width × bytesPerTexel))`, where `align256` rounds up to a multiple of 256, as texture-to-buffer copies require. An 8129² `field` is read in 4 strips of 2048 rows.
 2. One staging buffer of at most 64 MiB exists per engine, with usage `MAP_READ | COPY_DST`, created on first use and registered with the ledger. Reads are serialised. No read needs a buffer above the default `maxBufferSize`, and no read holds a second full-size copy on the GPU side.
-3. The returned `Float32Array` is tightly packed without row padding; `rgba16float` and `r8unorm` data are converted to float32.
+3. The returned `Float32Array` is tightly packed without row padding; `rgba16float` and `r8unorm` data are converted to float32. A strip is converted in pieces of at most 4 MiB of mapped bytes (*to calibrate*), with a completed empty submission awaited between two pieces: converting a whole strip of 64 MiB holds the thread, on which the viewport draws, for 34 ms (`r32float`) to 115 ms (`rgba16float`).
 4. Statistics are reduced on the GPU to one record per 32 × 32 block and combined on the CPU in float64. The readback is about 1 MiB at 8129². A texel is non-finite when `(bitcast<u32>(v) & 0x7f800000u) == 0x7f800000u`.
 
 ### 5.8 Errors
@@ -1201,7 +1251,7 @@ interface NodeError {
 | `shader-compile` | a kernel in `NodeDef.kernels` does not compile | `kernel "<name>": <first error>` |
 | `binding` | `KernelBindingError` or `FieldAccessError` is thrown, an output is missing, or another rule of the context is broken | the error's message |
 | `validation` | a GPU validation error is captured in a scope of the node | the first line of the GPU message |
-| `budget` | `BudgetExceededError`, or the memory check of 5.3 | `Needs <n> MB more GPU memory at <res> × <res>: budget <b> MB, <w> MB in use by this node, <p> MB pinned` |
+| `budget` | `BudgetExceededError`, or the memory check of 5.3 | `Needs <n> MB more GPU memory at <res> × <res>: budget <b> MB, <w> MB in use by this node, <p> MB pinned`. Each of the four sizes is in whole `MB` from 1 MB up and in whole `KB` below, so that the fields of a preview do not read `0 MB`; a size of nothing is `0 MB` |
 | `out-of-memory` | the GPU reports out of memory twice (below) | `Out of GPU memory at <res> × <res> (budget <b> MB). Lower the resolution or raise the GPU memory budget` |
 | `watchdog` | one dispatch of a kernel that cannot be tiled is estimated above the hard ceiling (3.4) | as given there |
 | `io` | `ctx.readFile` or `externalKey` fails with a `FileError` (6.1) | the error's message |
@@ -1240,6 +1290,8 @@ symptom of an over-large budget is slowness.
 1. `BudgetExceededError` is not retried: the loop of 2.5 has already reclaimed everything that could be. The node fails with kind `'budget'`.
 2. A GPU out-of-memory report for a node makes the evaluator return the node's fields to FREE, destroy every FREE texture, evict every evictable cache entry (2.7) and destroy what that frees, await `pool.drained()`, and run the node once more.
 3. A second out-of-memory report, or a `BudgetExceededError` in the second run, fails the node with kind `'out-of-memory'`.
+4. A GPU out-of-memory report for a conversion, a mask blend or a constant is handled the same way: the evaluator reclaims as in rule 2 and makes the content once more. When that fails too, the node it was made for fails with kind `'internal'`.
+5. The texture whose creation reported out of memory is destroyed, never FREE (2.5), whoever allocated it: a node, the evaluator, the statistics or the thumbnails.
 
 ### 5.9 Device loss
 
@@ -1278,9 +1330,9 @@ type EvalEvent =
 ```
 
 1. Events of one request arrive in order, begin with `eval-start`, end with `eval-end`, and none arrives after the promise has settled.
-2. Every node of the plan gets exactly one final event: `node-done`, `node-error` or `node-skipped`. Cached and bypassed nodes get `node-done` with `cached: true` and `wallMs: 0`. In `eval-start`, `blocked` is a node that will not run: it failed a check of 5.3, reads one that did, or the evaluation cannot start at all (the memory check of a build, a lost device, a signal that has already aborted).
+2. Every node of the plan gets exactly one final event: `node-done`, `node-error` or `node-skipped`. Cached and bypassed nodes get `node-done` with `cached: true` and `wallMs: 0`. Of several nodes with one key (5.13) the plan of `eval-start` names the one that runs as `run` and the others as `cached`; when that one is skipped for a failure that became known only while the evaluation ran, the next of them runs in its place, with `node-start` and `node-done` as for any node that runs. In `eval-start`, `blocked` is a node that will not run: it failed a check of 5.3, reads one that did, or the evaluation cannot start at all (the memory check of a build, a lost device, a signal that has already aborted).
 3. `node-progress` is emitted at most 10 times per second per node, `eval-progress` at most 4 times per second. Fractions are in 0..1 and do not decrease.
-4. `wallMs` runs from `node-start` to `node-done`. `gpuMs` is the sum of the measured GPU time of the node's slices, `null` without `timestamp-query`. `peakBytes` is the most pool memory the invocation held as WORKING.
+4. `wallMs` runs from `node-start` to `node-done`. `gpuMs` is the sum of the measured GPU time of the node's slices; it is `null` without `timestamp-query`, and when a slice of the node could not be timed (one more than the timing buffers the stream may hold, 2 MiB of them, was in flight). `peakBytes` is the most pool memory the invocation held as WORKING.
 5. Every event is plain data and can be structured-cloned.
 
 **Estimates.** There is no declared cost per node. All estimates come from
@@ -1343,7 +1395,7 @@ interface Thumbnail {
 | The same field is given to two outputs | published once, referenced twice |
 | A wanted output is not given | the node fails, kind `binding` |
 | An unwanted output is given | it is published and stored in the entry |
-| Two nodes have the same key | the second is a cache hit; in a build it reads the first one's content |
+| Two nodes have the same key | one of them runs and the others are cache hits; in a build they read its content. The one that runs is the first in plan order that nothing keeps from running: a node that is skipped for a source the others do not read (its mask, which is not in `K`) leaves the run to the next. When the one that runs fails, the others fail the same way without running |
 | The signal aborts during a node | the node publishes nothing; nodes that completed stay cached |
 | A cached output is evicted while a viewer holds its handle | the handle stays valid; the texture is freed when the handle is released |
 | `evaluate()` is called during a build | it waits, like any second call |
@@ -1352,18 +1404,23 @@ interface Thumbnail {
 
 ```ts
 interface EngineTestHooks {
-  readonly sliceTargetMs?: number;        // replaces both slice targets
+  readonly sliceTargetMs?: number;        // replaces both slice targets, the bound on unmeasured kernels (3.4 rule 5) and the run limit of a slice (3.1)
   readonly inFlightLimit?: 1 | 2;         // 2 requires timestamp-query
   readonly maxTileRows?: number;          // no tile has more rows: forces tiling at any size
   readonly failAllocAfter?: number;       // the nth texture creation from now reports GPU out of memory, once
   readonly poisonRecycled?: boolean;      // a recycled texture is filled with −1e30 before it is handed out
   readonly onSlice?: (s: { readonly nodeId: string | null; readonly service: string | null;
                            readonly kernels: readonly string[];
-                           readonly work: number; readonly estimateMs: number; readonly measuredMs: number }) => void;
+                           readonly work: number; readonly estimateMs: number;
+                           readonly measuredMs: number; readonly resolved: boolean }) => void;
 }
 ```
 
-`onSlice` is called when a slice completes. `nodeId` is the node whose
+`onSlice` is called when a slice completes. `measuredMs` is the measured
+duration of 3.5 when `resolved` is true. Otherwise it is the time from the
+slice's beginning, as far as that is known, to its completion, which the
+duration does not exceed: it includes the wait behind other slices and is never
+held against the hard ceiling. `nodeId` is the node whose
 invocation owns the slice (3.1). `service` names the engine service when no
 node does: `'convert'`, `'mask'`, `'constant'`, `'thumbnail'`, `'stats'` or
 `'read'`. Exactly one of the two is not `null`.
@@ -1574,14 +1631,18 @@ build: (engine, o) => buildToFolder(engine, { ...o, createSink: NodeFileSink }),
 `outDir` with the new build when the build succeeds. A test of the session
 passes a function that calls `buildProject` with a memory sink instead.
 
+The session is the only caller of `evaluate` on its engine. It numbers its
+requests from 1 (5.2), so an engine that was evaluated directly with a higher
+`requestId` before `createSession` refuses the session's first evaluation.
+
 | Method | Semantics |
 | --- | --- |
-| `setProject` | The path of the project file, or `null` for an unsaved project. Replaces the engine's `FileSource`. Call it before the first `setDocument` and after every save under a new name |
+| `setProject` | The path of the project file, or `null` for an unsaved project. Replaces the engine's `FileSource`. Call it before the first `setDocument` and after every save under a new name. When a document is set already, the same paths may name other files: the session computes the keys again and requests a full evaluation (7.3) |
 | `setDocument` | The current document. `revision` is an integer greater than every earlier one. The session keeps the latest only and schedules an evaluation (7.3). The view is read from `doc.ui.view` |
 | `beginGesture`, `endGesture` | Bracket a continuous edit: a slider scrub, a curve or colour drag. Evaluations in between are drafts (7.3). Calls do not nest; a second `beginGesture` is ignored |
 | `setPaused` | `true` aborts the running preview and starts no other until `false`. Documents are still recorded. Default `false` |
 | `requestThumbnails` | The node ids whose thumbnails the graph currently shows. Replaces the previous list. The session refreshes stale ones when idle (7.3) |
-| `inspect` | Statistics of a port's content in the shown result, at its resolution. `null` when that port is not a `field`, is not cached at that resolution, or a build is running. Runs between evaluations |
+| `inspect` | Statistics of a port's content in the shown result, at its resolution. `null` when nothing is shown, when that port is not a `field`, when it or a node it reads is not cached at that resolution, while a build runs and while the device is lost. Runs between evaluations. It runs no node and is not in the event stream: a port the view does not name is looked up by an evaluation that the session aborts at `eval-start` unless every node of its plan is cached |
 | `build` | 7.6 |
 | `cancelBuild` | Aborts the running build. Does nothing when none runs |
 | `setPreferences` | Recomputes the budget (2.4) and applies it |
@@ -1607,7 +1668,32 @@ type WorkerMessage =
 
 `method` is the member's name, with the prefix `viewport.` for `ViewportHost`.
 Messages are handled in the order sent. Methods that return a promise get one
-reply; the others get none.
+reply; the others get none, unless the call threw: that is answered with
+`ok: false`, as is a `method` that is no member, and the client logs a failure
+nobody awaits.
+
+Both ends are in `protocol.ts`, so that the application supplies only the
+`Worker`:
+
+```ts
+/** One end of the boundary: a Worker as the page sees it, a worker's global scope, or a MessagePort of a browser or of Node. */
+interface SessionPort {
+  postMessage(message: unknown, transfer: readonly unknown[]): void;
+  addEventListener(type: 'message', listener: (e: { data: unknown }) => void): void;
+  removeEventListener(type: 'message', listener: (e: { data: unknown }) => void): void;
+  start?(): void;                                    // a MessagePort delivers nothing before it
+}
+
+/** The interface thread's end: `EngineSession` over the port. `subscribe` is local; `dispose` resolves with the server's reply. */
+declare function createSessionClient(port: SessionPort): EngineSession;
+/** The engine thread's end: calls the session for every `ClientMessage` and posts every `EngineEvent`. Returns a function that stops serving; `dispose` stops it too. */
+declare function serveSession(session: EngineSession, port: SessionPort): () => void;
+```
+
+`EngineClient` wraps `createSessionClient(worker)`; the engine worker calls
+`serveSession(session, self)` in the task that creates the session (8.3). The
+server moves the pixels of a thumbnail, so nothing else on the engine thread
+keeps a `thumbnail` event's `rgba`.
 
 | Crosses the boundary | How |
 | --- | --- |
@@ -1645,9 +1731,9 @@ targets (7.4). It is made when:
 | --- | --- |
 | `setDocument` outside a gesture | full |
 | `setDocument` during a gesture | draft |
-| `endGesture`, unless the shown result is already a full result of the latest revision | full |
+| `endGesture`, unless a full evaluation of the latest revision has completed or is running | full |
 | the preview resolution changed | `Engine.trim` (2.8), then full |
-| a file watched through `FileSource.watch` changed; `setPaused(false)`; a build ended; the device was replaced | full |
+| a file watched through `FileSource.watch` changed; `setProject` while a document is set; `setPaused(false)`; a build ended; the device was replaced | full |
 
 1. **No debounce.** A request made while nothing runs starts in the same task.
 2. **Latest wins.** While an evaluation runs, only the newest request waits. Intermediate revisions are never evaluated.
@@ -1656,8 +1742,8 @@ targets (7.4). It is made when:
 5. **Refinement.** `endGesture` aborts a running draft and requests a full evaluation of the latest revision.
 6. **What is shown.** An evaluation that completes with status `'ok'` or `'errors'` and delivered every view target replaces the shown content, and `view-updated` is emitted. Evaluations complete in the order requested, so the shown revision never goes backwards. An aborted evaluation shows nothing, and so does one in which a view target failed: the failed node's error says why. While a newer revision is being evaluated the viewport keeps the last shown content, which the session holds by its handles; it is stale but never blank and never another node's data.
 7. **Draft and updating states.** The interface knows the document's revision and receives the shown revision and level in `view-updated`: shown revision behind means *updating*; `draft: true` means the shown result is coarser than the preview resolution.
-8. **Keys.** After every `setDocument` the session computes `Engine.keys` and emits `keys` (7.7). A thumbnail is stale when its `contentKey` differs from the node's key.
-9. **Idle thumbnails.** When nothing runs or waits and no gesture is active, the session evaluates `outputs[0]` of the requested nodes whose last delivered thumbnail is stale, at the **thumbnail resolution**: the coarsest ladder level of `buildResolution` that is at least 128, or level 0 when none is. A node whose predicted time at that resolution (5.10) exceeds 100 ms is left out unless it is cached; its thumbnail stays stale until a view evaluation runs it.
+8. **Keys.** After every `setDocument` the session computes `Engine.keys` and emits `keys` (7.7). Latest wins here too: a document that is replaced while its keys are computed gets none, and the keys of the latest one follow. The keys are computed and emitted again, under the same revision, when a watched file changed and when `setProject` replaced the files, because a file's identity is in its node's key (5.4). A thumbnail is stale when its `contentKey` differs from the node's key.
+9. **Idle thumbnails.** When nothing runs or waits and no gesture is active, the session evaluates `outputs[0]` of the requested nodes whose last delivered thumbnail is stale, at the **thumbnail resolution**: the coarsest ladder level of `buildResolution` that is at least 128, or level 0 when none is. A node whose predicted time at that resolution (5.10) exceeds 100 ms is left out unless it is cached; its thumbnail stays stale until a view evaluation runs it. The session learns what is cached from the `eval-start` of the thumbnail evaluation: when a node that would run is predicted above the limit, the session aborts that evaluation before its first node and makes the next without that node and without the nodes that read it, since evaluating those would run it. A node that failed in an idle evaluation is not evaluated for its thumbnail again until its key changes.
 
 ### 7.4 The view
 
@@ -1668,7 +1754,7 @@ saved with it, and not an undo step (8.5).
 2. Both targets come from one evaluation: the same revision and the same resolution. The viewport switches to both in one call.
 3. **Pinning.** The session keeps the handles of the shown result until the next result is shown, then releases them. That content is pinned (2.2): no eviction, budget pressure or build can recycle what is on screen.
 4. `locked: true` keeps the view when the selection changes. It is the user's "pin to this node".
-5. Without `height` the viewport draws the overlay on a flat plane. Without a view it draws nothing and no view evaluation is made.
+5. Without `height` the viewport draws the overlay on a flat plane. Without a view, or when the view names nothing that exists, it draws nothing and no view evaluation is made: in that request's place the session shows the empty content, releases the handles it held, and emits `view-updated` with `height` and `overlay` false, the preview resolution, a `requestId` of its own and no `request-start`.
 
 ```ts
 /** src/core/graph/view.ts. The view after the user selects an output; selecting a node selects its outputs[0]. */
@@ -1811,13 +1897,13 @@ type EngineEvent =
 
 | Event | Emitted |
 | --- | --- |
-| `request-start` | before the `eval-start` of every evaluation the session makes; says what the request is for |
-| `keys` | after every `setDocument` (7.3 rule 8) |
+| `request-start` | before the `eval-start` of every evaluation the session makes for the view, a draft or thumbnails, and before `build-start`; says what the request is for. A build's `revision` is the latest revision the session has, 0 before the first document |
+| `keys` | after `setDocument`, and when a watched file or the project path changed (7.3 rule 8) |
 | `view-updated` | when a result is shown (7.3 rule 6). `height` and `overlay` say which parts the view has |
 | `thumbnail` | for every `Thumbnail` the engine delivers (5.12) |
-| `memory` | after every evaluation and every `trim` |
+| `memory` | after every evaluation and every `trim`, and after `setPreferences` |
 | `build-start`, `build-end` | 7.6 |
-| `device-ready` | when the session starts, and after every recovery |
+| `device-ready` | when the session gets its first subscriber, in a microtask after that `subscribe` call, and after every recovery |
 | `device-lost` | when the device is lost; `nodeId` is the node that was running |
 | `engine-error` | `fatal: false`: an uncaptured GPU error, or a slice over the hard ceiling. `fatal: true`: no device can be obtained (7.8); the session does nothing until `retryDevice` |
 
@@ -1828,7 +1914,7 @@ increase, so one comparison settles it.
 ### 7.8 Device recovery
 
 1. When `gpu.lost` becomes true the session emits `device-lost`, calls `renderer.setContent(null)`, drops its handles without releasing them, and lets the running evaluation settle with `'device-lost'` (5.9).
-2. It then calls `reopenGpu()`: at once, again after 1 s, again after 5 s. The first success is passed to `Engine.replaceDevice` and `renderer.init`; the session emits `device-ready` and requests a full evaluation. Measured on Dawn: a replacement device is ready in about 75 ms.
+2. It then calls `reopenGpu()`: at once, again after 1 s, again after 5 s. The first success is passed to `Engine.replaceDevice` and `renderer.init`; the session emits `device-ready` and requests a full evaluation. Measured on Dawn: a replacement device is ready in about 75 ms. A device that is lost while the engine moves onto it is one more loss, announced and counted like any other. The session destroys no `GpuContext` that was in use: `reopenGpu` is the platform's, and in Node it destroys the lost context before it opens the next (1.5 rule 4). Only a context that arrives already lost, or after `dispose`, is destroyed by the session, because nothing else holds it.
 3. Three failures in a row, or a third device loss within 120 s, end automatic recovery: the session emits `engine-error` with `fatal: true` and waits for `retryDevice()`. The limit is deliberate. Windows stops with a system error after five GPU resets within 60 s, and Chromium refuses a page a new adapter after repeated GPU process crashes; a loop that kept retrying would reach both.
 4. A node that was running at two losses in a row is not run again (5.9 rule 6).
 5. Imported files are read again from disk by their nodes. Nothing the user made is held only on the GPU.
@@ -1895,7 +1981,7 @@ switch that `OROGEN_ELECTRON_GPU=software` leaves out on Linux (1.6).
 1. calls `openGpu(navigator.gpu, { profile })`; on `GpuUnavailableError` it posts `engine-error` with `fatal: true` and stops;
 2. calls `createEngine` with `createRegistry(nodes)` (5.1), `NodeFileSource(null)`, `createWebCpuRunner()` and the default budget of 2.4;
 3. creates the viewport renderer and calls `createSession`, passing as `build` a function that calls `buildToFolder` of `src/export/folder.ts` with `NodeFileSink` (7.1);
-4. serves `ClientMessage`s by calling the session, and posts every `EngineEvent`.
+4. serves `ClientMessage`s by calling the session, and posts every `EngineEvent`: `serveSession(session, self)` (7.2), in the same task as step 3.
 
 The interface sends `setPreferences` and `setProject` before its first
 `setDocument`.

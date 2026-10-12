@@ -68,10 +68,16 @@ export interface MemoryFiles extends FileSource {
   readonly reads: string[];
 }
 
+/**
+ * The modification times memoryFiles hands out: one clock for every source of the process. A file's identity
+ * is its path, size and time (runtime.md 6.1 rule 4), so two sources with clocks of their own would give two
+ * different files of one path and size the same identity, and the cache would answer with the older result.
+ */
+let clock = 1;
+
 /** A FileSource over a table, for file identity (runtime.md 6.1): every path is absolute under /mem/. */
 export function memoryFiles(): MemoryFiles {
   const files = new Map<string, { bytes: Uint8Array; mtimeMs: number }>();
-  let clock = 1;
   const resolve = (path: string): string => {
     if (path === '') throw new FileError('invalid-path', path, 'The file path is empty');
     return path.startsWith('/') ? path : `/mem/${path}`;

@@ -34,7 +34,7 @@ export async function createNodeGpu(opts?: { profile?: GpuProfile; adapter?: str
   try {
     instance = create(adapter !== undefined ? [`adapter=${adapter}`] : []);
     instances.add(instance);
-    context = await openGpu(instance, { profile });
+    context = await openGpu(instance, { profile, log: process.env.OROGEN_GPU_LOG === '1' });
   } catch (thrown) {
     // The instance stays in the set: a device that failed the checks of 1.4 was destroyed, and its `lost` callback is still to come.
     alive = false;

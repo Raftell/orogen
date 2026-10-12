@@ -339,7 +339,7 @@ declare function defineKernel<
 
 | Member | Default | Meaning |
 | --- | --- | --- |
-| `name` | required | Unique in the process. `<category>/<node name>[.<pass>]` for a kernel of one node, `<category>/<module>[.<pass>]` for a kernel shared inside a category (`simulate/talus.step`), optionally followed by `#<variant>` (3.6): `filter/blur.h#color`. Appears in every error message and as the GPU label |
+| `name` | required | Unique in the process. `<category>/<node name>[.<pass>]` for a kernel of one node, `<category>/<module>[.<pass>]` for a kernel shared inside a category (`simulate/talus.step`), optionally followed by `#<variant>` (3.6): `filter/blur.h#color`. The engine's own kernels are named `ops/<operation>` (section 5) and `core/<service>` (conversions, mask blends, statistics, thumbnails); no node names a kernel so. Appears in every error message and as the GPU label |
 | `inputs` | `{}` | Fields the kernel reads. At most 16 |
 | `outputs` | `{}` | Fields the kernel writes without reading |
 | `inPlace` | `{}` | `field`s the kernel reads and writes at the invocation's own texel only (3.5) |
@@ -918,8 +918,9 @@ Messages begin with `kernel "<name>": ` or `library "<name>": `.
 | Limits of 3.12 | `5 writable textures (outputs + inPlace + unsafeReadWrite); the limit is 4` / `Params is 272 bytes; the limit is 256` |
 | No writable target | `a kernel needs at least one output, inPlace or unsafeReadWrite target` |
 | `unsafeReadWrite` without `mode: 'raw'`, or without a `raceFree` of at least 20 characters | `unsafeReadWrite requires mode "raw" and a raceFree justification` |
-| Map mode: no `fn compute(`, or an `@compute` entry point, or a call to `x_set` / `x_get` | `map mode needs "fn compute("` / `map mode code may not call next_set(); return the value from compute` |
+| Map mode: no `fn compute(`, or an `@compute` entry point, or a call to `x_set` / `x_get`, or any use of `beginPixel` | `map mode needs "fn compute("` / `map mode code may not call next_set(); return the value from compute` / `map mode code may not call beginPixel(); the texel is px` |
 | Raw mode: no `fn main(`, `@workgroup_size` differs from `workgroup`, or no `if (!beginPixel(` | `raw mode main must start with "if (!beginPixel(gid)) { return; }"` |
+| Raw mode: `beginPixel` anywhere but in that first statement of `main` | `raw mode code calls beginPixel() once, as the first statement of main` |
 | Rules 1 to 4 of 3.2 | `author code calls textureLoad on "src"; use src_at(p)` / `author code uses "_px"; names beginning with "_" are reserved` / `author code declares "ld", a standard library name` |
 | Library identifier without the `<name>_` prefix | `library "noise": "fbm" must be named "noise_fbm"` |
 | Two different libraries with one name among the includes | `two different libraries are named "hash"` |
@@ -991,7 +992,7 @@ targets). Tiling is invisible to a correctly written kernel:
 1. A kernel takes its texel from `px` (map mode) or `pixel()` after `beginPixel(gid)` (raw mode). It never uses `global_invocation_id` for anything else and never reads `frame.tileOrigin`.
 2. An invocation stores only to its own texel, and reads no texel that the same run writes, except its own texel of an in-place target. Map mode and the accessors guarantee this; `unsafeReadWrite` code must (3.5).
 3. Loops in WGSL have a constant upper bound: a `const` maximum in the kernel, with the param clamped to it (`let n = clamp(P.taps, 1, MAX_TAPS);`).
-4. `cost` is the number of texture loads one texel performs in the run, counting a bilinear read as 4 and one octave of library noise as 8. The kernel default is `KernelDef.cost` (8 when omitted). A run passes `cost` whenever the count depends on its params (taps, octaves, steps). The runtime sizes tiles and batches from `texels × cost` and corrects the estimate from measured times.
+4. `cost` is the number of texture loads one texel performs in the run, counting a bilinear read as 4 and one octave of library noise as 8. The kernel default is `KernelDef.cost` (8 when omitted). A run passes `cost` whenever the count depends on its params (taps, octaves, steps). The runtime sizes tiles and batches from `texels × cost` and corrects the estimate from measured times. A texel that spends its time in arithmetic counts that as well, at one unit per four rounds of a loop that loads nothing (measured: 2406 rounds of an integer hash take the time of 649 loads). A kernel that understates its cost is not unsafe, because the runtime bounds the tiles of a kernel it has not measured by texels (`runtime.md` 3.4 rule 5), but it is tiled by a wrong estimate until it has been measured at the size it runs at.
 5. A neighbourhood wider than 64 texels is not computed by a wider loop. Use `ops.blur`, work on a coarser grid (`ops.resample`), or use several runs.
 6. `tiled: false` makes every run of the kernel a single dispatch. It is for a kernel whose result would differ if bands of rows ran as separate dispatches; no kernel written to rules 1 and 2 needs it. Such a kernel performs at most 64 loads per texel.
 7. A node that runs a kernel a number of times that depends on params or on the resolution, or more than 8 times in a row, does so inside `ctx.loop` (4.7), so that batches are awaited, progress is reported and the evaluation can be cancelled.
@@ -1585,7 +1586,7 @@ interface DecodedImage {
   readonly width: number;
   readonly height: number;
   readonly channels: 1 | 3 | 4;
-  readonly data: Float32Array;     // row-major, 0..1 for integer formats, first row = top row of the image
+  readonly data: Float32Array<ArrayBuffer>;   // row-major, 0..1 for integer formats, first row = top row of the image; its buffer can be transferred
 }
 declare const decodeImage: CpuTask<{ bytes: Uint8Array }, Promise<DecodedImage>>;
 ```
@@ -1674,13 +1675,13 @@ declare const ops: {
 
 | Operation | Semantics |
 | --- | --- |
-| `copy(ctx, src, dst)` | Copies `src` into the writable field `dst` of the same kind and size. `NoInfer` makes the first field decide `K` here and in `blend`, so two fields of different kinds are a compile error |
-| `resample(ctx, src, { size, filter })` | A new `size × size` field holding `src` resampled with the vertex-centred mapping of 1.1; `src` may have any size. `'auto'` (default) is `'tent'` when shrinking and `'bilinear'` when growing. `'tent'` is a triangle filter as wide as the reduction (1-2-1 weights for an exact 2:1 ladder step); `'bspline'` is the cubic B-spline (smooth, no faceting in slope maps, slightly blurring); `'nearest'` takes the nearest source texel |
+| `copy(ctx, src, dst)` | Copies `src` into the writable field `dst` of the same kind and size. Both are square, because a kernel makes the copy and kernels write square grids (3.11): `FieldAccessError` otherwise. `ctx.clone` copies a field of any shape. `NoInfer` makes the first field decide `K` here and in `blend`, so two fields of different kinds are a compile error |
+| `resample(ctx, src, { size, filter })` | A new `size × size` field holding `src` resampled with the vertex-centred mapping of 1.1; `src` may have any size. `'auto'` (default) is `'tent'` when shrinking and `'bilinear'` when growing. `'tent'` is a triangle filter as wide as the reduction (1-2-1 weights for an exact 2:1 ladder step); `'bspline'` is the cubic B-spline (smooth, no faceting in slope maps, slightly blurring), scaled to the reduction when shrinking; `'nearest'` takes the nearest source texel. Filters act per axis, renormalise their weights, clamp at the border and are never narrower than a source texel, so `'tent'` is `'bilinear'` where the result is finer. No pass exceeds 64 loads per texel: a reduction above 4:1 runs as several `'tent'` passes down the 2:1 grids above the result, which is the one triangle exactly between ladder levels and has its width otherwise; `'bspline'` above 2:1 is the last 2:1 step of such a chain |
 | `blur(ctx, src, sigma)` | Gaussian blur with standard deviation `sigma`, a length (1.6). Weights beyond 3 `sigma` are dropped and the rest renormalised; borders clamp. Returns a copy when `sigma` is below a quarter of a texel. No pass exceeds 64 loads per texel: wide blurs are evaluated on a coarser grid, with an error bound that is to calibrate |
 | `blend(ctx, a, b, mask)` | `mix(a, b, saturate(mask))` per channel. `mask` is a field or a constant |
 | `slope(ctx, height)` | Physical slope angle in degrees, 0..90: `degrees(atan(length(slopeAt)))`; a `data` field |
 | `normal(ctx, height)` | Unit normals as a `color` field: `rgb = normalAt`, components in −1..1, `a = 1` |
-| `minMax(ctx, src)` | A 1 × 1 `vec2` field holding `(min, max)` over the finite texels of `src`, computed on the GPU without readback. Bind it to a kernel input as a constant. Subject to the statistics rule of 1.7 |
+| `minMax(ctx, src)` | A 1 × 1 `vec2` field holding `(min, max)` over the finite texels of `src`, `(0, 0)` when none is finite, computed on the GPU without readback. Bind it to a kernel input as a constant. Subject to the statistics rule of 1.7 |
 | `remap(ctx, src, { from, to, clamp })` | `to[0] + (v − from[0]) / (from[1] − from[0]) * (to[1] − to[0])`; `to` defaults to `[0, 1]`; `from` is a pair or a `minMax` result; a zero-width `from` gives `to[0]`; `clamp` (default false) limits the result to `to` |
 | `coarseToFine(ctx, opts)` | Runs a simulation up the ladder. Starts at the coarsest level of `ctx.ladder` whose cell size is at most `coarsestCell` (a length), calls `begin` there, then alternates `simulate(level, state)` and `refine(coarse, fine, state)` until `simulate` has run at `ctx.res`, and resolves with that state. `refine` returns the state for the finer level and releases the coarse fields it replaces. When no level of `ctx.ladder` has a cell that small, the run has the single level `ctx.res`. `LadderLevel.progress` shares the node's progress between the levels in proportion to their texel counts. `begin` and `refine` are synchronous: they do no readback and start no CPU task. `simulation.md` section 2 defines level selection, the call sequence, the share of work per level and the standard refinement step |
 
@@ -1773,17 +1774,24 @@ fn exchange(hp: f32, q: vec2i, dist: f32) -> f32 {
   return sign(d) * max(abs(d) - P.talus * dist, 0.0) * P.rate / dist;
 }
 
+// moved accumulates the height that crossed the texel: half of what it gave and
+// received, so that material passing through counts once. The net change is no
+// measure of it: along a uniform slope what a texel receives and gives cancel,
+// and what is left halves with the cell.
 fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
   let hp = h_at(px);
   var net = 0.0;
+  var gross = 0.0;
   for (var j = -1; j <= 1; j++) {
     for (var i = -1; i <= 1; i++) {
       if (i != 0 || j != 0) {
-        net += exchange(hp, px + vec2i(i, j), length(vec2f(vec2i(i, j))));
+        let e = exchange(hp, px + vec2i(i, j), length(vec2f(vec2i(i, j))));
+        net += e;
+        gross += abs(e);
       }
     }
   }
-  return Out(hp + net, cur.moved + abs(net));
+  return Out(hp + net, cur.moved + 0.5 * gross);
 }`,
 });
 
@@ -1791,7 +1799,7 @@ export default defineNode({
   type: 'ref/talus',
   title: 'Talus (Reference)',
   category: 'ref',
-  description: 'Relaxes slopes steeper than the talus angle; the reference node for iterative simulations.',
+  description: 'Relaxes slopes steeper than the talus angle and maps the height that crossed each texel; the reference node for iterative simulations.',
   inputs: [{ name: 'in', type: 'field' }],
   outputs: [
     { name: 'out', type: 'field' },
@@ -1835,7 +1843,8 @@ export default defineNode({
 What makes it correct:
 
 - The kernel reads neighbours only from `h`, an input, and writes the new heights to a different field. The accumulator is in place and touches its own texel only. A run never reads and writes one field.
-- The stored parameters are an angle and a length. The talus threshold per texel and the iteration count are derived in `evaluate()` from `ctx.cellSize`, `ctx.heightRange` and `ctx.lengthToPx`, so material can travel the same physical distance in a preview and in a build. (`simulation.md` owns the stability and iteration-scaling rules of the real simulations; the constants here are this node's.)
+- The stored parameters are an angle and a length. The talus threshold per texel and the iteration count are derived in `evaluate()` from `ctx.cellSize`, `ctx.heightRange` and `ctx.lengthToPx`, so material can travel the same physical distance in a preview and in a build. That bounds how far material travels; it is not an iteration-scaling rule. The rate per iteration is fixed, so two ladder levels agree where the relaxation has converged within `reach` and differ where it has not: between 257 and 513 `out` differs by 0.2 % of its standard deviation at the defaults on a smooth terrain, by 4.6 % there at `talus` 0 and `reach` 0.25, and by 2 % on a `ref/fbm` of four octaves at `talus` 30 and `reach` 0.05. (`simulation.md` owns the stability and iteration-scaling rules of the real simulations; the constants here are this node's.)
+- `moved` is a height: what crossed the texel, half of everything it gave and received, summed over the iterations. It is not the texel's net change. Along a uniform slope what a texel receives and what it gives cancel, and the remainder halves with the cell, so a sum of net changes differs by half its size from one ladder level to the next. The height that crossed a texel is half as much per iteration at half the cell, twice as often: between 257 and 513 it differs by 7 to 16 % of its standard deviation.
 - The swap is ordinary JavaScript inside the synchronous loop body. Whatever the batch sizes, `a` holds the latest state when the loop ends and when a preview is taken.
 - `moved` is neither allocated nor computed when nobody wants it: the target is bound to `null`, and `cur.moved` influences no other member of `Out`.
 - `maskable` blends `out` over `in` by the user's mask; `moved` is left as computed.

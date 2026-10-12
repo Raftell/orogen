@@ -172,3 +172,46 @@ test('read and stats are engine services: they work on any handle, at any time, 
   await assert.rejects(t.engine.read(ramp), FieldAccessError);
   t.noLeaks();
 });
+
+test('dispose waits for a read and for statistics that are under way: both end with their result, and no GPU error escapes', async () => {
+  for (const call of ['read', 'stats'] as const) {
+    const own = await startEngine([constantNode, rampNode, gainNode, sumNode, tintNode]);
+    const escaped: string[] = [];
+    const listen = (event: Event): void => void escaped.push((event as GPUUncapturedErrorEvent).error.message);
+    own.gpu.device.addEventListener('uncapturederror', listen);
+    try {
+      const { result } = await own.evaluate(own.doc({ ramp: { type: 'ref/ramp', params: { gainX: 2, gainY: 0, base: -1 } } }), ['ramp.out']);
+      const ramp = result.fields[0]!;
+      assert.equal(ramp.kind, 'field');
+      // Not awaited: the staging buffer is being mapped, or the scratch texture read, when dispose is called.
+      const pending = (call === 'read' ? own.engine.read(ramp) : own.engine.stats(ramp as never)).then((value) => ({ value }), (error: unknown) => ({ error }));
+      const disposing = own.engine.dispose();
+      await assert.rejects(own.engine.read(ramp), /disposed/, 'no call begins once the engine is being disposed');
+      await disposing;
+      const outcome = await pending;
+      assert.ok('value' in outcome, `Engine.${call} under way at dispose: ${String((outcome as { error?: unknown }).error)}`);
+      if (call === 'read') {
+        const data = outcome.value as Float32Array;
+        assert.equal(data.length, 65 * 65);
+        assert.ok(Math.abs(data[0]! + 1) < 1e-6 && Math.abs(data[64]! - 1) < 1e-6);
+      } else {
+        const stats = outcome.value as { min: number; max: number };
+        assert.ok(Math.abs(stats.min + 1) < 1e-6 && Math.abs(stats.max - 1) < 1e-6, JSON.stringify(stats));
+      }
+      // An uncaptured error is dispatched from the device's own turn: give it one.
+      await own.gpu.device.queue.onSubmittedWorkDone();
+      await new Promise<void>((resolve) => { setTimeout(resolve, 20); });
+      assert.deepEqual(escaped, [], `Engine.${call}`);
+    } finally {
+      own.gpu.device.removeEventListener('uncapturederror', listen);
+      await own.dispose();
+    }
+  }
+});
+
+test('createEngine refuses a budget that is no byte count', async () => {
+  for (const budgetBytes of [-1, NaN, Infinity]) {
+    await assert.rejects(startEngine([constantNode], { budgetBytes }), RangeError, `a budget of ${budgetBytes}`);
+  }
+});
+

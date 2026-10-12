@@ -44,7 +44,7 @@ export interface RigOptions {
   readonly budgetBytes?: number;
   readonly cache?: PoolCacheHooks;
   readonly stripBytes?: number;
-  readonly onOverrun?: (slice: SliceReport) => void;
+  readonly onOverrun?: (slice: SliceReport, ceilingMs: number) => void;
 }
 
 export interface RunOverrides {

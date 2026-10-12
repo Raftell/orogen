@@ -23,18 +23,29 @@ export interface Readback {
 
 export interface ReadbackOptions {
   readonly gpu: GpuContext;
-  /** `current` and `use`: a read of several strips encodes after an await, and must do so for the owner that asked. */
-  readonly stream: Pick<CommandStream, 'encode' | 'flush' | 'track' | 'use' | 'current'>;
+  /**
+   * `current` and `use`: a read of several strips encodes after an await, and must do so for the owner that asked.
+   * `barrier`: the wait between two pieces of a strip.
+   */
+  readonly stream: Pick<CommandStream, 'encode' | 'flush' | 'track' | 'use' | 'current' | 'barrier'>;
   /** The ledger, for the staging buffer (runtime.md 2.4). */
   readonly reserve: (bytes: number, label: string) => { release(): void };
   /** The most bytes one strip copies; 64 MiB (runtime.md 5.7 rule 1). A test passes less to read small fields in several strips. */
   readonly stripBytes?: number;
+  /** The most mapped bytes converted without returning to the event loop; 4 MiB (5.7 rule 3). A test passes less. */
+  readonly pieceBytes?: number;
 }
 
 /** runtime.md 5.7 rules 1 and 2. */
 const STAGING_MAX_BYTES = 67_108_864;
 /** The staging buffer grows in steps of this size, so a small read does not commit the whole 64 MiB to the ledger. */
 const STAGING_STEP_BYTES = 65_536;
+/**
+ * Converting a strip to float32 is synchronous work on the thread the viewport draws on: measured, 34 ms for a
+ * strip of 64 MiB of r32float and 115 ms for one of rgba16float. It is done in pieces of this many mapped bytes,
+ * 2 to 7 ms each, with a turn of the event loop between them. To calibrate.
+ */
+const PIECE_BYTES = 4 * 1_048_576;
 
 const align256 = (bytes: number): number => Math.ceil(bytes / 256) * 256;
 
@@ -51,6 +62,7 @@ export function createReadback(opts: ReadbackOptions): Readback {
   const { gpu, stream } = opts;
   const device = gpu.device;
   const stripBytes = Math.min(opts.stripBytes ?? STAGING_MAX_BYTES, STAGING_MAX_BYTES);
+  const pieceBytes = opts.pieceBytes ?? PIECE_BYTES;
   let staging: { readonly buffer: GPUBuffer; readonly size: number; readonly reservation: { release(): void } } | null = null;
   /** Reads are serialised: the one staging buffer is mapped by one read at a time. */
   let busy = 0;
@@ -100,11 +112,18 @@ export function createReadback(opts: ReadbackOptions): Readback {
         throw thrown;
       }
       try {
-        if (gpu.lost) throw deviceLostError(gpu);
-        signal?.throwIfAborted();
-        const mapped = buffer.getMappedRange(0, bytes);
-        for (let r = 0; r < rows; r++) {
-          unpackTexels(encoding, mapped, r * paddedRow, rowFloats, out, (y - y0 + r) * rowFloats);
+        const rowsPerPiece = Math.max(1, Math.floor(pieceBytes / paddedRow));
+        for (let first = 0; first < rows; first += rowsPerPiece) {
+          // 3.6 rule 5: the wait between two pieces is a completed submission. The buffer stays mapped, and
+          // reads are serialised: nothing else touches it meanwhile.
+          if (first > 0) await stream.barrier();
+          if (gpu.lost) throw deviceLostError(gpu);
+          signal?.throwIfAborted();
+          // The mapped range is asked for again after a wait: only its bytes are read, never kept.
+          const mapped = buffer.getMappedRange(first * paddedRow, Math.min(rowsPerPiece, rows - first) * paddedRow);
+          for (let r = first; r < Math.min(first + rowsPerPiece, rows); r++) {
+            unpackTexels(encoding, mapped, (r - first) * paddedRow, rowFloats, out, (y - y0 + r) * rowFloats);
+          }
         }
       } finally {
         buffer.unmap();

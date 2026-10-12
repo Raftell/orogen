@@ -17,17 +17,24 @@ fn exchange(hp: f32, q: vec2i, dist: f32) -> f32 {
   return sign(d) * max(abs(d) - P.talus * dist, 0.0) * P.rate / dist;
 }
 
+// moved accumulates the height that crossed the texel: half of what it gave and
+// received, so that material passing through counts once. The net change is no
+// measure of it: along a uniform slope what a texel receives and gives cancel,
+// and what is left halves with the cell.
 fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
   let hp = h_at(px);
   var net = 0.0;
+  var gross = 0.0;
   for (var j = -1; j <= 1; j++) {
     for (var i = -1; i <= 1; i++) {
       if (i != 0 || j != 0) {
-        net += exchange(hp, px + vec2i(i, j), length(vec2f(vec2i(i, j))));
+        let e = exchange(hp, px + vec2i(i, j), length(vec2f(vec2i(i, j))));
+        net += e;
+        gross += abs(e);
       }
     }
   }
-  return Out(hp + net, cur.moved + abs(net));
+  return Out(hp + net, cur.moved + 0.5 * gross);
 }`,
 });
 
@@ -35,7 +42,7 @@ export default defineNode({
   type: 'ref/talus',
   title: 'Talus (Reference)',
   category: 'ref',
-  description: 'Relaxes slopes steeper than the talus angle; the reference node for iterative simulations.',
+  description: 'Relaxes slopes steeper than the talus angle and maps the height that crossed each texel; the reference node for iterative simulations.',
   inputs: [{ name: 'in', type: 'field' }],
   outputs: [
     { name: 'out', type: 'field' },

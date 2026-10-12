@@ -4,9 +4,11 @@
 // group that launched it (an IDE, a terminal session). This puts the command in its own
 // systemd scope instead. On other platforms only the time limit applies.
 //
-//   node tools/guard.mjs [--mem=3G] [--timeout=1800] node --test tests/unit/foo.test.ts
+//   node tools/guard.mjs [--mem=2G] [--timeout=1800] [--lock] node --test tests/unit/foo.test.ts
 //   OROGEN_GUARD_MEM=8G OROGEN_GUARD_TIMEOUT=3600 node tools/guard.mjs node src/cli/main.ts ...
 import { spawn, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const args = process.argv.slice(2);
 if (args.length === 0) {
@@ -15,15 +17,15 @@ if (args.length === 0) {
 }
 // Leading --mem= and --timeout= set the defaults for one script; the environment still overrides them.
 const flags = {};
-while (args.length > 0 && /^--(mem|timeout)=/.test(args[0])) {
+while (args.length > 0 && /^--(mem=|timeout=|lock$)/.test(args[0])) {
   const [key, value] = args.shift().slice(2).split('=');
-  flags[key] = value;
+  flags[key] = value ?? '1';
 }
 if (args.length === 0) {
-  console.error('usage: node tools/guard.mjs [--mem=3G] [--timeout=1800] <command> [args...]');
+  console.error('usage: node tools/guard.mjs [--mem=2G] [--timeout=1800] [--lock] <command> [args...]');
   process.exit(2);
 }
-const mem = process.env.OROGEN_GUARD_MEM ?? flags.mem ?? '3G';
+const mem = process.env.OROGEN_GUARD_MEM ?? flags.mem ?? '2G';
 const limit = Number(process.env.OROGEN_GUARD_TIMEOUT ?? flags.timeout ?? 1800);
 const nested = process.env.OROGEN_GUARD_ACTIVE === '1';
 const scoped = !nested && process.platform === 'linux'
@@ -31,6 +33,12 @@ const scoped = !nested && process.platform === 'linux'
 
 let command = args[0] === 'node' ? process.execPath : args[0];
 let rest = args.slice(1);
+// --lock: one such run at a time on this machine. Several people (or agents) share one GPU and its
+// memory; whole suites and large renders queue here instead of failing each other.
+if (flags.lock && !nested && process.platform === 'linux' && spawnSync('flock', ['--version'], { stdio: 'ignore' }).status === 0) {
+  rest = [join(tmpdir(), 'orogen-gpu.lock'), command, ...rest];
+  command = 'flock';
+}
 if (scoped) {
   rest = ['--user', '--scope', '-q', '--collect',
     '-p', `MemoryMax=${mem}`, '-p', 'MemorySwapMax=0',

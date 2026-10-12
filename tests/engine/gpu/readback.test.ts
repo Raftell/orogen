@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import type { FieldKind } from '../../../src/core/gpu/field.ts';
 import { defineKernel } from '../../../src/core/gpu/kernel.ts';
 import { BYTES_PER_TEXEL } from '../../../src/core/gpu/pool.ts';
+import { createReadback } from '../../../src/core/gpu/readback.ts';
 import { floatToHalf, halfToFloat } from '../../../src/core/gpu/texels.ts';
 import { channels, createRig, firstDifference, texels } from './rig.ts';
 
@@ -66,6 +67,39 @@ test('a read wider than one strip is copied strip by strip', async () => {
   const wide = small.field('aux', [100, 3], texels(100, 3, pattern(4)));
   assert.equal(firstDifference(await small.read(wide), texels(100, 3, pattern(4))), -1);
   small.dispose();
+});
+
+test('a strip is converted in pieces, with a completed submission between two of them: the thread is not held for a whole strip', async () => {
+  // Pieces of at most 600 bytes: rows of a color 20 wide are 160 bytes, padded to 256, so two rows a piece.
+  let barriers = 0;
+  const pieces = createReadback({
+    gpu: rig.gpu, reserve: (bytes, label) => rig.pool.reserve(bytes, label), pieceBytes: 600,
+    stream: {
+      encode: (work, estimate) => rig.stream.encode(work, estimate),
+      flush: () => rig.stream.flush(),
+      track: (scopes) => rig.stream.track(scopes),
+      use: (owner) => rig.stream.use(owner),
+      get current() { return rig.stream.current; },
+      barrier: () => { barriers++; return rig.stream.barrier(); },
+    },
+  });
+  try {
+    const w = 20, h = 9;
+    // Multiples of 1/256: a 16-bit float holds them exactly.
+    const data = texels(w, h, (x, y) => [x / 256, y / 256, (x + y) / 256, 1]);
+    const field = rig.field('color', [w, h], data);
+    const whole = await rig.read(field);
+    const got = await pieces.read(rig.texture(field));
+    assert.equal(firstDifference(got, whole), -1, 'the pieces are the strip');
+    assert.equal(firstDifference(got, data), -1);
+    assert.equal(barriers, 4, 'nine rows in five pieces: four waits');
+    barriers = 0;
+    assert.equal(firstDifference(await pieces.read(rig.texture(field), [3, 5]), data.subarray(3 * w * 4, 5 * w * 4)), -1);
+    assert.equal(barriers, 0, 'one piece needs no wait');
+    rig.release(field);
+  } finally {
+    pieces.dispose();
+  }
 });
 
 test('every kind is returned as float32, converted from the format the device gave it', async () => {

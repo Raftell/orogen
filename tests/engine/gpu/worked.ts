@@ -1,53 +1,28 @@
-// The kernels engine.md prints, word for word: the generator and the simulation step of section 6, the
-// red-black half-step of 3.5 and the variant factory of 3.6. Test files of this folder import them; a kernel
-// name is defined once per process. Not a test file.
+// The kernels engine.md prints: the generator and the simulation step of section 6, the red-black half-step of
+// 3.5 and the variant factory of 3.6. The first two are the kernels of the reference nodes themselves, taken
+// from their definitions: a kernel name is defined once per process (engine.md, Module scope), and a process
+// that loads the reference nodes, as every process of the harness does, already holds 'ref/fbm' and
+// 'ref/talus.step'. Not a test file.
 
-import { defineKernel, MASK_INPUT } from '../../../src/core/gpu/kernel.ts';
-import { noise } from '../../../src/core/wgsl/noise.ts';
+import { defineKernel, MASK_INPUT, type AnyKernel, type Kernel } from '../../../src/core/gpu/kernel.ts';
+import fbmNode from '../../../src/core/nodes/ref/fbm.ts';
+import talusNode from '../../../src/core/nodes/ref/talus.ts';
 
-export const fbm = defineKernel({
-  name: 'ref/fbm',
-  outputs: { out: 'field' },
-  params: { cells: 'f32', octaves: 'i32', gain: 'f32' },
-  includes: [noise],
-  code: /* wgsl */ `
-const SPREAD = 1.6;   // fixed normalisation constant; to calibrate against the generator range rule (1.7)
-
-fn compute(px: vec2i, uv: vec2f) -> f32 {
-  let n = noise_fbm(uv * P.cells, seedFor(0u), clamp(P.octaves, 1, 16), 2.0, P.gain);
-  return 0.5 + 0.5 * SPREAD * n;
-}`,
-});
-
-export const step = defineKernel({
-  name: 'ref/talus.step',
-  inputs: { h: 'field' },          // current heights: read with neighbours
-  outputs: { next: 'field' },      // new heights: the other half of the ping-pong pair
-  inPlace: { moved: 'field' },     // accumulator: read and written at the own texel only
-  params: { talus: 'f32', rate: 'f32' },
-  code: /* wgsl */ `
-// Height this texel receives from neighbour q (negative: gives). The amount
-// depends only on the two heights, so both texels compute the same magnitude
-// with opposite sign and the total is conserved.
-fn exchange(hp: f32, q: vec2i, dist: f32) -> f32 {
-  if (!inGrid(q)) { return 0.0; }
-  let d = h_at(q) - hp;
-  return sign(d) * max(abs(d) - P.talus * dist, 0.0) * P.rate / dist;
+function kernelOf(kernels: readonly AnyKernel[], name: string): AnyKernel {
+  const kernel = kernels.find((k) => k.name === name);
+  if (!kernel) throw new Error(`The reference nodes define no kernel "${name}"`);
+  return kernel;
 }
 
-fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
-  let hp = h_at(px);
-  var net = 0.0;
-  for (var j = -1; j <= 1; j++) {
-    for (var i = -1; i <= 1; i++) {
-      if (i != 0 || j != 0) {
-        net += exchange(hp, px + vec2i(i, j), length(vec2f(vec2i(i, j))));
-      }
-    }
-  }
-  return Out(hp + net, cur.moved + abs(net));
-}`,
-});
+/** engine.md 6.1. */
+export const fbm = kernelOf(fbmNode.kernels, 'ref/fbm') as Kernel<
+  {}, { readonly out: 'field' }, {}, {}, { readonly cells: 'f32'; readonly octaves: 'i32'; readonly gain: 'f32' }, {}
+>;
+
+/** engine.md 6.2. */
+export const step = kernelOf(talusNode.kernels, 'ref/talus.step') as Kernel<
+  { readonly h: 'field' }, { readonly next: 'field' }, { readonly moved: 'field' }, {}, { readonly talus: 'f32'; readonly rate: 'f32' }, {}
+>;
 
 export const relax = defineKernel({
   name: 'ref/relax.half',

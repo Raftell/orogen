@@ -6,7 +6,10 @@ import { guarded, type ScopeResult } from './scopes.ts';
 import { kernelShape } from './shape.ts';
 import { packTexels, TEXEL_ENCODING } from './texels.ts';
 import { nextRate, rowsPerTile } from './throughput.ts';
-import { HARD_CEILING_MS, LATENCY_REMEASURE_MS, RATE_INITIAL, SLICE_TARGET_BUILD_MS, SLICE_TARGET_PREVIEW_MS } from './tuning.ts';
+import {
+  HARD_CEILING_MS, LATENCY_REMEASURE_MS, RATE_INITIAL, SLICE_MAX_RUNS, SLICE_TARGET_BUILD_MS, SLICE_TARGET_PREVIEW_MS, THREAD_STALL_MS,
+  UNMEASURED_SLICE_TEXELS,
+} from './tuning.ts';
 import { UNIFORM_SLOT_BYTES, writeFrame, writeParams, type FrameValues } from './uniforms.ts';
 
 /** The engine services that own slices when no node does (runtime.md 5.14). */
@@ -19,7 +22,9 @@ export interface SliceReport {
   readonly kernels: readonly string[];
   readonly work: number;
   readonly estimateMs: number;
+  /** The measured duration (3.5) when `resolved`; otherwise the time from the submit to its completion, which the duration does not exceed. */
   readonly measuredMs: number;
+  readonly resolved: boolean;
 }
 
 /** The members of EngineTestHooks the stream obeys. */
@@ -35,8 +40,8 @@ export interface StreamOptions {
   /** The ledger (runtime.md 2.4), for the uniform arena. */
   readonly reserve: (bytes: number, label: string) => { release(): void };
   readonly hooks?: StreamHooks;
-  /** A slice was measured above the hard ceiling (3.5). */
-  readonly onOverrun?: (slice: SliceReport) => void;
+  /** A slice was measured above the hard ceiling of its owner (3.5), which is `ceilingMs`. */
+  readonly onOverrun?: (slice: SliceReport, ceilingMs: number) => void;
 }
 
 /** One node invocation or one engine service call: the owner of slices, bind groups and error scopes (3.1, 5.8). */
@@ -53,10 +58,7 @@ export interface OwnerOptions {
 }
 
 export interface OwnerResult {
-  /**
-   * Sum of the measured GPU time of the owner's slices; null without timestamp-query (5.10 rule 4). An owner
-   * with more than sixteen slices in flight at once had the excess submitted untimed, and the sum is without them.
-   */
+  /** Sum of the measured GPU time of the owner's slices; null without timestamp-query, and when one of them could not be timed (5.10 rule 4). */
   readonly gpuMs: number | null;
   /** Slices of the owner that have completed. */
   readonly slices: number;
@@ -119,6 +121,8 @@ export interface CommandStream {
   readonly inFlightLimit: 1 | 2;
   /** Slices submitted so far. ctx.loop compares two readings to learn whether a batch boundary is due (3.6). */
   readonly submitted: number;
+  /** When a completion was last seen (performance.now()): the thread has been through the event loop since then at the latest. */
+  readonly observed: number;
   /** The owner made current by the last use(); null before the first and after that owner's close(). */
   readonly current: StreamOwner | null;
 
@@ -161,21 +165,22 @@ const ARENA_BYTES = 1 << 20;
 /**
  * Timestamps of one slice: the beginning of its first compute pass and the end of every pass, in a query set
  * of the largest size WebGPU allows. Passes beyond these are not timed; a slice cannot hold more runs than
- * the arena has slots, so that is at most its last pass.
+ * the arena has slots, so that is at most its last pass. Every slice writes the same queries from index 0:
+ * it resolves them in its own command buffer, before the next slice writes them again.
  */
 const TIMING_QUERIES = 4096;
 const TIMED_PASSES = TIMING_QUERIES - 1;
 /**
- * The most query sets the stream makes. A slice holds one from its first compute pass until its timestamps
- * are read back: three are in use with two slices in flight. A node that submits slices without waiting
- * (3.6 rule 4) holds one per slice; beyond this many its slices are not timed, and its gpuMs leaves them out.
+ * The resolved timestamps of a slice are copied to a buffer of its own, which it holds until they are read
+ * back. A node that submits slices without waiting (3.6 rule 4) holds one per slice: a tile in a slice of its
+ * own needs 16 bytes, and the smallest buffer is 256. Beyond this many bytes a slice is not timed.
  */
-const TIMING_SLOTS = 16;
+const TIMING_READ_BYTES = 2 * 1048576;
+const TIMING_READ_MIN = 256;
 
-interface TimingSlot {
-  readonly querySet: GPUQuerySet;
-  readonly resolve: GPUBuffer;
-  readonly read: GPUBuffer;
+interface TimingRead {
+  readonly buffer: GPUBuffer;
+  readonly size: number;
   readonly reservation: { release(): void };
 }
 
@@ -192,6 +197,8 @@ interface Owner extends StreamOwner {
   outOfMemory: GPUError | null;
   validation: GPUError | null;
   gpuMs: number;
+  /** A slice with compute passes completed without timestamps: the sum above is not the owner's GPU time. */
+  untimed: boolean;
   slices: number;
   closed: boolean;
 }
@@ -203,12 +210,18 @@ interface Slice {
   /** What the open pass has set, so that consecutive tiles and runs do not set it again. */
   pipeline: GPUComputePipeline | null;
   group1: GPUBindGroup | null;
+  /** The rate key of the open pass. With timestamps a pass holds runs of one key, so that each is timed on its own (3.3). */
+  passKey: string | null;
   passes: number;
-  timing: TimingSlot | null;
+  /** With timestamps: the rate key of each timed pass, in order. */
+  readonly timed: string[];
   estimateMs: number;
   work: number;
-  /** Per kernel name, the work of its dispatches in this slice and what they were estimated at. */
-  readonly kernels: Map<string, { work: number; estimateMs: number }>;
+  runs: number;
+  /** Texels written by kernels the device has not measured at their level (3.4 rule 5). */
+  unmeasuredTexels: number;
+  /** Per rate key (a kernel at a level, 3.3), the work of its dispatches in this slice and what they were estimated at. */
+  readonly kernels: Map<string, { readonly name: string; work: number; estimateMs: number }>;
 }
 
 const none = (): null => null;
@@ -242,19 +255,32 @@ export function createStream(opts: StreamOptions): CommandStream {
   let completionWaiters: (() => void)[] = [];
   /** Submitted slices whose measurement has not been processed. */
   const inFlight = new Set<Promise<void>>();
-  /** When the last slice completed: a slice submitted behind another starts then, not when it was submitted. */
-  let lastSliceDone = -Infinity;
   /** When a completion of any kind was last observed, for the idle rule of 3.5. */
   let lastActivity = -Infinity;
+  /** When the completion of the slice submitted before was observed, and whether that was when it happened: a slice queued behind it began then. */
+  let lastDone = { at: -Infinity, prompt: false };
+  /**
+   * Without timestamps a completion is timed by when the thread sees it, which is when it happened only while
+   * the thread keeps returning to the event loop. While slices are in flight a timer notes each return; a gap
+   * between two of them is a stall, and what is seen in one or just after it was seen late (3.5).
+   */
+  let beat = { at: -Infinity, stalledUntil: -Infinity, timer: undefined as ReturnType<typeof setTimeout> | undefined };
   let latency = 0;
   /** Settles when the slice submitted last has been learned from and reported: slices report in the order of their submission. */
   let lastReport: Promise<void> = Promise.resolve();
   /** What an onSlice hook threw; the next wait rethrows it, so that an assertion made in a hook fails its test. */
   let hookFailure: { readonly error: unknown } | null = null;
 
+  /** 3.3: per rate key, `<kernel name>@<level>`. A kernel is faster per texel on a small grid than on a large one, so each level learns its own. */
   const rates = new Map<string, number>();
-  const freeTimingSlots: TimingSlot[] = [];
-  const timingSlots: TimingSlot[] = [];
+  /** Rate keys whose last measurement was at most twice its estimate: their tiles and slices are sized by estimate alone (3.4 rule 5). */
+  const measured = new Set<string>();
+  /** Without timestamps: rate keys that have completed a resolved slice of their own (3.3 rule 2). */
+  const alone = new Set<string>();
+  let timing: { readonly querySet: GPUQuerySet; readonly resolve: GPUBuffer; readonly reservation: { release(): void } } | null = null;
+  const timingReads: TimingRead[] = [];
+  const freeTimingReads = new Map<number, TimingRead[]>();
+  let timingReadBytes = 0;
   const resourceIds = new WeakMap<object, number>();
   let nextResourceId = 1;
 
@@ -295,48 +321,66 @@ export function createStream(opts: StreamOptions): CommandStream {
     return arena;
   }
 
-  function takeTimingSlot(): TimingSlot | null {
-    const free = freeTimingSlots.pop();
-    if (free) return free;
-    if (timingSlots.length >= TIMING_SLOTS) return null;
-    const bytes = TIMING_QUERIES * 8;
-    const made = guarded(device, () => ({
-      querySet: device.createQuerySet({ label: 'orogen slice timing', type: 'timestamp', count: TIMING_QUERIES }),
-      resolve: device.createBuffer({ label: 'orogen slice timing', size: bytes, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }),
-      read: device.createBuffer({ label: 'orogen slice timing', size: bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }),
-    }));
-    if (current) observe(current, made.scopes);
-    const slot: TimingSlot = { ...made.value, reservation: opts.reserve(bytes * 3, 'slice timing') };
-    timingSlots.push(slot);
-    return slot;
+  function ensureTiming(): NonNullable<typeof timing> {
+    if (!timing) {
+      const bytes = TIMING_QUERIES * 8;
+      const made = guarded(device, () => ({
+        querySet: device.createQuerySet({ label: 'orogen slice timing', type: 'timestamp', count: TIMING_QUERIES }),
+        resolve: device.createBuffer({ label: 'orogen slice timing', size: bytes, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }),
+      }));
+      if (current) observe(current, made.scopes);
+      timing = { ...made.value, reservation: opts.reserve(bytes * 2, 'slice timing') };
+    }
+    return timing;
   }
 
-  /** GPU milliseconds from the first compute pass's beginning to the last timed one's end; null when the slot cannot be read. */
-  async function readTiming(slot: TimingSlot, timed: number): Promise<number | null> {
+  /** A buffer for `bytes` of resolved timestamps; null when the stream holds as many as it may. */
+  function takeTimingRead(bytes: number): TimingRead | null {
+    let size = TIMING_READ_MIN;
+    while (size < bytes) size *= 2;
+    const free = freeTimingReads.get(size)?.pop();
+    if (free) return free;
+    if (timingReadBytes + size > TIMING_READ_BYTES) return null;
+    const made = guarded(device, () => device.createBuffer({ label: 'orogen slice timing', size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
+    if (current) observe(current, made.scopes);
+    const read: TimingRead = { buffer: made.value, size, reservation: opts.reserve(size, 'slice timing') };
+    timingReads.push(read);
+    timingReadBytes += size;
+    return read;
+  }
+
+  /**
+   * The timestamps of a slice, in milliseconds from the beginning of its first compute pass: entry k is the end
+   * of timed pass k, never below the entry before it. Null when they cannot be read.
+   */
+  async function readTiming(read: TimingRead, timed: number): Promise<Float64Array | null> {
     const bytes = (timed + 1) * 8;
     // A stream disposed with slices in flight has destroyed the buffer; mapping it would raise an uncaptured error.
     if (disposed || gpu.lost) return null;
     try {
-      await slot.read.mapAsync(GPUMapMode.READ, 0, bytes);
+      await read.buffer.mapAsync(GPUMapMode.READ, 0, bytes);
     } catch {
       return null;
     }
     if (disposed) return null;
-    const stamps = new BigUint64Array(slot.read.getMappedRange(0, bytes).slice(0));
-    slot.read.unmap();
-    freeTimingSlots.push(slot);
-    const begin = stamps[0]!;
-    let end = stamps[1]!;
-    for (let k = 2; k <= timed; k++) {
-      if (stamps[k]! > end) end = stamps[k]!;
+    const stamps = new BigUint64Array(read.buffer.getMappedRange(0, bytes).slice(0));
+    read.buffer.unmap();
+    const free = freeTimingReads.get(read.size);
+    if (free) free.push(read);
+    else freeTimingReads.set(read.size, [read]);
+    const ends = new Float64Array(timed + 1);
+    let top = stamps[0]!;
+    for (let k = 1; k <= timed; k++) {
+      if (stamps[k]! > top) top = stamps[k]!;
+      ends[k] = Number(top - stamps[0]!) / 1e6;
     }
-    return end >= begin ? Number(end - begin) / 1e6 : null;
+    return ends;
   }
 
   function openSlice(owner: Owner): Slice {
     slice ??= {
-      owner, encoder: device.createCommandEncoder(), pass: null, pipeline: null, group1: null, passes: 0, timing: null,
-      estimateMs: 0, work: 0, kernels: new Map(),
+      owner, encoder: device.createCommandEncoder(), pass: null, pipeline: null, group1: null, passKey: null, passes: 0, timed: [],
+      estimateMs: 0, work: 0, runs: 0, unmeasuredTexels: 0, kernels: new Map(),
     };
     return slice;
   }
@@ -347,24 +391,38 @@ export function createStream(opts: StreamOptions): CommandStream {
       s.pass = null;
       s.pipeline = null;
       s.group1 = null;
+      s.passKey = null;
     }
   }
 
-  /** The open compute pass of the open slice, begun when there is none. */
-  function computePass(owner: Owner): { readonly s: Slice; readonly pass: GPUComputePassEncoder } {
+  /** 3.3 rule 1: the rate of a kernel at a level it has not run at. */
+  function firstRate(name: string, level: number): number {
+    // The nearest level at which it has run: below first, where the rate is the lower one. 16 levels cover every grid.
+    for (const direction of [-1, 1]) {
+      for (let distance = 1; distance <= 16; distance++) {
+        const near = rates.get(`${name}@${level + direction * distance}`);
+        if (near !== undefined) return Math.max(near, RATE_INITIAL);
+      }
+    }
+    return RATE_INITIAL;
+  }
+
+  /** The open compute pass of the open slice for a run with rate key `kernel`, begun when there is none it can join. */
+  function computePass(owner: Owner, kernel: string): { readonly s: Slice; readonly pass: GPUComputePassEncoder } {
     const s = openSlice(owner);
+    if (s.pass && timestamps && s.passKey !== kernel) endPass(s);
     if (!s.pass) {
-      // A slice is timed from its first compute pass or not at all.
-      if (timestamps && s.passes === 0) s.timing = takeTimingSlot();
-      if (s.timing && s.passes < TIMED_PASSES) {
-        const querySet = s.timing.querySet;
+      if (timestamps && s.passes < TIMED_PASSES) {
+        const querySet = ensureTiming().querySet;
         s.pass = s.encoder.beginComputePass({
           timestampWrites: s.passes === 0 ? { querySet, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } : { querySet, endOfPassWriteIndex: s.passes + 1 },
         });
+        s.timed.push(kernel);
       } else {
         s.pass = s.encoder.beginComputePass();
       }
       s.passes++;
+      s.passKey = kernel;
     }
     return { s, pass: s.pass };
   }
@@ -396,19 +454,73 @@ export function createStream(opts: StreamOptions): CommandStream {
     return group;
   }
 
+  /** 3.4 rule 5: a kernel is measured at a level while its last measurement there was at most twice its estimate. */
+  function judge(key: string, estimateMs: number, dt: number): void {
+    if (dt <= 2 * estimateMs) measured.add(key);
+    else measured.delete(key);
+  }
+
   /**
-   * 3.3: the rate of every kernel of a completed slice follows the measurement. The factor applies to the rate
-   * the slice was estimated with: with two slices in flight the second is estimated before the first completes,
-   * and a factor applied to the current rate would correct one error twice.
+   * 3.3 rule 2 with timestamps: every kernel of the slice follows the time of its own passes. The factor applies
+   * to the rate the slice was estimated with: with two slices in flight the second is estimated before the first
+   * completes, and a factor applied to the current rate would correct one error twice.
    */
-  function learn(s: Slice, dt: number, mayRaise: boolean): void {
-    for (const [name, share] of s.kernels) {
-      if (share.work > 0) rates.set(name, nextRate(share.estimateMs / share.work, s.estimateMs, dt, mayRaise, s.owner.ceiling));
+  function learnTimed(s: Slice, ends: Float64Array): void {
+    const times = new Map<string, number>();
+    s.timed.forEach((key, k) => times.set(key, (times.get(key) ?? 0) + ends[k + 1]! - ends[k]!));
+    const over = ends[ends.length - 1]! > s.owner.ceiling;
+    for (const [key, share] of s.kernels) {
+      const dt = times.get(key);
+      // A kernel whose only pass is the one beyond the last timestamp has no time of its own.
+      if (dt === undefined || !(share.work > 0)) continue;
+      rates.set(key, nextRate(share.estimateMs / share.work, share.estimateMs, dt, true, s.owner.ceiling, over));
+      judge(key, share.estimateMs, dt);
     }
   }
 
+  /**
+   * 3.3 rule 2 by wall clock: one duration for the whole slice. `resolved` is false for a duration that is only
+   * known not to exceed `dt` (3.5 rule 2): it may lower a rate and never raises one.
+   */
+  function learnWall(s: Slice, dt: number, resolved: boolean): void {
+    const names = [...s.kernels.keys()].filter((key) => s.kernels.get(key)!.work > 0);
+    const fresh = names.filter((key) => !alone.has(key));
+    // A slice of several kernels teaches those the device has not measured on their own, and leaves the others
+    // their rates: a kernel that is estimated well does not take the correction of one that is not.
+    const some = fresh.length > 0 && fresh.length < names.length;
+    let estimate = s.estimateMs, duration = dt;
+    if (some) {
+      estimate = 0;
+      for (const name of fresh) estimate += s.kernels.get(name)!.estimateMs;
+      duration = Math.max(0, dt - (s.estimateMs - estimate));
+    }
+    for (const name of some ? fresh : names) {
+      const share = s.kernels.get(name)!;
+      const next = nextRate(share.estimateMs / share.work, estimate, duration, resolved, s.owner.ceiling, resolved && dt > s.owner.ceiling);
+      if (resolved) rates.set(name, next);
+      // A bound teaches "at most this", and only when it is below the estimate. It never takes back what a
+      // measured slice of the same burst has taught since this one was estimated.
+      else if (duration < estimate) rates.set(name, Math.min(next, rates.get(name) ?? Infinity));
+    }
+    if (names.length === 1 && resolved) alone.add(names[0]!);
+    if (dt <= 2 * s.estimateMs) for (const name of names) measured.add(name);
+    else if (resolved) for (const name of names) measured.delete(name);
+  }
+
+  function tick(): void {
+    const now = performance.now();
+    if (now - beat.at > THREAD_STALL_MS) beat.stalledUntil = now;
+    beat.at = now;
+    beat.timer = unfinished > 0 && !disposed ? setTimeout(tick, THREAD_STALL_MS / 3) : undefined;
+  }
+
+  /** Whether what the thread sees now, it sees as it happens. */
+  function prompt(now: number): boolean {
+    return now - beat.at <= THREAD_STALL_MS && now - beat.stalledUntil > THREAD_STALL_MS;
+  }
+
   function completed(): void {
-    lastSliceDone = lastActivity = performance.now();
+    lastActivity = performance.now();
     const waiters = completionWaiters;
     completionWaiters = [];
     for (const wake of waiters) wake();
@@ -436,17 +548,15 @@ export function createStream(opts: StreamOptions): CommandStream {
     endPass(s);
     const owner = s.owner;
     // 3.7: a cancelled or dead slice is dropped; the encoder is never finished.
-    if (gpu.lost || owner.closed || owner.signal?.aborted) {
-      if (s.timing) freeTimingSlots.push(s.timing);
-      return;
-    }
+    if (gpu.lost || owner.closed || owner.signal?.aborted) return;
     if (!timestamps && unfinished === 0 && performance.now() - lastActivity >= LATENCY_REMEASURE_MS) void barrier();
 
-    const timing = s.timing;
-    const timed = Math.min(s.passes, TIMED_PASSES);
-    if (timing) {
-      s.encoder.resolveQuerySet(timing.querySet, 0, timed + 1, timing.resolve, 0);
-      s.encoder.copyBufferToBuffer(timing.resolve, 0, timing.read, 0, 8 * (timed + 1));
+    const timed = s.timed.length;
+    const read = timed > 0 ? takeTimingRead(8 * (timed + 1)) : null;
+    if (read) {
+      const { querySet, resolve } = ensureTiming();
+      s.encoder.resolveQuerySet(querySet, 0, timed + 1, resolve, 0);
+      s.encoder.copyBufferToBuffer(resolve, 0, read.buffer, 0, 8 * (timed + 1));
     }
     const made = guarded(device, () => {
       if (usedBytes > 0) queue.writeBuffer(ensureArena().buffer, 0, staging, 0, usedBytes);
@@ -454,39 +564,61 @@ export function createStream(opts: StreamOptions): CommandStream {
     });
     observe(owner, made.scopes);
     submitted++;
+    // By wall clock a slice submitted behind another starts when that one ends (3.5).
+    const solo = unfinished === 0;
     unfinished++;
     const submittedAt = performance.now();
     const previous = lastReport;
+    if (!timestamps && beat.timer === undefined) {
+      beat.at = submittedAt;
+      beat.timer = setTimeout(tick, THREAD_STALL_MS / 3);
+    }
 
     const measure = async (): Promise<void> => {
       await queue.onSubmittedWorkDone().catch(none);
       const now = performance.now();
-      const wall = now - Math.max(submittedAt, lastSliceDone);
+      const awaited = prompt(now);
+      const before = lastDone;
+      lastDone = { at: now, prompt: awaited };
+      const began = solo ? submittedAt : before.prompt ? Math.max(submittedAt, before.at) : null;
+      // No longer than the slice took: from its beginning when that was observed, else from its submit.
+      const wall = now - (began ?? submittedAt);
       // 3.6: the scopes of a completed slice have reported before whoever waited for it goes on.
       await Promise.all([made.scopes.validation, made.scopes.outOfMemory]);
       unfinished--;
       completed();
-      let measured: number | null = null;
-      if (timing) {
-        measured = await readTiming(timing, timed);
-      }
+      const ends = read ? await readTiming(read, timed) : null;
       // A slice whose timestamps take longer to read back does not report after a later one.
       await previous;
       if (!gpu.lost && !disposed) {
-        // 3.5: by wall clock a slice shorter than twice the completion latency is not resolved. Its wall time
-        // is then an upper bound of its duration: it may lower a rate, to that bound, and never raises one.
-        const resolved = timestamps || wall >= 2 * latency;
-        const dt = timestamps ? measured : resolved ? wall - latency : wall;
-        if (dt !== null) learn(s, dt, resolved);
+        let dt = wall;
+        let resolved = false;
+        if (timestamps) {
+          if (ends) {
+            dt = ends[timed]!;
+            resolved = true;
+            learnTimed(s, ends);
+            owner.gpuMs += dt;
+          } else if (s.passes > 0) {
+            owner.untimed = true;
+          }
+        } else {
+          // 3.5: the wall time is the slice's own only when its beginning and its end were both observed as
+          // they happened, and it is resolved only above twice the completion latency. Otherwise it is an upper
+          // bound of the duration: it may lower a rate, to that bound, and never raises one.
+          resolved = awaited && began !== null && wall >= 2 * latency;
+          // The latency is in one end of a slice that began at its submit, and in both ends of one that began at a completion.
+          if (resolved && solo) dt = wall - latency;
+          learnWall(s, dt, resolved);
+        }
         owner.slices++;
-        if (measured !== null) owner.gpuMs += measured;
         const report: SliceReport = {
-          nodeId: owner.nodeId, service: owner.service, kernels: [...s.kernels.keys()], work: s.work, estimateMs: s.estimateMs,
-          measuredMs: dt ?? wall,
+          nodeId: owner.nodeId, service: owner.service, kernels: [...new Set([...s.kernels.values()].map((share) => share.name))],
+          work: s.work, estimateMs: s.estimateMs, measuredMs: dt, resolved,
         };
         try {
           // Only a measured duration is held against the ceiling: not the wall time of an unresolved or untimed slice.
-          if (dt !== null && resolved && dt > owner.ceiling) opts.onOverrun?.(report);
+          if (resolved && dt > owner.ceiling) opts.onOverrun?.(report, owner.ceiling);
           hooks.onSlice?.(report);
         } catch (error) {
           hookFailure ??= { error };
@@ -527,6 +659,7 @@ export function createStream(opts: StreamOptions): CommandStream {
   const stream: CommandStream = {
     inFlightLimit,
     get submitted() { return submitted; },
+    get observed() { return lastActivity; },
     get current() { return current; },
 
     open(o) {
@@ -545,6 +678,7 @@ export function createStream(opts: StreamOptions): CommandStream {
         outOfMemory: null,
         validation: null,
         gpuMs: 0,
+        untimed: false,
         slices: 0,
         closed: false,
         async settle() {
@@ -553,7 +687,7 @@ export function createStream(opts: StreamOptions): CommandStream {
           checkAlive(owner);
           const error = scopeError(owner);
           if (error) throw error;
-          return { gpuMs: timestamps ? owner.gpuMs : null, slices: owner.slices };
+          return { gpuMs: timestamps && !owner.untimed ? owner.gpuMs : null, slices: owner.slices };
         },
         close() {
           if (owner.closed) return;
@@ -581,7 +715,12 @@ export function createStream(opts: StreamOptions): CommandStream {
       const shape = kernelShape(run.kernel.kernel.def);
       const [wgX, wgY] = shape.workgroup;
       const [width, height] = run.frame.res;
-      const rate = rates.get(name) ?? RATE_INITIAL;
+      // 3.3: one level per factor of two in resolution, which for a square grid is its ladder level.
+      const level = Math.floor(Math.log2(width * height) / 2);
+      const key = `${name}@${level}`;
+      const rate = rates.get(key) ?? firstRate(name, level);
+      // 3.4 rule 5. The hook that replaces the slice targets replaces this bound with them.
+      const unmeasured = hooks.sliceTargetMs === undefined && !measured.has(key);
       let tileRows = height;
       if (!shape.tiled) {
         const estimate = width * height * run.cost * rate;
@@ -590,6 +729,7 @@ export function createStream(opts: StreamOptions): CommandStream {
         }
       } else {
         tileRows = rowsPerTile(owner.target, width, height, run.cost, rate, wgY, hooks.maxTileRows);
+        if (unmeasured) tileRows = Math.min(tileRows, Math.max(wgY, Math.floor(UNMEASURED_SLICE_TEXELS / width / wgY) * wgY));
       }
       const { group0 } = ensureArena();
       const group1 = bindGroup(owner, run);
@@ -602,7 +742,7 @@ export function createStream(opts: StreamOptions): CommandStream {
         // 3.2 rule 4: a Frame slot, and a Params slot when the open slice does not hold this run's yet.
         const slots = layout && (paramsSlice === null || paramsSlice !== slice) ? 2 : 1;
         if (slice && cursor + slots * UNIFORM_SLOT_BYTES > ARENA_BYTES) submit();
-        const { s, pass } = computePass(owner);
+        const { s, pass } = computePass(owner, key);
         if (layout && run.params && paramsSlice !== s) {
           paramsOffset = cursor;
           cursor += UNIFORM_SLOT_BYTES;
@@ -625,15 +765,18 @@ export function createStream(opts: StreamOptions): CommandStream {
         const work = width * rows * run.cost;
         s.work += work;
         s.estimateMs += work * rate;
-        const share = s.kernels.get(name);
+        const share = s.kernels.get(key);
         if (share) {
           share.work += work;
           share.estimateMs += work * rate;
         } else {
-          s.kernels.set(name, { work, estimateMs: work * rate });
+          s.kernels.set(key, { name, work, estimateMs: work * rate });
         }
-        if (s.estimateMs >= owner.target) submit();
+        if (unmeasured) s.unmeasuredTexels += width * rows;
+        if (s.estimateMs >= owner.target || s.unmeasuredTexels >= UNMEASURED_SLICE_TEXELS) submit();
       }
+      // 3.1: on a small grid the estimate alone would let a slice hold thousands of runs.
+      if (slice && hooks.sliceTargetMs === undefined && ++slice.runs >= SLICE_MAX_RUNS) submit();
     },
 
     clear(texture, value) {
@@ -724,19 +867,26 @@ export function createStream(opts: StreamOptions): CommandStream {
       slice = null;
       current = null;
       cursor = 0;
+      clearTimeout(beat.timer);
+      beat.timer = undefined;
       if (arena) {
         arena.buffer.destroy();
         arena.reservation.release();
         arena = null;
       }
-      for (const slot of timingSlots) {
-        slot.querySet.destroy();
-        slot.resolve.destroy();
-        slot.read.destroy();
-        slot.reservation.release();
+      if (timing) {
+        timing.querySet.destroy();
+        timing.resolve.destroy();
+        timing.reservation.release();
+        timing = null;
       }
-      timingSlots.length = 0;
-      freeTimingSlots.length = 0;
+      for (const read of timingReads) {
+        read.buffer.destroy();
+        read.reservation.release();
+      }
+      timingReads.length = 0;
+      freeTimingReads.clear();
+      timingReadBytes = 0;
     },
   };
   return stream;

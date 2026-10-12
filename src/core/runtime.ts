@@ -12,10 +12,11 @@ export { BudgetExceededError } from './gpu/pool.ts';
 export type { AnyFieldHandle, FieldHandle, MemoryReport, PoolTexture, TexturePool } from './gpu/pool.ts';
 
 // 3. The command stream
-export { RATE_INITIAL } from './gpu/tuning.ts';
+export { HARD_CEILING_MS, RATE_INITIAL } from './gpu/tuning.ts';
 
 // 4. The document
 export type { Edge, GraphDoc, NodeGroup, NodeInstance, PortRef, ProjectSettings, ViewBinding } from './graph/doc.ts';
+export { previewResolution } from './graph/settings.ts';
 export { outputKind, validateConnection } from './graph/validate.ts';
 export { normalizeParams } from './graph/params.ts';
 export { DocFormatError, newDoc, newId, parseDoc, serializeDoc } from './graph/serialize.ts';
@@ -30,7 +31,7 @@ export type { DocDraft, DocFragment, Mutable } from './graph/commands.ts';
 export { createRegistry } from './graph/registry.ts';
 export type { NodeRegistry } from './graph/registry.ts';
 export { createEngine } from './engine.ts';
-export type { Engine, EngineOptions } from './engine.ts';
+export type { Engine, EngineOptions, SliceOverrun } from './engine.ts';
 export type { EvalTarget, EvaluateOptions, EvaluateResult, TextureRef } from './eval/evaluator.ts';
 export { KEY_VERSION } from './eval/keys.ts';
 export type { NodeError, NodeErrorKind } from './eval/errors.ts';
@@ -50,7 +51,9 @@ export type { CpuTaskReply, CpuTaskRequest } from './cpu/protocol.ts';
 // 7. EngineSession
 export { createSession } from './session/session.ts';
 export type { BuildRequest, EnginePreferences, EngineSession, SessionBuildOptions } from './session/session.ts';
-export type { ClientMessage, WorkerMessage } from './session/protocol.ts';
+export { budgetBytes, DEFAULT_PREFERENCES } from './session/budget.ts';
+export { createSessionClient, serveSession } from './session/protocol.ts';
+export type { ClientMessage, SessionPort, WorkerMessage } from './session/protocol.ts';
 export { viewAfterSelect } from './graph/view.ts';
 export type {
   CameraState, PickResult, ViewportContent, ViewportDisplay, ViewportHost, ViewportRenderer, ViewportSize,

@@ -296,7 +296,7 @@ test('eviction: least recently used first under the budget; content behind a han
     small.engine.setBudget(small.engine.memory().reservedBytes + bytes - 1);
     const out = await small.run(constantDoc(13), ['n.out']);
     assert.deepEqual(out.result.errors.map((e) => e.kind), ['budget']);
-    assert.match(out.result.errors[0]!.message, /^Needs 1 MB more GPU memory at 65 × 65: budget \d+ MB, 0 MB in use by this node, 0 MB pinned$/);
+    assert.match(out.result.errors[0]!.message, /^Needs \d+ KB more GPU memory at 65 × 65: budget \d+ (KB|MB), 0 MB in use by this node, 0 MB pinned$/);
     small.noLeaks();
   } finally {
     await small.dispose();
@@ -382,7 +382,7 @@ test('the memory check of a build: outputs that cannot fit fail before any node 
     assert.deepEqual(endings(out.events), { a: 'skipped:upstream', b: 'error:budget', c: 'skipped:upstream' });
     assert.deepEqual(eventsOf(out.events, 'eval-start')[0]!.plan.map((p) => p.state), ['blocked', 'blocked', 'blocked']);
     assert.equal(eventsOf(out.events, 'eval-start')[0]!.outputPeakBytes, 2 * bytes);
-    assert.match(out.result.errors[0]!.message, /^Needs 1 MB more GPU memory at 65 × 65: budget \d+ MB, 0 MB in use by this node, 0 MB pinned$/);
+    assert.match(out.result.errors[0]!.message, /^Needs \d+ KB more GPU memory at 65 × 65: budget \d+ (KB|MB), 0 MB in use by this node, 0 MB pinned$/);
     assert.equal(calls.size, 0, 'no node ran');
 
     // With room for the widest cut the build runs, and frees each output after its last reader.

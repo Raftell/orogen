@@ -193,3 +193,24 @@ test('the cache holds at most 8192 entries: beyond that the first in eviction or
   assert.ok(cache.peek('alias11', 65) && cache.peek('more9', 65));
   assert.equal(cache.evictOne(), false, 'none of them can free the pinned texture');
 });
+
+test('an eviction does not look at every entry: thousands of evictions among thousands of entries take milliseconds', () => {
+  const pool = fakePool();
+  const cache = createCache(pool);
+  const ENTRIES = 8000, EVICTIONS = 4000;
+  for (let i = 0; i < ENTRIES; i++) store(pool, cache, `c${i}`, i % 3 === 0 ? i + 1 : null);
+  // Uses in an order of their own, so that the order of eviction is not the order of creation.
+  for (let i = 0; i < ENTRIES; i += 7) cache.get(`c${i}`, 65, null);
+  const started = performance.now();
+  let evicted = 0;
+  while (evicted < EVICTIONS && cache.evictOne()) evicted++;
+  const took = performance.now() - started;
+  assert.equal(evicted, EVICTIONS);
+  assert.equal(cache.size, ENTRIES - EVICTIONS);
+  // Sorting all entries for each eviction took 0.15 to 0.45 ms an eviction here: 600 ms and more.
+  assert.ok(took < 150, `${EVICTIONS} evictions took ${took.toFixed(0)} ms`);
+
+  // The order is still that of 2.7: the transient entries that were never used again went first, oldest generation first.
+  assert.deepEqual(pool.freed.slice(0, 4), ['c3', 'c6', 'c9', 'c12']);
+});
+

@@ -37,7 +37,12 @@ const blend = (kind: 'field' | 'color') => defineKernel({
   cost: 3,
   code: /* wgsl */ `
 fn compute(px: vec2i, uv: vec2f) -> out_t {
-  return mix(a_at(px), b_at(px), mask_at(px));
+  let va = a_at(px);
+  let vb = b_at(px);
+  let t = mask_at(px);
+  // A device may evaluate mix as a + t * (b - a), which is not b at t = 1: the two ends are selected, so that a
+  // mask of 1 gives the node's result and a mask of 0 its input, bit for bit.
+  return select(select(mix(va, vb, t), vb, t >= 1.0), va, t <= 0.0);
 }`,
 });
 const blends = { field: blend('field'), color: blend('color') };

@@ -5,7 +5,7 @@ heightfields, masks and colour maps on the GPU; a build evaluates the graph at
 landscape resolution, up to 8129 × 8129, and writes the files Unreal Engine
 5.8's Landscape system imports.
 
-This page is the map. The contract is the five documents in `docs/contract/`
+This page is the map. The contract is the documents in `docs/contract/`
 (section 5). If code and a contract document disagree, one of them is fixed in
 the same change.
 
@@ -35,7 +35,7 @@ Measured on the development machine (GTX 1660 Ti 6 GB, Linux, Vulkan), October
 - A texture layout entry with the default `sampleType: 'float'` rejects `r32float` and `rgba32float` unless `float32-filterable` is enabled; `'unfilterable-float'` accepts every field format.
 - Throughput at 2048²: a 5-point stencil pass 0.29 ms, 10-octave noise about 2 ms, a four-pass pipe-erosion iteration 3.0 ms. Reading back 264 MB takes about 0.3 s.
 - The first write to a new texture is far slower than later ones unless the texture has `RENDER_ATTACHMENT` usage: 9.75 ms against 0.49 ms for a 2048² `r32float`. A whole-run time that includes new textures is not a kernel's throughput.
-- After `destroy()` the driver keeps a texture's memory until one further submission has completed.
+- After `destroy()` the driver keeps a texture's memory until a further submission has completed, and now and then until a second one has.
 - The object returned by the package's `create()` must stay reachable while the device is in use, or the process hangs or crashes.
 - While a GPU promise is pending, the process spins one CPU core.
 - `adapter.info.memoryHeaps` is absent, so the amount of video memory is unknown headless.
@@ -113,6 +113,7 @@ section 1 the test folders.
 | --- | --- | --- |
 | `engine.md` | fields and kinds, units and value conventions, kernels and generated WGSL, nodes and parameters, the evaluation context, shared operations, two worked nodes | write a node; work on core |
 | `testing.md` | the harness, the conformance suite, the registry lint, definition of done, naming and text conventions, ownership and change requests, test layers, the command line, CI, the acceptance graphs | write a node; own any folder; review a change |
+| `nodes.md` | the catalog of product nodes: which exist, their ids, ports and purpose | own a node category; look for a node |
 | `simulation.md` | the simulation algorithms, their state, passes, stability and iteration scaling, the coarse-to-fine driver, the calibration register | write or review a `simulate` node |
 | `runtime.md` | device creation, the pool and budget, slices and tiles, the document, the evaluator and cache, errors and device loss, files and CPU tasks, the session, the application's structure | work on core, the platform code, the viewport or the interface |
 | `export-unreal.md` | export nodes, the build pipeline, encoders and decoders, Unreal conventions and formulas, the manifest, the manual import, the experimental plugin, the acceptance test in Unreal | work on export or import nodes; import a build into Unreal |

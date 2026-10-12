@@ -7,7 +7,7 @@ import { after, test } from 'node:test';
 import { defineKernel, defineNode, FileError } from '../../../src/core/api.ts';
 import type { EvalEvent, GraphDoc, NodeError } from '../../../src/core/runtime.ts';
 import {
-  assertUniform, calls, constantNode, endings, eventsOf, gainNode, memoryFiles, MIB, startEngine, sumNode, type NodeSpec,
+  assertUniform, calls, constantNode, endings, eventsOf, gainNode, memoryFiles, MIB, startEngine, sumNode, tintNode, type NodeSpec,
 } from './rig.ts';
 
 const untiled = defineKernel({
@@ -130,7 +130,7 @@ const sidecarNode = defineNode({
   },
 });
 
-const DEFS = [constantNode, gainNode, sumNode, failNode, brokenNode, versionedNode, importNode, sidecarNode];
+const DEFS = [constantNode, gainNode, sumNode, tintNode, failNode, brokenNode, versionedNode, importNode, sidecarNode];
 const files = memoryFiles();
 const t = await startEngine(DEFS, { files });
 after(() => t.dispose());
@@ -285,6 +285,74 @@ test('two nodes of one key fail together: the second does not run to fail the sa
   t.noLeaks();
 });
 
+test('a node skipped for its mask alone does not take the nodes of its key with it: the next one runs', async () => {
+  // The mask is not in K(n) (5.4): the three gains have one key, and the first in the plan cannot run.
+  const twins = (broken: NodeSpec): GraphDoc => t.doc({
+    level: { type: 'ref/constant', params: { value: 3 } },
+    half: { type: 'ref/constant', params: { value: 0.5 } },
+    broken,
+    masked: { type: 'ref/gain', params: { gain: 5 }, inputs: { in: 'level.out', mask: 'broken.out' } },
+    plain: { type: 'ref/gain', params: { gain: 5 }, inputs: { in: 'level.out' } },
+    blended: { type: 'ref/gain', params: { gain: 5 }, inputs: { in: 'level.out', mask: 'half.out' } },
+  });
+  const targets = ['masked.out', 'plain.out', 'blended.out'];
+  for (const mode of ['preview', 'build'] as const) {
+    await t.engine.trim();
+    calls.clear();
+    // The mask source fails when it runs: nothing says so before the masked node's turn.
+    const doc = twins({ type: 'ref/fail', params: { how: 'throw', tag: 7 }, inputs: { in: 'level.out' } });
+    const out = await t.run(doc, targets, { mode });
+    assert.equal(out.result.status, 'errors');
+    assert.deepEqual(endings(out.events), {
+      level: 'run', half: 'run', broken: 'error:node-exception', masked: 'skipped:upstream', plain: 'run', blended: 'cached',
+    }, mode);
+    assert.deepEqual(out.result.errors.map((e) => [e.nodeId, e.kind]), [['broken', 'node-exception']], mode);
+    assert.equal(calls.get('ref/gain'), 1, `${mode}: one run for the key`);
+    assert.equal(out.data[0], null);
+    assertUniform(out.data[1], 15, `${mode}: the node that reads nothing that failed`);
+    assertUniform(out.data[2], 9, `${mode}: the node of the same key with a mask that did not fail`);
+    assert.equal(out.result.timing.nodesRun, 3, mode);
+    t.noLeaks();
+    if (mode === 'preview') {
+      // The entry the second node made is a hit for all of them now.
+      const again = await t.run(doc, targets);
+      assert.deepEqual(endings(again.events), {
+        level: 'cached', half: 'cached', broken: 'error:node-exception', masked: 'skipped:upstream', plain: 'cached', blended: 'cached',
+      });
+      assert.equal(calls.get('ref/gain'), 1);
+      t.noLeaks();
+    }
+  }
+
+  // A mask source that is known not to run before the first node does: eval-start says which node runs for the key.
+  await t.engine.trim();
+  calls.clear();
+  const out = await t.run(twins({ type: 'ref/broken' }), targets);
+  assert.deepEqual(eventsOf(out.events, 'eval-start')[0]!.plan.filter((p) => ['masked', 'plain', 'blended'].includes(p.nodeId)), [
+    { nodeId: 'masked', state: 'blocked' }, { nodeId: 'plain', state: 'run' }, { nodeId: 'blended', state: 'cached' },
+  ]);
+  assert.deepEqual(endings(out.events), {
+    level: 'run', half: 'run', broken: 'error:shader-compile', masked: 'skipped:upstream', plain: 'run', blended: 'cached',
+  });
+  assertUniform(out.data[1], 15, 'plain.out');
+  assertUniform(out.data[2], 9, 'blended.out');
+  assert.equal(calls.get('ref/gain'), 1);
+  t.noLeaks();
+
+  // Every node of the key reads something that failed: none runs, and none is reported as an internal failure.
+  await t.engine.trim();
+  calls.clear();
+  const all = await t.run(t.doc({
+    level: { type: 'ref/constant', params: { value: 3 } },
+    broken: { type: 'ref/fail', params: { how: 'throw', tag: 8 }, inputs: { in: 'level.out' } },
+    first: { type: 'ref/gain', params: { gain: 6 }, inputs: { in: 'level.out', mask: 'broken.out' } },
+    second: { type: 'ref/gain', params: { gain: 6 }, inputs: { in: 'level.out', mask: 'broken.out' } },
+  }), ['first.out', 'second.out']);
+  assert.deepEqual(endings(all.events), { level: 'run', broken: 'error:node-exception', first: 'skipped:upstream', second: 'skipped:upstream' });
+  assert.equal(calls.get('ref/gain') ?? 0, 0);
+  t.noLeaks();
+});
+
 test('BudgetExceededError is not retried: the node fails with kind "budget" and its fields are free again', async () => {
   const small = await startEngine(DEFS, { budgetBytes: 8 * MIB });
   try {
@@ -292,7 +360,7 @@ test('BudgetExceededError is not retried: the node fails with kind "budget" and 
     const out = await small.run(small.doc({ n: { type: 'ref/fail', params: { how: 'big' } }, reader: { type: 'ref/gain', inputs: { in: 'n.out' } } }), ['reader.out']);
     assert.deepEqual(endings(out.events), { n: 'error:budget', reader: 'skipped:upstream' });
     // 2048 x 2048 x 16 bytes are 64 MB, the budget is 8.
-    assert.match(out.result.errors[0]!.message, /^Needs (5[6-9]|6[0-4]) MB more GPU memory at 65 × 65: budget 8 MB, 0 MB in use by this node, 0 MB pinned$/);
+    assert.match(out.result.errors[0]!.message, /^Needs (5[6-9]|6[0-4]) MB more GPU memory at 65 × 65: budget 8 MB, 17 KB in use by this node, 0 MB pinned$/);
     assert.match(out.result.errors[0]!.detail ?? '', /does not fit the GPU memory budget/);
     assert.equal(calls.get('ref/fail'), 1, 'one attempt');
     small.noLeaks();
@@ -363,3 +431,92 @@ test('the retry empties the cache of what can go; a second failure for memory is
     await oom.dispose();
   }
 });
+
+/**
+ * Makes the next pool texture the device creates an invalid one, which is what createTexture returns on a full
+ * card: the object exists and every use of it is a validation error. Returns the undo.
+ */
+function nextTextureInvalid(device: GPUDevice): () => void {
+  const create = device.createTexture;
+  let armed = true;
+  (device as { createTexture: GPUDevice['createTexture'] }).createTexture = (descriptor) => {
+    if (!armed || !(descriptor.label ?? '').startsWith('field ')) return create.call(device, descriptor);
+    armed = false;
+    return create.call(device, { ...descriptor, mipLevelCount: 99 });
+  };
+  return () => { delete (device as { createTexture?: GPUDevice['createTexture'] }).createTexture; };
+}
+
+test('an out-of-memory report on a conversion: reclaimed and made once more, like a node', async () => {
+  // Creations in order: the colour of "c", its luma conversion for the field input of "g", the output of "g".
+  const oom = await startEngine(DEFS, { hooks: { failAllocAfter: 2 } });
+  try {
+    calls.clear();
+    const doc = (gain: number): GraphDoc => oom.doc({
+      c: { type: 'ref/tint', params: { tint: [1, 1, 1] } },
+      g: { type: 'ref/gain', params: { gain }, inputs: { in: 'c.out' } },
+    });
+    const out = await oom.run(doc(3), ['g.out']);
+    assert.equal(out.result.status, 'ok', JSON.stringify(out.result.errors));
+    assert.deepEqual(endings(out.events), { c: 'run', g: 'run' });
+    assert.equal(calls.get('ref/gain'), 1, 'the node that reads the conversion ran once');
+    assertUniform(out.data[0], 3, 'g.out', 2e-3);
+    assert.equal(oom.slices.filter((s) => s.service === 'convert').length, 2, 'the conversion was made twice');
+    oom.noLeaks();
+    assert.equal(oom.engine.memory().drainingBytes, 0, 'the retry waits until the destroyed textures are drained');
+  } finally {
+    await oom.dispose();
+  }
+});
+
+test('a texture whose creation failed is not left in the pool: what the engine allocates next for itself works', async () => {
+  // The fault hits a conversion, whose texture the evaluator itself allocates and releases.
+  const converted = await startEngine(DEFS, { hooks: { failAllocAfter: 2 } });
+  try {
+    const doc = (gain: number): GraphDoc => converted.doc({
+      c: { type: 'ref/tint', params: { tint: [1, 1, 1] } },
+      g: { type: 'ref/gain', params: { gain }, inputs: { in: 'c.out' } },
+    });
+    const colour = await converted.run(doc(2), ['c.out']);
+    assert.equal(colour.result.status, 'ok');
+    const undo = nextTextureInvalid(converted.gpu.device);
+    let first;
+    try {
+      first = await converted.run(doc(2), ['g.out']);
+    } finally {
+      undo();
+    }
+    assert.equal(first.result.status, 'ok', JSON.stringify(first.result.errors));
+    assertUniform(first.data[0], 2, 'g.out after the retry', 2e-3);
+    // Other documents afterwards read nothing of the fault.
+    for (const gain of [4, 5, 6]) {
+      const later = await converted.run(doc(gain), ['g.out']);
+      assert.equal(later.result.status, 'ok', `gain ${gain}: ${JSON.stringify(later.result.errors)}`);
+      assertUniform(later.data[0], gain, `g.out at gain ${gain}`, 2e-3);
+    }
+    converted.noLeaks();
+  } finally {
+    await converted.dispose();
+  }
+
+  // The fault hits the scratch texture of Engine.stats, a service that is not retried.
+  const stats = await startEngine(DEFS, { hooks: { failAllocAfter: 2 } });
+  try {
+    const { result } = await stats.evaluate(stats.doc({ level: { type: 'ref/constant', params: { value: 3 } } }), ['level.out']);
+    const handle = result.fields[0]!;
+    assert.equal(handle.kind, 'field');
+    const undo = nextTextureInvalid(stats.gpu.device);
+    try {
+      await assert.rejects(stats.engine.stats(handle as never), /out of memory/i);
+    } finally {
+      undo();
+    }
+    const measured = await stats.engine.stats(handle as never);
+    assert.deepEqual([measured.min, measured.max, measured.nonFinite], [3, 3, 0], 'the same call again measures the field');
+    handle.release();
+    stats.noLeaks();
+  } finally {
+    await stats.dispose();
+  }
+});
+

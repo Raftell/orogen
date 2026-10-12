@@ -5,7 +5,7 @@ export interface DecodedImage {
   readonly width: number;
   readonly height: number;
   readonly channels: 1 | 3 | 4;
-  readonly data: Float32Array;     // row-major, 0..1 for integer formats, first row = top row of the image
+  readonly data: Float32Array<ArrayBuffer>;   // row-major, 0..1 for integer formats, first row = top row of the image; never shared memory, so its buffer can be transferred
 }
 
 const MAX_SIDE = 8192;

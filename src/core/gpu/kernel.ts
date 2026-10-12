@@ -198,6 +198,9 @@ export function defineKernel<
       if (accessors.has(tokens[i]!.text) && tokens[i + 1]?.text === '(') {
         fail(`map mode code may not call ${tokens[i]!.text}(); return the value from compute`);
       }
+      // The generated entry point begins the texel. A second call moves the invocation to another one: its
+      // own stays unwritten, and two invocations then write one texel (engine.md 3.5 rule 1).
+      if (tokens[i]!.text === 'beginPixel') fail('map mode code may not call beginPixel(); the texel is px');
     }
   } else {
     const main = declared('fn', 'main');
@@ -227,6 +230,10 @@ export function defineKernel<
     const end = closingBrace(tokens, body);
     for (let i = body + 7; i < end; i++) {
       if (tokens[i]!.text === gid!.text) fail(`raw mode main may use "${gid!.text}" only in the call to beginPixel; take the texel from pixel()`);
+    }
+    // The texel of an invocation is fixed by that one call, in main and in every function it calls.
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i]!.text === 'beginPixel' && i !== body + 4) fail('raw mode code calls beginPixel() once, as the first statement of main');
     }
   }
 

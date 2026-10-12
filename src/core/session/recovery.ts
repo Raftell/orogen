@@ -18,6 +18,100 @@ export interface DeviceRecovery {
   dispose(): void;
 }
 
-export function createRecovery(reopenGpu: () => Promise<GpuContext>): DeviceRecovery {
-  throw new Error('not implemented: createRecovery');
+/** The wait before each attempt of one recovery (7.8 rule 2). */
+export const RETRY_DELAYS_MS: readonly number[] = [0, 1000, 5000];
+/** This many losses within the window end automatic recovery (7.8 rule 3). */
+export const LOSS_LIMIT = 3;
+export const LOSS_WINDOW_MS = 120_000;
+
+/** For tests of the policy: other waits, another clock. The session passes none. */
+export interface RecoveryOptions {
+  readonly delaysMs?: readonly number[];
+  readonly now?: () => number;
+}
+
+const describe = (thrown: unknown): string => (thrown instanceof Error ? thrown.message : String(thrown)).split('\n')[0]!;
+
+export function createRecovery(reopenGpu: () => Promise<GpuContext>, options: RecoveryOptions = {}): DeviceRecovery {
+  const delays = options.delaysMs ?? RETRY_DELAYS_MS;
+  const now = options.now ?? (() => performance.now());
+  /** When each loss of the window happened. */
+  let losses: number[] = [];
+  let attempts: Promise<RecoveryOutcome> | null = null;
+  let disposed = false;
+  /** Ends the wait under way. */
+  let wake: (() => void) | null = null;
+
+  function wait(ms: number): Promise<void> {
+    if (!(ms > 0)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        wake = null;
+        resolve();
+      }, ms);
+      wake = () => {
+        clearTimeout(timer);
+        wake = null;
+        resolve();
+      };
+    });
+  }
+
+  async function run(): Promise<RecoveryOutcome> {
+    let last = 'no attempt was made';
+    for (const delay of delays) {
+      await wait(delay);
+      if (disposed) break;
+      let gpu: GpuContext;
+      try {
+        gpu = await reopenGpu();
+      } catch (thrown) {
+        last = describe(thrown);
+        continue;
+      }
+      // Nobody else knows this context: one that cannot be used is destroyed here.
+      if (disposed) {
+        gpu.destroy();
+        break;
+      }
+      if (gpu.lost) {
+        last = `the new device was lost at once${gpu.lostInfo?.message ? `: ${gpu.lostInfo.message}` : ''}`;
+        gpu.destroy();
+        continue;
+      }
+      return { ok: true, gpu };
+    }
+    if (disposed) return { ok: false, message: 'The session was disposed while the GPU device was being reopened' };
+    return { ok: false, message: `No GPU device could be opened in ${delays.length} attempts: ${last}` };
+  }
+
+  function start(): Promise<RecoveryOutcome> {
+    if (disposed) return Promise.resolve({ ok: false, message: 'The session is disposed' });
+    attempts ??= run().finally(() => {
+      attempts = null;
+    });
+    return attempts;
+  }
+
+  return {
+    lost() {
+      const at = now();
+      losses = losses.filter((earlier) => at - earlier < LOSS_WINDOW_MS);
+      losses.push(at);
+      if (losses.length >= LOSS_LIMIT && !disposed) {
+        return Promise.resolve({
+          ok: false,
+          message: `The GPU device was lost ${losses.length} times within ${LOSS_WINDOW_MS / 1000} seconds; it is not reopened automatically`,
+        });
+      }
+      return start();
+    },
+
+    retry: start,
+
+    dispose() {
+      disposed = true;
+      wake?.();
+    },
+  };
 }

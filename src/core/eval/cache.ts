@@ -41,16 +41,57 @@ interface Entry {
   readonly textures: EntryTextures;
   /** The generation of a transient entry; null for an ordinary one. */
   transient: number | null;
-  /** Order of last use. */
-  used: number;
+  /** Where the entry stands in the eviction order: under a generation, among the ordinary entries (null), or nowhere yet. */
+  filed: number | null | undefined;
 }
 
 export function createCache(pool: Pick<ManagedPool, 'retain' | 'drop' | 'references'>): ResultCache {
   const byResolution = new Map<number, Map<string, Entry>>();
+  /**
+   * The entries in eviction order (2.7), kept as they are used: a set lists its members in the order they were
+   * added, so an entry that is used is taken out and added again. Transient entries have one set per generation;
+   * few generations exist at a time, because a settled transient evaluation drops those below its own. Sorting
+   * every entry for every eviction took 0.15 ms an eviction with 8000 entries.
+   */
+  const transients = new Map<number, Set<Entry>>();
+  /** The generations that have entries, ascending. */
+  const generations: number[] = [];
+  const ordinary = new Set<Entry>();
   /** References the entries hold, per texture. */
   const held = new Map<PoolTexture, number>();
-  let clock = 0;
   let count = 0;
+
+  function unfile(entry: Entry): void {
+    if (entry.filed === null) ordinary.delete(entry);
+    else if (entry.filed !== undefined) {
+      const peers = transients.get(entry.filed);
+      peers?.delete(entry);
+      if (peers?.size === 0) {
+        transients.delete(entry.filed);
+        generations.splice(generations.indexOf(entry.filed), 1);
+      }
+    }
+    entry.filed = undefined;
+  }
+
+  /** The entry was created or used: among the ordinary entries, or those of its generation, it is the last to be evicted. */
+  function touch(entry: Entry): void {
+    unfile(entry);
+    entry.filed = entry.transient;
+    if (entry.transient === null) {
+      ordinary.add(entry);
+      return;
+    }
+    let peers = transients.get(entry.transient);
+    if (!peers) {
+      transients.set(entry.transient, peers = new Set());
+      // A generation is a requestId, and those grow: the place is the end, or near it.
+      let at = generations.length;
+      while (at > 0 && generations[at - 1]! > entry.transient) at--;
+      generations.splice(at, 0, entry.transient);
+    }
+    peers.add(entry);
+  }
 
   const find = (content: string, resolution: number): Entry | undefined => byResolution.get(resolution)?.get(content);
 
@@ -60,6 +101,7 @@ export function createCache(pool: Pick<ManagedPool, 'retain' | 'drop' | 'referen
     if (entries?.get(entry.content) !== entry) return false;
     entries.delete(entry.content);
     if (entries.size === 0) byResolution.delete(entry.resolution);
+    unfile(entry);
     count--;
     let freed = false;
     for (const texture of entry.textures.values()) {
@@ -80,20 +122,15 @@ export function createCache(pool: Pick<ManagedPool, 'retain' | 'drop' | 'referen
   }
 
   /** Every entry in eviction order (2.7): transient ones by generation, then the rest by last use. */
-  function evictionOrder(): Entry[] {
-    const all: Entry[] = [];
-    for (const entries of byResolution.values()) for (const entry of entries.values()) all.push(entry);
-    return all.sort((a, b) => {
-      if ((a.transient === null) !== (b.transient === null)) return a.transient === null ? 1 : -1;
-      if (a.transient !== null && b.transient !== null && a.transient !== b.transient) return a.transient - b.transient;
-      return a.used - b.used;
-    });
+  function* evictionOrder(): Generator<Entry> {
+    // Copies of the lists of generations, not of the entries: the caller removes entries while it walks.
+    for (const generation of [...generations]) yield* transients.get(generation) ?? [];
+    yield* ordinary;
   }
 
   function evictOne(): boolean {
-    const order = evictionOrder();
     // 2.7: the first entry one of whose textures has no reference but the entry's.
-    for (const entry of order) {
+    for (const entry of evictionOrder()) {
       for (const [texture, mine] of own(entry)) {
         if (pool.references(texture) === mine) {
           remove(entry);
@@ -103,7 +140,7 @@ export function createCache(pool: Pick<ManagedPool, 'retain' | 'drop' | 'referen
     }
     // Entries that share a texture (a pass-through, 5.6) keep each other from being evictable alone. Such a
     // texture is not pinned, so its entries go together, in eviction order, until it is free.
-    for (const entry of order) {
+    for (const entry of evictionOrder()) {
       let shared = false;
       for (const texture of entry.textures.values()) {
         if (pool.references(texture) === held.get(texture)) shared = true;
@@ -121,10 +158,10 @@ export function createCache(pool: Pick<ManagedPool, 'retain' | 'drop' | 'referen
     get(content, resolution, transient) {
       const entry = find(content, resolution);
       if (!entry) return undefined;
-      entry.used = ++clock;
       // A 'keep' evaluation makes the entry ordinary; a transient one moves a transient entry to its generation.
       if (transient === null) entry.transient = null;
       else if (entry.transient !== null) entry.transient = Math.max(entry.transient, transient);
+      touch(entry);
       return entry.textures;
     },
 
@@ -135,8 +172,7 @@ export function createCache(pool: Pick<ManagedPool, 'retain' | 'drop' | 'referen
     set(content, resolution, textures, transient) {
       const old = find(content, resolution);
       const entry: Entry = {
-        content, resolution, textures: new Map(textures), used: ++clock,
-        transient: old && old.transient === null ? null : transient,
+        content, resolution, textures: new Map(textures), transient: old && old.transient === null ? null : transient, filed: undefined,
       };
       // The new references first: a texture both entries name must not reach zero in between.
       for (const texture of entry.textures.values()) {
@@ -147,6 +183,7 @@ export function createCache(pool: Pick<ManagedPool, 'retain' | 'drop' | 'referen
       let entries = byResolution.get(resolution);
       if (!entries) byResolution.set(resolution, entries = new Map());
       entries.set(content, entry);
+      touch(entry);
       count++;
       if (count > MAX_ENTRIES) {
         // Whoever still reads the content of a removed entry holds a reference of its own (2.2).
@@ -179,6 +216,9 @@ export function createCache(pool: Pick<ManagedPool, 'retain' | 'drop' | 'referen
 
     forget() {
       byResolution.clear();
+      transients.clear();
+      generations.length = 0;
+      ordinary.clear();
       held.clear();
       count = 0;
     },

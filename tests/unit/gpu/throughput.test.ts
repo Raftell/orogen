@@ -34,6 +34,15 @@ test('rule 3: a slice above the hard ceiling corrects the rate at once', () => {
   assert.ok(close(nextRate(1e-7, 10, 300, true), 2e-7));
 });
 
+test('rule 3 for a kernel\'s share of a slice: the slice exceeded the ceiling, the share is corrected without the upper bound', () => {
+  // 40 ms of a 600 ms slice were this kernel's, estimated at 4 ms.
+  assert.ok(close(nextRate(1e-7, 4, 40, true, HARD_CEILING_MS, true), 1e-6));
+  assert.ok(close(nextRate(1e-7, 4, 40, true, HARD_CEILING_MS, false), 2e-7), 'under the ceiling the clamp holds');
+  assert.ok(close(nextRate(1e-7, 4, 40, true), 2e-7), 'and by default the duration given is the slice\'s own');
+  // Another kernel of the same slice was estimated well: it keeps its rate.
+  assert.ok(close(nextRate(3e-8, 500, 520, true, HARD_CEILING_MS, true), 3e-8 * 1.04));
+});
+
 test('rule 6: a rate never exceeds 100 x RATE_INITIAL except through rule 3', () => {
   const cap = RATE_INITIAL * RATE_CAP_FACTOR;
   let rate = RATE_INITIAL;

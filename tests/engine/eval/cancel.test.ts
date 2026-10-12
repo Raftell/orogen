@@ -49,6 +49,19 @@ const walkNode = defineNode({
   },
 });
 
+/** Passes its input on: an alias, with nothing encoded. */
+const passNode = defineNode({
+  type: 'ref/pass',
+  title: 'Pass (Test)',
+  category: 'ref',
+  description: 'Passes its input on.',
+  inputs: [{ name: 'in', type: 'field' }],
+  outputs: [{ name: 'out', type: 'field' }],
+  params: [{ kind: 'int', name: 'tag', default: 0, min: 0, max: 100_000, help: 'Tells instances apart.' }],
+  kernels: [],
+  evaluate: (ctx) => ctx.output('out', ctx.input('in')),
+});
+
 // Every iteration is a batch boundary: the loop awaits the GPU after each one, as under testing.md's 'small' slices.
 const t = await startEngine([constantNode, gainNode, walkNode], { hooks: { sliceTargetMs: 1e-6 } });
 after(() => t.dispose());
@@ -183,3 +196,35 @@ test('an aborted transient evaluation drops nothing, and a cancelled build leave
   const memory = t.engine.memory();
   assert.deepEqual([memory.workingBytes, memory.pinnedBytes, memory.cacheBytes], [0, 0, 0]);
 });
+
+test('an abort reaches an evaluation whose nodes need no GPU wait: the plan is not walked as one task', async () => {
+  // A node that passes its input on publishes an alias: nothing is encoded, and nothing it awaits takes a turn
+  // of the event loop. An abort is delivered through that loop, as every message to the engine's thread is.
+  const own = await startEngine([constantNode, passNode]);
+  try {
+    const length = 2000;
+    const nodes: Record<string, { type: string; params?: Record<string, unknown>; inputs?: Record<string, string> }> = { n0: { type: 'ref/constant', params: { value: 1 } } };
+    for (let i = 1; i <= length; i++) nodes[`n${i}`] = { type: 'ref/pass', params: { tag: i }, inputs: { in: `n${i - 1}.out` } };
+    const doc = own.doc(nodes);
+
+    // The abort is asked for by a timer that is set once the chain is under way: it can only fire when the
+    // thread returns to the event loop.
+    const controller = new AbortController();
+    const reason = new Error('the user moved on');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const out = await own.run(doc, [`n${length}.out`], {
+      signal: controller.signal,
+      onEvent: (e) => {
+        if (e.type === 'node-done' && e.nodeId === 'n20') timer = setTimeout(() => controller.abort(reason), 0);
+      },
+    });
+    clearTimeout(timer);
+    assert.equal(out.result.status, 'aborted', `the chain ran ${out.result.timing.nodesRun} of ${length + 1} nodes`);
+    assert.ok(out.result.timing.nodesRun > 20 && out.result.timing.nodesRun < length / 2, `${out.result.timing.nodesRun} nodes ran`);
+    assert.ok(eventsOf(out.events, 'node-skipped').some((e) => e.reason === 'aborted'));
+    own.noLeaks();
+  } finally {
+    await own.dispose();
+  }
+});
+

@@ -498,6 +498,18 @@ test('after evaluate() has settled, every method of its context throws', async (
   assert.throws(() => ctx.wants('out'), settled);
   assert.throws(() => ctx.progress(1), settled);
   assert.throws(() => ctx.readFile('x'), settled);
+  assert.throws(() => ctx.write(field!, new Float32Array(65 * 65)), settled);
+  assert.throws(() => ctx.stats(field!), settled);
+  assert.throws(() => ctx.clone(field!), settled);
+  assert.throws(() => ctx.release(field!), settled);
+  assert.throws(() => ctx.lut(new Float32Array(4), 'f32'), settled);
+  assert.throws(() => ctx.output('out', field!), settled);
+  assert.throws(() => ctx.setting('seaLevel'), settled);
+  assert.throws(() => ctx.enumIndex('none' as never), settled);
+  // The unit helpers are methods too (engine.md 4.7).
+  assert.throws(() => ctx.lengthToPx(0.5), settled);
+  assert.throws(() => ctx.lengthToMetres(0.5), settled);
+  assert.throws(() => ctx.heightToMetres(0.5), settled);
   assert.equal(ctx.res, 65, 'the environment stays readable');
 });
 

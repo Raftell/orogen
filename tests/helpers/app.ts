@@ -20,5 +20,7 @@ export function launchApp(opts?: {
   readonly profile?: GpuProfile;                 // default: OROGEN_GPU_PROFILE, else 'core'
   readonly gpu?: 'hardware' | 'software';        // default: OROGEN_ELECTRON_GPU, else 'hardware'
 }): Promise<AppDriver> {
-  throw new Error('not implemented: launchApp');
+  return Promise.reject(new Error(
+    'launchApp and its AppDriver belong to the application stage: they start the built application (src/platform/electron/, `npm run build`), which does not exist yet',
+  ));
 }

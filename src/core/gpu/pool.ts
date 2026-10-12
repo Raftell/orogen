@@ -1,6 +1,6 @@
 import type { GpuContext } from './device.ts';
 import type { FieldKind, Rgba } from './field.ts';
-import { guarded } from './scopes.ts';
+import { guarded, type ScopeResult } from './scopes.ts';
 import type { CommandStream } from './stream.ts';
 import { TEXEL_ENCODING } from './texels.ts';
 
@@ -125,6 +125,10 @@ interface Slot {
   /** Order in which textures became FREE. */
   freedAt: number;
   tenant: PoolTexture | null;
+  /** The pops of the creation, until both have reported. Whoever is handed the texture before then hears of them too. */
+  creation: ScopeResult | null;
+  /** The creation reported an error: the texture is not a texture. It is never handed out again (2.5). */
+  invalid: boolean;
 }
 
 /** What a recycled texture is filled with under `poisonRecycled`: −1e30, or the nearest value its format holds that a new texture's zeros differ from. */
@@ -201,9 +205,37 @@ export function createPool(opts: PoolOptions): ManagedPool {
     draining += slot.bytes;
   }
 
-  /** 2.6 rule 3: the bytes destroyed before the barrier leave `draining` when it has completed. */
+  /** A texture leaves WORKING or PUBLISHED: to its free list, or, when its creation reported an error, out of the pool. */
+  function retire(slot: Slot): void {
+    toFree(slot);
+    if (slot.invalid) discard(slot);
+  }
+
+  /** Destroys a FREE texture whose creation reported an error, with a barrier of its own. */
+  function discard(slot: Slot): void {
+    if (gpu.lost) return;
+    destroy(slot);
+    void barrier(slot.bytes);
+  }
+
+  /** 2.5: a texture whose creation reports an error is never handed out again. */
+  function watchCreation(slot: Slot, scopes: ScopeResult): void {
+    slot.creation = scopes;
+    void Promise.all([scopes.validation, scopes.outOfMemory]).then(([validation, outOfMemory]) => {
+      slot.creation = null;
+      if (!validation && !outOfMemory) return;
+      slot.invalid = true;
+      if (slot.state === 'free') discard(slot);
+    });
+  }
+
+  /**
+   * 2.6 rule 3: the bytes destroyed before the barrier leave `draining` when it has completed. A barrier is two
+   * empty submissions, the second made when the first has completed: measured, the driver now and then still
+   * holds a destroyed texture after one.
+   */
   function barrier(bytes: number): Promise<void> {
-    const done: Promise<void> = stream.barrier().then(() => {
+    const done: Promise<void> = stream.barrier().then(() => stream.barrier()).then(() => {
       draining -= bytes;
       barriers.delete(done);
     });
@@ -247,15 +279,15 @@ export function createPool(opts: PoolOptions): ManagedPool {
           slot.state = 'working';
           working += slot.bytes;
           const tenant = tenantOf(slot, kind);
-          if (opts.hooks?.poisonRecycled) {
-            try {
-              stream.clear(tenant, poison(format));
-            } catch (thrown) {
-              // No owner is current: the texture goes back, or it would stay WORKING with nobody to release it.
-              working -= slot.bytes;
-              toFree(slot);
-              throw thrown;
-            }
+          try {
+            // Freed before its creation had reported: an error of the creation is this owner's now (5.8 rule 3).
+            if (slot.creation) stream.track(slot.creation);
+            if (opts.hooks?.poisonRecycled) stream.clear(tenant, poison(format));
+          } catch (thrown) {
+            // No owner is current: the texture goes back, or it would stay WORKING with nobody to release it.
+            working -= slot.bytes;
+            toFree(slot);
+            throw thrown;
           }
           return tenant;
         }
@@ -266,16 +298,22 @@ export function createPool(opts: PoolOptions): ManagedPool {
             return { texture, view: texture.createView() };
           });
           const fails = failAfter > 0 && --failAfter === 0;
+          const scopes: ScopeResult = fails
+            ? { validation: made.scopes.validation, outOfMemory: Promise.resolve({ message: 'Out of memory (EngineTestHooks.failAllocAfter)' } as GPUError) }
+            : made.scopes;
+          const slot: Slot = {
+            ...made.value, format, width, height, bytes: need, state: 'working', references: 0, freedAt: 0, tenant: null, creation: null, invalid: false,
+          };
+          // Before the owner hears of them: when the owner's wait ends on a report, the pool knows the texture is invalid.
+          watchCreation(slot, scopes);
           try {
-            stream.track(fails
-              ? { validation: made.scopes.validation, outOfMemory: Promise.resolve({ message: 'Out of memory (EngineTestHooks.failAllocAfter)' } as GPUError) }
-              : made.scopes);
+            stream.track(scopes);
           } catch (thrown) {
             // No owner is current: the new texture is in no list yet and would never be destroyed.
+            slot.state = 'destroyed';
             made.value.texture.destroy();
             throw thrown;
           }
-          const slot: Slot = { ...made.value, format, width, height, bytes: need, state: 'working', references: 0, freedAt: 0, tenant: null };
           slots.add(slot);
           working += need;
           return tenantOf(slot, kind);
@@ -318,7 +356,7 @@ export function createPool(opts: PoolOptions): ManagedPool {
     release(t) {
       const slot = slotOf(t, 'working', 'release');
       working -= slot.bytes;
-      toFree(slot);
+      retire(slot);
     },
     publish(t) {
       const slot = slotOf(t, 'working', 'publish');
@@ -334,7 +372,7 @@ export function createPool(opts: PoolOptions): ManagedPool {
       const slot = slotOf(t, 'published', 'drop');
       if (--slot.references === 0) {
         published -= slot.bytes;
-        toFree(slot);
+        retire(slot);
       }
     },
     reserve(bytes, label) {

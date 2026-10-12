@@ -75,6 +75,11 @@ const EVAL_PROGRESS_MS = 250;
 const NODE_PREVIEW_MS = 100;
 /** Node ids whose last timing is remembered. */
 const TIMINGS_KEPT = 16384;
+/**
+ * The longest the plan is walked without a completed GPU wait. Hits, bypassed nodes, pass-throughs and failures
+ * await nothing that takes a turn of the event loop, and an abort, like every message, arrives through it (3.7).
+ */
+const TURN_MS = 4;
 
 const noop = (): void => undefined;
 const isThenable = (value: unknown): value is PromiseLike<unknown> =>
@@ -101,7 +106,16 @@ interface Group {
   readonly wanted: Set<string>;
   /** The entry that holds every wanted output; null when the node runs. */
   entry: EntryTextures | null;
+  /**
+   * The member that runs for all of them: planned as the first in plan order, and in the end the first whose
+   * turn comes with nothing it reads failed. A member skipped for a source of its own (its mask, which is not
+   * in the key) leaves the run to the next one.
+   */
   runner: Step | null;
+  /** What ctx.wants() answers for whichever member runs (5.4 rule 2). */
+  runWanted: ReadonlySet<string>;
+  /** The runner has published: every other member is a hit. */
+  published: boolean;
   /** The failure of the runner, which every node of the same key shares. */
   failed: NodeError | null;
 }
@@ -114,9 +128,14 @@ interface Step {
   /** A failure known before the node's turn: a check of 5.3, its externalKey, a kernel, a second device loss. */
   error: NodeError | null;
   group: Group | null;
-  /** What ctx.wants() answers when this step runs. */
+  /** The outputs of this node that the evaluation wants. */
   wanted: ReadonlySet<string>;
-  /** What the step reads; released when it has settled. */
+  /**
+   * What evaluate() would read. Every member of a group that has no entry holds these until one of them has
+   * published or failed: any of them may have to run.
+   */
+  inputs: Slot[];
+  /** What else the step reads; released when it has settled. */
   reqs: Slot[];
   /** The targets that name this node, by index, with the content each delivers; null for a node target. */
   readonly targets: Map<number, Slot | null>;
@@ -159,7 +178,7 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
     const emit = (event: EvalEvent): void => opts.onEvent?.(event);
 
     const steps: Step[] = plan.nodes.map((node, index) => ({
-      node, index, keys: null, state: 'blocked', error: node.error, group: null, wanted: new Set<string>(), reqs: [], targets: new Map(),
+      node, index, keys: null, state: 'blocked', error: node.error, group: null, wanted: new Set<string>(), inputs: [], reqs: [], targets: new Map(),
     }));
     const stepOf = new Map(steps.map((step) => [step.node.nodeId, step]));
     const slots = new Map<string, Slot>();
@@ -274,6 +293,19 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
       }
     }
 
+    function releaseInputs(step: Step): void {
+      const read = step.inputs;
+      step.inputs = [];
+      for (const slot of read) unrequire(slot);
+    }
+
+    /** The group's runner has published or failed: no other member will run, and none needs what evaluate() reads. */
+    function runnerSettled(runner: Step): void {
+      for (const member of runner.group?.members ?? []) {
+        if (member !== runner) releaseInputs(member);
+      }
+    }
+
     function stored(slot: Slot, texture: PoolTexture): void {
       if (preview) deps.cache.set(slot.content.id, resolution, new Map([['out', texture]]), transient);
     }
@@ -290,9 +322,20 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
           // 5.6: outputs[0] passes inputs[0] through, and mix(x, x, m) is x.
           hold(slot, sources[0]!);
         } else {
-          const texture = c.type === 'convert' ? await convert(parts, sources[0]!, c.conversion, mode, signal)
-            : c.type === 'mask' ? await maskBlend(parts, sources[2]!, sources[0]!, sources[1]!, mode, signal)
-            : await constant(parts, c.kind, resolution, mode, signal);
+          const make = (): Promise<PoolTexture> => (
+            c.type === 'convert' ? convert(parts, sources[0]!, c.conversion, mode, signal)
+              : c.type === 'mask' ? maskBlend(parts, sources[2]!, sources[0]!, sources[1]!, mode, signal)
+                : constant(parts, c.kind, resolution, mode, signal));
+          let texture: PoolTexture;
+          try {
+            texture = await make();
+          } catch (thrown) {
+            // 5.8 Memory rule 4: as for a node, one more attempt after everything reclaimable is gone.
+            if (!(thrown instanceof GpuOutOfMemoryError) || !deviceAlive(parts) || signal.aborted) throw thrown;
+            await reclaim();
+            if (!deviceAlive(parts) || signal.aborted) throw thrown;
+            texture = await make();
+          }
           pool.publish(texture);
           slot.texture = texture;
         }
@@ -352,7 +395,10 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
     function fail(step: Step, error: NodeError): void {
       errors.push(error);
       failed.set(step.node.nodeId, step.node.nodeId);
-      if (step.group?.runner === step) step.group.failed = error;
+      if (step.group?.runner === step) {
+        step.group.failed = error;
+        runnerSettled(step);
+      }
       emit({ type: 'node-error', requestId, error });
     }
     function skip(step: Step, reason: 'upstream' | 'aborted' | 'device-lost', upstream?: string): void {
@@ -391,6 +437,8 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
         // The reference taken above was the evaluator's; the entry and the readers now have their own.
         pool.drop(texture);
       }
+      step.group!.published = true;
+      runnerSettled(step);
     }
 
     /** One call of evaluate(), from the inputs to publication. Resolves with what the call threw when it failed. */
@@ -415,7 +463,7 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
         if (why) throw haltError(why);
         stream.use(owner);
         invocation = createInvocation(parts, {
-          nodeId, def, resolution, settings: doc.settings, params: node.params!, inputs, wanted: step.wanted, signal, owner, onProgress,
+          nodeId, def, resolution, settings: doc.settings, params: node.params!, inputs, wanted: step.group!.runWanted, signal, owner, onProgress,
           onLoans: (loans) => {
             if (!loans) {
               opts.onLoans?.(nodeId, null);
@@ -626,7 +674,9 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
             continue;
           }
           let group = groups.get(key!);
-          if (!group) groups.set(key!, group = { key: key!, members: [], wanted: new Set(), entry: null, runner: null, failed: null });
+          if (!group) {
+            groups.set(key!, group = { key: key!, members: [], wanted: new Set(), entry: null, runner: null, runWanted: new Set(), published: false, failed: null });
+          }
           group.members.push(step);
           step.group = group;
           step.wanted = wanted.get(nodeId) ?? new Set();
@@ -645,7 +695,7 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
             group.runner = runner;
             runner.state = 'run';
             // 5.4 rule 2: every output this evaluation wants or the old entry held.
-            runner.wanted = new Set([...group.wanted, ...(entry?.keys() ?? [])]);
+            group.runWanted = runner.wanted = new Set([...group.wanted, ...(entry?.keys() ?? [])]);
           }
         }
 
@@ -659,10 +709,15 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
           const { node, index } = step;
           if (step.state === 'blocked') continue;
           const keys = step.keys!;
-          if (step.state === 'run') {
+          if (step.group && !step.group.entry) {
             for (const port of node.def!.inputs) {
               const content = keys.inputs[port.name];
-              if (content) step.reqs.push(require(content, index));
+              if (!content) continue;
+              // The planned runner fixes how long the content lives (step 6). The other members read the same
+              // content and only keep it from being let go before one of them has run.
+              const held = step.state === 'run' ? undefined : slots.get(content.id);
+              if (held) held.readers++;
+              step.inputs.push(held ?? require(content, index));
             }
           }
           const primary = node.def!.outputs[0];
@@ -689,7 +744,7 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
           }
           for (const step of steps) {
             if (step.state !== 'run') continue;
-            for (const port of step.wanted) {
+            for (const port of step.group!.runWanted) {
               const own = step.keys!.raw[port];
               if (own && !counted.has(own.id)) lifetimes.push({ bytes: bytesOf(own.kind), from: step.index, to: step.index });
             }
@@ -737,6 +792,14 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
         if (step.state !== 'blocked' && node.inputs.some((input) => input.from !== null && blocked.has(input.from.node))) step.state = 'blocked';
         if (step.state === 'blocked') blocked.add(node.nodeId);
       }
+      // A runner that will not run for a source of its own leaves the run to the next node of its key.
+      for (const group of groups.values()) {
+        if (group.entry || !group.runner || group.runner.state !== 'blocked' || group.runner.error) continue;
+        const next = group.members.find((member) => member.state === 'cached');
+        if (!next) continue;
+        group.runner = next;
+        next.state = 'run';
+      }
       weights = nodeWeights(plan, new Set(steps.filter((s) => s.state !== 'run').map((s) => s.node.nodeId)), resolution, (id) => timings.get(id) ?? null);
       for (const weight of weights.values()) totalWeight += weight;
 
@@ -746,9 +809,15 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
         plan: steps.map((step) => ({ nodeId: step.node.nodeId, state: step.state })),
       });
 
+      let turned = performance.now();
       for (const step of steps) {
         const { node } = step;
         try {
+          // 3.6 rule 5: the wait is a completed submission, never a timer.
+          if (performance.now() - Math.max(turned, stream.observed) >= TURN_MS && deviceAlive(parts)) {
+            await stream.barrier();
+            turned = performance.now();
+          }
           const why = halted();
           if (step.error) {
             fail(step, step.error);
@@ -765,15 +834,20 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
             skip(step, 'upstream', upstream ?? node.nodeId);
             continue;
           }
-          if (step.state === 'run') {
-            await runNode(step);
-          } else if (step.group?.failed) {
+          const group = step.group;
+          if (group?.failed) {
             // The node of the same key that ran for this one failed, and this one would fail the same way.
-            fail(step, { ...step.group.failed, nodeId: node.nodeId });
+            fail(step, { ...group.failed, nodeId: node.nodeId });
+          } else if (group && !group.entry && !group.published) {
+            // 5.13: the first node of a key whose turn comes runs. That is the planned runner unless it was
+            // skipped for a source the others do not read.
+            group.runner = step;
+            await runNode(step);
           } else {
             await finish(step, { cached: true, wallMs: () => 0, gpuMs: null, peakBytes: 0 });
           }
         } finally {
+          releaseInputs(step);
           const read = step.reqs;
           step.reqs = [];
           for (const slot of read) unrequire(slot);

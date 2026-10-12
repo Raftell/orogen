@@ -132,9 +132,11 @@ test('max asks for the two features the adapter has and the adapter\'s value of 
   assert.deepEqual([partial.caps.compactFormats, partial.caps.timestampQuery, partial.caps.formats.half], [false, true, 'r32float']);
 });
 
-test('caps describe the adapter and the device, and are logged once as one JSON line', async () => {
+test('caps describe the adapter and the device, and are logged as one JSON line only when asked for', async () => {
   const fake = fakeGpu({ adapterFeatures: ['timestamp-query', 'bgra8unorm-storage', 'texture-formats-tier1'] });
-  const { value: gpu, info } = await captured(() => openGpu(fake.gpu, { profile: 'max' }));
+  const silent = await captured(() => openGpu(fake.gpu, { profile: 'max' }));
+  assert.deepEqual(silent.info, [], 'nothing is printed unless `log` is set');
+  const { value: gpu, info } = await captured(() => openGpu(fake.gpu, { profile: 'max', log: true }));
   const caps = gpu.caps;
   assert.deepEqual(caps.adapter, { vendor: 'nvidia', architecture: 'turing', device: 'gtx-1660', description: 'NVIDIA 595', isFallbackAdapter: false, backend: null });
   assert.equal(caps.software, false);

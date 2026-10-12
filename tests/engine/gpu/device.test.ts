@@ -9,7 +9,7 @@ import { DeviceLostError, GpuUnavailableError, type GpuContext, type GpuLostInfo
 import { createNodeGpu } from '../../../src/platform/node/gpu.ts';
 
 const profile: GpuProfile = (process.env.OROGEN_GPU_PROFILE as GpuProfile | undefined) || 'core';
-const environment = { profile: process.env.OROGEN_GPU_PROFILE };
+const environment = { profile: process.env.OROGEN_GPU_PROFILE, log: process.env.OROGEN_GPU_LOG };
 const contexts: GpuContext[] = [];
 const logged: string[] = [];
 
@@ -30,6 +30,8 @@ after(() => {
   for (const gpu of contexts) gpu.destroy();
   if (environment.profile === undefined) delete process.env.OROGEN_GPU_PROFILE;
   else process.env.OROGEN_GPU_PROFILE = environment.profile;
+  if (environment.log === undefined) delete process.env.OROGEN_GPU_LOG;
+  else process.env.OROGEN_GPU_LOG = environment.log;
 });
 
 const DEFAULT_LIMITS = [8192, 268435456, 134217728, 4];
@@ -49,8 +51,16 @@ test('an adapter name that matches nothing fails with GpuUnavailableError; nothi
   });
 });
 
-test('createNodeGpu opens a device of the profile it is asked for and logs its caps once', async () => {
+test('createNodeGpu opens a device of the profile it is asked for, and logs its caps once when OROGEN_GPU_LOG is 1', async () => {
+  // Without the variable nothing is printed: the line would bury test output and break a tool's JSON (runtime.md 1.3).
+  delete process.env.OROGEN_GPU_LOG;
+  const silent = await openContext({ profile });
+  silent.destroy();
+  assert.deepEqual(logged.filter((line) => line.startsWith('[orogen] gpu ')), []);
+
+  process.env.OROGEN_GPU_LOG = '1';
   gpu = await openContext({ profile });
+  delete process.env.OROGEN_GPU_LOG;
   assert.equal(gpu.profile, profile);
   assert.deepEqual([gpu.lost, gpu.lostInfo], [false, null]);
   assert.ok(gpu.device.queue);

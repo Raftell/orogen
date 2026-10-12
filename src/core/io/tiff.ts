@@ -96,7 +96,8 @@ export async function decodeTiff(bytes: Uint8Array): Promise<DecodedImage> {
 
   if (raster instanceof Float32Array) {
     for (let i = 0; i < count; i++) if (!Number.isFinite(raster[i])) raster[i] = 0;
-    return { width, height, channels: samples, data: raster };
+    // The library types its result as possibly shared memory; a result is moved between threads, so it is not.
+    return { width, height, channels: samples, data: raster.buffer instanceof ArrayBuffer ? raster as Float32Array<ArrayBuffer> : new Float32Array(raster) };
   }
   // k-bit integers: unsigned as v / (2^k - 1), signed shifted by 2^(k-1) first.
   const max = 2 ** bits - 1;

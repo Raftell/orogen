@@ -50,6 +50,8 @@ export interface Engine {
   /** The last measured duration of a node's evaluate() in this session, by node id. */
   lastTiming(nodeId: string): { readonly resolution: number; readonly wallMs: number } | null;
   onThumbnail(listener: (t: Thumbnail) => void): () => void;     // 5.12
+  /** A slice was measured above the hard ceiling (3.5). Returns the function that removes the listener. */
+  onOverrun(listener: (slice: SliceOverrun) => void): () => void;
 
   memory(): MemoryReport;
   trim(opts?: { keepResolution?: number }): Promise<void>;       // 2.8
@@ -57,6 +59,15 @@ export interface Engine {
   setFiles(files: FileSource): void;
   replaceDevice(gpu: GpuContext): Promise<void>;                 // 5.9
   dispose(): Promise<void>;
+}
+
+/** A slice measured above the hard ceiling (3.5): whose it was, its kernels, and what it measured. */
+export interface SliceOverrun {
+  readonly nodeId: string | null;        // exactly one of nodeId and service is not null (5.14)
+  readonly service: string | null;
+  readonly kernels: readonly string[];
+  readonly measuredMs: number;
+  readonly ceilingMs: number;
 }
 
 /** What lives on one device. */
@@ -69,11 +80,13 @@ type DeviceParts = Omit<EngineParts, 'files'>;
 export async function createEngine(opts: EngineOptions): Promise<Engine> {
   sealDefinitions();
   const { registry, cpu } = opts;
+  if (!Number.isFinite(opts.budgetBytes) || opts.budgetBytes < 0) throw new RangeError(`createEngine: budgetBytes is ${String(opts.budgetBytes)}; it is a byte count`);
   const hooks = opts.test ?? {};
   const own: readonly AnyKernel[] = [...convertKernels(), ...statsKernels(), ...thumbnailKernels(), ...opsKernels()];
   const ownSet = new Set<AnyKernel>(own);
 
   let budgetBytes = opts.budgetBytes;
+  const overrunListeners = new Set<(slice: SliceOverrun) => void>();
   let files = opts.files;
   let epoch = 1;
   let disposed = false;
@@ -94,10 +107,20 @@ export async function createEngine(opts: EngineOptions): Promise<Engine> {
     const reserve = (bytes: number, label: string): { release(): void } => late.pool!.reserve(bytes, label);
     const stream = createStream({
       gpu, reserve, hooks,
-      // The engine has no channel for an error that is no node's (runtime.md 3.5); the log is what remains.
-      onOverrun: (slice) => console.warn(
-        `[orogen] a slice of ${slice.nodeId ?? slice.service} took ${slice.measuredMs.toFixed(0)} ms, above the hard ceiling (kernels: ${slice.kernels.join(', ')})`,
-      ),
+      // No node's error (3.5): told to whoever listens, and to the log when nobody does.
+      onOverrun: (slice, ceilingMs) => {
+        const overrun: SliceOverrun = { nodeId: slice.nodeId, service: slice.service, kernels: slice.kernels, measuredMs: slice.measuredMs, ceilingMs };
+        if (overrunListeners.size === 0) {
+          console.warn(`[orogen] a slice of ${slice.nodeId ?? slice.service} took ${slice.measuredMs.toFixed(0)} ms, above the hard ceiling (kernels: ${slice.kernels.join(', ')})`);
+        }
+        for (const listener of [...overrunListeners]) {
+          try {
+            listener(overrun);
+          } catch (thrown) {
+            console.error('[orogen] an overrun listener threw', thrown);
+          }
+        }
+      },
     });
     // failAllocAfter counts from the creation of the engine and fires once (5.14): not again on a replacement device.
     const poolHooks = { ...(hooks.poisonRecycled ? { poisonRecycled: true } : {}), ...(first && hooks.failAllocAfter ? { failAllocAfter: hooks.failAllocAfter } : {}) };
@@ -173,18 +196,36 @@ export async function createEngine(opts: EngineOptions): Promise<Engine> {
     return parts;
   };
 
+  /**
+   * The service calls that have not settled. They run outside the evaluations' turn (5.1), with a texture of
+   * the pool or the staging buffer in use: whoever takes the device away waits for them first.
+   */
+  const serving = new Set<Promise<void>>();
+  async function served(): Promise<void> {
+    while (serving.size > 0) await Promise.all([...serving]);
+  }
+
   /** One engine service call that waits: its own owner, made current before anything is encoded. */
-  async function service<T>(name: SliceService, work: (p: EngineParts) => Promise<T>): Promise<T> {
-    const p = live();
-    const owner = p.stream.open({ nodeId: null, service: name, mode: 'preview' });
-    try {
-      p.stream.use(owner);
-      const value = await work(p);
-      await owner.settle();
-      return value;
-    } finally {
-      owner.close();
-    }
+  function service<T>(name: SliceService, work: (p: EngineParts) => Promise<T>): Promise<T> {
+    const call = (async (): Promise<T> => {
+      const p = live();
+      const owner = p.stream.open({ nodeId: null, service: name, mode: 'preview' });
+      try {
+        p.stream.use(owner);
+        const value = await work(p);
+        await owner.settle();
+        return value;
+      } catch (thrown) {
+        // Whatever the call met on a device that was lost meanwhile, the loss is what happened to it.
+        if (p.gpu.lost) throw deviceLostError(p.gpu);
+        throw thrown;
+      } finally {
+        owner.close();
+      }
+    })();
+    const settled: Promise<void> = call.then(() => undefined, () => undefined).then(() => void serving.delete(settled));
+    serving.add(settled);
+    return call;
   }
 
   const engine: Engine = {
@@ -227,6 +268,11 @@ export async function createEngine(opts: EngineOptions): Promise<Engine> {
       return thumbnails.onThumbnail(listener);
     },
 
+    onOverrun(listener) {
+      overrunListeners.add(listener);
+      return () => void overrunListeners.delete(listener);
+    },
+
     memory() {
       open();
       // 5.9 rule 3: the ledger of a lost device is forgotten, and all byte counts are zero.
@@ -264,6 +310,9 @@ export async function createEngine(opts: EngineOptions): Promise<Engine> {
       open();
       return evaluator.exclusive(async () => {
         open();
+        // A read or statistics under way ends on the device it began on: it rejects when that device is lost.
+        await served();
+        open();
         const old = device;
         unsubscribe();
         // What the old device held is dead: a lost one is forgotten, one that still works is emptied.
@@ -283,9 +332,11 @@ export async function createEngine(opts: EngineOptions): Promise<Engine> {
       if (disposed) return evaluator.idle();
       return evaluator.exclusive(async () => {
         if (disposed) return;
-        // Thumbnails being read back are delivered first; the readback is bounded by the work already submitted.
-        await thumbnails.idle();
+        // From here on no call begins. Thumbnails being read back are delivered first, and reads and statistics
+        // under way end: both are bounded by the work already submitted.
         disposed = true;
+        await thumbnails.idle();
+        await served();
         unsubscribe();
         cache.forget();
         thumbnails.dispose();

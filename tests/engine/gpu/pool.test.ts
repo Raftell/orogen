@@ -6,7 +6,7 @@ import { test } from 'node:test';
 
 import type { FieldKind } from '../../../src/core/gpu/field.ts';
 import { defineKernel } from '../../../src/core/gpu/kernel.ts';
-import { BudgetExceededError, BYTES_PER_TEXEL, type ManagedPool, type MemoryReport, type PoolCacheHooks, type PoolTexture } from '../../../src/core/gpu/pool.ts';
+import { BudgetExceededError, BYTES_PER_TEXEL, createPool, type ManagedPool, type MemoryReport, type PoolCacheHooks, type PoolTexture } from '../../../src/core/gpu/pool.ts';
 import { GpuOutOfMemoryError } from '../../../src/core/gpu/stream.ts';
 import { createRig, type Rig } from './rig.ts';
 
@@ -414,6 +414,42 @@ test('drained resolves when no destroyed texture is still held by the driver', a
   rig.dispose();
 });
 
+test('destroyed bytes leave `draining` when two submissions made after the destroy have completed, one behind the other', async () => {
+  // A stream whose barriers the test completes by hand: the pool is told nothing else about the device.
+  const rig = await poolRig();
+  const pending: (() => void)[] = [];
+  let barriers = 0;
+  const pool = createPool({
+    gpu: rig.gpu, budgetBytes: 1024 * KB, cache: { evictOne: () => false, cacheReferences: () => 0 },
+    stream: {
+      submit: () => undefined,
+      track: () => undefined,
+      clear: () => undefined,
+      barrier: () => new Promise<void>((resolve) => { barriers++; pending.push(resolve); }),
+    },
+  });
+  const turn = async (): Promise<void> => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+  try {
+    pool.release(pool.acquire('field', 256, 256));
+    const trimmed = pool.trim();
+    assert.deepEqual([barriers, pool.report().freeBytes, pool.report().drainingBytes], [1, 0, FIELD_256]);
+    pending.shift()!();
+    await turn();
+    assert.deepEqual([barriers, pool.report().drainingBytes], [2, FIELD_256], 'one completed submission is not enough: a second follows it');
+    let resolved = false;
+    void trimmed.then(() => { resolved = true; });
+    await turn();
+    assert.equal(resolved, false, 'trim has not resolved');
+    pending.shift()!();
+    await trimmed;
+    assert.equal(pool.report().drainingBytes, 0);
+    await pool.drained();
+  } finally {
+    pool.dispose();
+    rig.dispose();
+  }
+});
+
 // ---- test hooks and disposal -----------------------------------------------------------------------------------
 
 test('failAllocAfter: the nth creation reports out of memory to its owner, once', async () => {
@@ -436,6 +472,93 @@ test('failAllocAfter: the nth creation reports out of memory to its owner, once'
   pool.acquire('field', 48, 48);
   await third.settle();
   third.close();
+  rig.dispose();
+});
+
+test('a texture whose creation reported an error is never handed out again', async () => {
+  // Released after the report: destroyed in place of becoming FREE.
+  {
+    const rig = await poolRig({ hooks: { failAllocAfter: 1 } });
+    const { pool } = rig;
+    const bad = pool.acquire('field', 32, 32);
+    await assert.rejects(rig.owner.settle(), GpuOutOfMemoryError);
+    pool.release(bad);
+    assert.deepEqual(ledger(pool.report()), [0, 0, 0, 0, bad.bytes], 'not FREE: its bytes drain');
+    await pool.drained();
+    assert.equal(pool.report().drainingBytes, 0);
+    const next = rig.use({ nodeId: 'next' });
+    assert.notEqual(pool.acquire('field', 32, 32).texture, bad.texture, 'the same shape is a new texture');
+    await next.settle();
+    rig.dispose();
+  }
+  // PUBLISHED when the report arrives: destroyed when the last reference is dropped.
+  {
+    const rig = await poolRig({ hooks: { failAllocAfter: 1 } });
+    const { pool } = rig;
+    const bad = pool.acquire('field', 32, 32);
+    pool.publish(bad);
+    pool.retain(bad);
+    await assert.rejects(rig.owner.settle(), GpuOutOfMemoryError);
+    pool.drop(bad);
+    assert.deepEqual(ledger(pool.report()), [0, 0, bad.bytes, 0, 0], 'a reference is left');
+    pool.drop(bad);
+    assert.deepEqual(ledger(pool.report()), [0, 0, 0, 0, bad.bytes]);
+    await pool.drained();
+    rig.dispose();
+  }
+  // Released before the report: FREE until it arrives, then gone.
+  {
+    const rig = await poolRig({ hooks: { failAllocAfter: 1 } });
+    const { pool } = rig;
+    const bad = pool.acquire('field', 32, 32);
+    pool.release(bad);
+    assert.equal(pool.report().freeBytes, bad.bytes);
+    await assert.rejects(rig.owner.settle(), GpuOutOfMemoryError);
+    assert.equal(pool.report().freeBytes, 0, 'the report found it FREE and destroyed it');
+    await pool.drained();
+    assert.equal(pool.report().drainingBytes, 0);
+    rig.dispose();
+  }
+  // Handed out again before the report: the report is the new owner's too, and the texture goes when that owner lets go.
+  {
+    const rig = await poolRig({ hooks: { failAllocAfter: 1 } });
+    const { pool } = rig;
+    const bad = pool.acquire('field', 32, 32);
+    pool.release(bad);
+    const second = rig.use({ nodeId: 'second' });
+    const again = pool.acquire('field', 32, 32);
+    assert.equal(again.texture, bad.texture, 'nothing was known against it yet');
+    await assert.rejects(second.settle(), GpuOutOfMemoryError, 'whoever holds the texture hears of its creation');
+    pool.release(again);
+    assert.equal(pool.report().freeBytes, 0);
+    await pool.drained();
+    rig.dispose();
+  }
+});
+
+test('an invalid texture, as createTexture returns one on a full card, does not come back from the free list', async () => {
+  const rig = await poolRig();
+  const { pool, gpu } = rig;
+  await rig.compile(fill);
+  // The device refuses this descriptor: the texture object exists and nothing can be done with it.
+  const create = gpu.device.createTexture;
+  (gpu.device as { createTexture: GPUDevice['createTexture'] }).createTexture = (descriptor) => create.call(gpu.device, { ...descriptor, mipLevelCount: 99 });
+  let bad: PoolTexture;
+  try {
+    bad = pool.acquire('field', 40, 40);
+  } finally {
+    delete (gpu.device as { createTexture?: GPUDevice['createTexture'] }).createTexture;
+  }
+  await assert.rejects(rig.owner.settle(), /mip level count|mipLevelCount/i, 'the creation reported a validation error');
+  pool.release(bad);
+  assert.equal(pool.report().freeBytes, 0);
+
+  rig.use({ nodeId: 'next' });
+  const out = rig.field('field', 40);
+  assert.notEqual(rig.texture(out).texture, bad.texture);
+  rig.run(fill, { out: { out }, params: { value: 2 } });
+  const data = await rig.read(out);
+  assert.deepEqual([data[0], data[39]], [2, 41], 'the next owner of the shape computes on a real texture');
   rig.dispose();
 });
 

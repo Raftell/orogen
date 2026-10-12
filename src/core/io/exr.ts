@@ -161,10 +161,11 @@ export function decodeExr(bytes: Uint8Array): DecodedImage {
   }
 
   const row = width * stride;
-  let data: Float32Array;
+  let data: Float32Array<ArrayBuffer>;
   if (stride === channels) {
-    // In place: swap the rows that mirror each other.
-    data = source;
+    // In place: swap the rows that mirror each other. The library types its result as possibly shared memory;
+    // a result is moved between threads, so it is not.
+    data = source.buffer instanceof ArrayBuffer ? source as Float32Array<ArrayBuffer> : new Float32Array(source);
     const scratch = new Float32Array(row);
     for (let y = 0, mirror = height - 1; y < mirror; y++, mirror--) {
       scratch.set(data.subarray(y * row, (y + 1) * row));

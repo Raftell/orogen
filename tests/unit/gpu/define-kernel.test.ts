@@ -219,6 +219,15 @@ test('map mode', () => {
     { outputs: {}, inPlace: { moved: 'field' }, code: 'fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out { moved_set(2.0); return Out(cur.moved); }' },
     'map mode code may not call moved_set(); return the value from compute',
   );
+  // A second beginPixel would move the invocation to another texel: its own stays unwritten and another is written twice.
+  rejects(
+    { code: 'fn compute(px: vec2i, uv: vec2f) -> f32 { let moved = beginPixel(vec3u(u32(px.x) / 2u, u32(px.y), 0u)); return 1.0; }' },
+    'map mode code may not call beginPixel(); the texel is px',
+  );
+  rejects(
+    { code: 'fn other() -> bool { return beginPixel(vec3u(0u)); }\nfn compute(px: vec2i, uv: vec2f) -> f32 { return f32(other()); }' },
+    'map mode code may not call beginPixel(); the texel is px',
+  );
 });
 
 test('raw mode', () => {
@@ -235,6 +244,9 @@ test('raw mode', () => {
     { mode: 'raw', code: RAW.replace('out_set(1.0);', 'out_set(f32(gid.x));') },
     'raw mode main may use "gid" only in the call to beginPixel; take the texel from pixel()',
   );
+  const once = 'raw mode code calls beginPixel() once, as the first statement of main';
+  rejects({ mode: 'raw', code: RAW.replace('out_set(1.0);', 'let again = beginPixel(vec3u(vec2u(pixel()) + vec2u(1u, 0u), 0u)); out_set(1.0);') }, once);
+  rejects({ mode: 'raw', code: `fn elsewhere() -> bool { return beginPixel(vec3u(0u)); }\n${RAW}` }, once);
   assert.doesNotThrow(() => define({ name: fresh(), mode: 'raw', outputs: { out: 'field' }, code: RAW }));
   assert.doesNotThrow(() => define({ name: fresh(), mode: 'raw', workgroup: [16, 4], outputs: { out: 'field' }, code: RAW.replace('(8, 8)', '(16, 4)') }));
   // Any parameter name, any layout of the first statement.
@@ -384,17 +396,24 @@ fn exchange(hp: f32, q: vec2i, dist: f32) -> f32 {
   return sign(d) * max(abs(d) - P.talus * dist, 0.0) * P.rate / dist;
 }
 
+// moved accumulates the height that crossed the texel: half of what it gave and
+// received, so that material passing through counts once. The net change is no
+// measure of it: along a uniform slope what a texel receives and gives cancel,
+// and what is left halves with the cell.
 fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
   let hp = h_at(px);
   var net = 0.0;
+  var gross = 0.0;
   for (var j = -1; j <= 1; j++) {
     for (var i = -1; i <= 1; i++) {
       if (i != 0 || j != 0) {
-        net += exchange(hp, px + vec2i(i, j), length(vec2f(vec2i(i, j))));
+        let e = exchange(hp, px + vec2i(i, j), length(vec2f(vec2i(i, j))));
+        net += e;
+        gross += abs(e);
       }
     }
   }
-  return Out(hp + net, cur.moved + abs(net));
+  return Out(hp + net, cur.moved + 0.5 * gross);
 }`,
   }));
   const box3 = (kind: 'field' | 'color') => defineKernel({

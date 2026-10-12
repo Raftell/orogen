@@ -43,8 +43,8 @@ export function onUncapturedError(gpu: GpuContext, listener: UncapturedListener)
 
 const describe = (thrown: unknown): string => (thrown instanceof Error ? thrown.message : String(thrown)).split('\n')[0]!;
 
-/** The only code that calls requestAdapter() or requestDevice(). */
-export async function openGpu(gpu: GPU, opts: { profile: GpuProfile }): Promise<GpuContext> {
+/** The only code that calls requestAdapter() or requestDevice(). `log` prints the line of runtime.md 1.3. */
+export async function openGpu(gpu: GPU, opts: { profile: GpuProfile; log?: boolean }): Promise<GpuContext> {
   const profile = opts.profile;
   if (profile !== 'core' && profile !== 'max') throw new TypeError(`Unknown GPU profile "${String(profile)}"; it is "core" or "max"`);
 
@@ -89,7 +89,7 @@ export async function openGpu(gpu: GPU, opts: { profile: GpuProfile }): Promise<
     for (const listener of [...errorListeners]) listener(error);
   });
 
-  console.info(`[orogen] gpu ${JSON.stringify(caps)}`);
+  if (opts.log) console.info(`[orogen] gpu ${JSON.stringify(caps)}`);
 
   return {
     device,
