@@ -21,6 +21,18 @@ Rules for owners:
 No required inputs. Output `out` (field). All but `constant`, `gradient`,
 `radial-gradient`, `shape` and `waves` take `seed`.
 
+Two owners share the category by file, as in `simulate` (section 4); each owns
+one private index module that `generate/index.ts` concatenates:
+
+| Owner | Private index | Nodes | Private modules |
+| --- | --- | --- | --- |
+| basics | `_basics.ts` | `constant`, `gradient`, `radial-gradient`, `shape`, `waves`, `fractal-noise`, `cellular-noise`, `eroded-noise` | names beginning `_noise`, `_shape` |
+| landforms | `_landforms.ts` | `mountain`, `mountain-range`, `island`, `volcano`, `crater`, `crater-field`, `canyon`, `dunes` | names beginning `_land` |
+
+Each owner's WGSL libraries carry its own prefix (`generate/noise-…`,
+`generate/land-…`), so neither waits for the other; both build on the core
+noise and hash libraries of `engine.md` 3.9.
+
 | Id | Title | What it makes | Named parameters and notes |
 | --- | --- | --- | --- |
 | `generate/constant` | Constant | A flat field at one height | `height` |
