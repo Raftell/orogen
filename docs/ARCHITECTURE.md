@@ -1,418 +1,129 @@
-# Orogen architecture
+# Orogen: overview
 
 Orogen is a node-based procedural terrain generator. A graph of nodes produces
-heightfields, masks and colour maps on the GPU; an export step writes them in the
-formats Unreal Engine's Landscape system imports.
+heightfields, masks and colour maps on the GPU; a build evaluates the graph at
+landscape resolution, up to 8129 × 8129, and writes the files Unreal Engine
+5.8's Landscape system imports.
 
-This document is the contract between the engine, the nodes and the UI. If code
-and this document disagree, fix one of them in the same change.
+This page is the map. The contract is the five documents in `docs/contract/`
+(section 5). If code and a contract document disagree, one of them is fixed in
+the same change.
 
-## 1. Stack and verified platform facts
+## 1. Stack
 
 | Piece | Choice |
 | --- | --- |
-| Language | TypeScript 7, ES modules, erasable syntax only (no enums, no namespaces, no parameter properties) so Node runs sources directly |
-| GPU | WebGPU compute shaders in WGSL |
-| Desktop shell | Electron 44 (Chromium WebGPU: D3D12 on Windows, Vulkan on Linux) |
-| Headless | Node 24+ with the `webgpu` package (Google Dawn bindings); same engine code |
-| Tests | `node --test`, running `.ts` directly |
+| Language | TypeScript 7, ES modules, erasable syntax only (no enums, no namespaces, no parameter properties), so Node runs the sources directly. Imports carry explicit `.ts` extensions |
+| GPU | WebGPU compute shaders in WGSL, written as template strings in `.ts` files; no loader in any environment |
+| Desktop shell | Electron 44 (Chromium's WebGPU: D3D12 on Windows, Vulkan on Linux). The engine and the viewport run in one worker; the interface thread has no device |
+| Headless | Node 24 or later with the `webgpu` package 0.6.2 (Dawn); the same engine code |
+| Interface | React 19, `@xyflow/react` (graph), `dockview-react` (docking), zustand and immer (state and undo) |
+| Tests | `node --test` on the `.ts` sources; a conformance suite every node passes |
+| Target | Unreal Engine 5.8 landscapes; Windows 11 with an RTX 3080. Development: Linux with a GTX 1660 Ti |
 
-Measured on the dev box (GTX 1660 Ti 6 GB, Linux, Vulkan), October 2026:
+Exact versions are in `runtime.md` 8.9.
 
-- Dawn in Node: adapter limits `maxTextureDimension2D` 32768, `maxStorageBufferBindingSize` 2 GiB − 4, 8 storage textures per stage. Features include `float32-filterable`, `texture-formats-tier1`, `texture-formats-tier2`, `timestamp-query`.
-- `r32float` works as a `read_write` storage texture; `rgba32float` works write-only. 10-octave noise at 8129² runs in about 1.2 s; reading back 264 MB takes about 0.3 s.
-- Electron on Linux only exposes the real GPU with `--enable-unsafe-webgpu --enable-features=Vulkan`. With the first switch alone it silently falls back to SwiftShader (software). Limits there: 16384 max texture dimension, 4 GiB buffers.
-- A hidden `BrowserWindow` (`show: false`) on the real X display can be captured with `webContents.capturePage()` including WebGPU canvases. Under Xvfb the canvas does not present. UI tests therefore use hidden windows, not Xvfb.
+## 2. Verified platform facts
 
-Never rely on a feature without checking `device.features`; the engine must run on
-a core-only adapter (software D3D12 on CI) with reduced speed, not reduced correctness.
+Measured on the development machine (GTX 1660 Ti 6 GB, Linux, Vulkan), October
+2026. Nothing here is measured on the target machine or on D3D12 hardware.
 
-## 2. Source layout
+**Dawn in Node**
+
+- The adapter reports `maxTextureDimension2D` 32768, `maxStorageBufferBindingSize` 2 GiB − 4 and 8 storage textures per stage, and offers `float32-filterable`, `texture-formats-tier1`, `texture-formats-tier2` and `timestamp-query`. A device has only what it requests: created without `requiredLimits` and features it reports 8192, a 256 MiB buffer limit, a 128 MiB storage binding and 4 storage textures per stage.
+- On such a device `r32float` is a `read_write` storage texture, and `rg32float`, `rgba16float` and `rgba32float` are write-only. `rgba32float`, `r16float` and `r8unorm` become `read_write` only with `texture-formats-tier2`, which the engine never requests.
+- A texture layout entry with the default `sampleType: 'float'` rejects `r32float` and `rgba32float` unless `float32-filterable` is enabled; `'unfilterable-float'` accepts every field format.
+- Throughput at 2048²: a 5-point stencil pass 0.29 ms, 10-octave noise about 2 ms, a four-pass pipe-erosion iteration 3.0 ms. Reading back 264 MB takes about 0.3 s.
+- The first write to a new texture is far slower than later ones unless the texture has `RENDER_ATTACHMENT` usage: 9.75 ms against 0.49 ms for a 2048² `r32float`. A whole-run time that includes new textures is not a kernel's throughput.
+- After `destroy()` the driver keeps a texture's memory until one further submission has completed.
+- The object returned by the package's `create()` must stay reachable while the device is in use, or the process hangs or crashes.
+- While a GPU promise is pending, the process spins one CPU core.
+- `adapter.info.memoryHeaps` is absent, so the amount of video memory is unknown headless.
+- After a device is lost, `onSubmittedWorkDone()` still resolves and `popErrorScope()` returns `null`; only `mapAsync` rejects.
+
+**Electron 44**
+
+- On Linux the real GPU is exposed only with `--enable-unsafe-webgpu --enable-features=Vulkan`. With the first switch alone the adapter is SwiftShader, a software rasteriser, and no error is raised. Limits there: `maxTextureDimension2D` 16384, 4 GiB buffers.
+- A worker has `node:fs` and `node:zlib` only with `sandbox: false` and `nodeIntegrationInWorker: true`.
+- A hidden `BrowserWindow` (`show: false`) on a real X display can be captured with `webContents.capturePage()`, WebGPU canvases included. Under Xvfb a WebGPU canvas does not present. In a window that was never shown the page's `requestAnimationFrame` fires once per second; a worker's fires at the display rate.
+- Electron's Dawn is older than the one in the `webgpu` package: WGSL that compiles in Node can fail in the application.
+
+**GitHub-hosted runners (no GPU)**
+
+- `windows-latest`: Dawn finds the software D3D12 adapter (WARP, "Microsoft Basic Render Driver") from a plain `requestAdapter()`. Compute shaders compile through the HLSL path and run. This is the Windows correctness check.
+- `ubuntu-latest` with `mesa-vulkan-drivers`: Dawn runs on lavapipe (`llvmpipe`). Its `maxStorageBufferBindingSize` is the 128 MiB default.
+- A software adapter is selected by name (`llvmpipe`, `Microsoft`); `forceFallbackAdapter` does not select one under Dawn.
+- Both software adapters and the GTX 1660 Ti give the same value range for integer-hash noise at equal resolution. Values are not bit-identical across adapters: lavapipe and the NVIDIA driver differ by up to 4.6e-6. Runs on one adapter are bit-identical.
+
+Consequences: no code relies on a feature or a raised limit without reading it
+from the device; every kernel runs on a device with default limits and no
+optional features; a software adapter costs speed, never correctness; tests
+compare across adapters with tolerances.
+
+## 3. Source layout
 
 ```
 src/
-  core/        Engine. Imports nothing from DOM, Node or Electron. WebGPU + standard JS only.
-    gpu/       device context, texture pool, kernel compiler/runner, readback, statistics
-    wgsl/      shared WGSL libraries exported as TS strings
-    graph/     document model, node registry, evaluator, serialisation
-    nodes/     node definitions, one folder per category
-    io/        pure-TS image encoders/decoders
-    export/    build pipeline and Unreal packaging
-    preview/   offline 2D/3D preview renders (also used for thumbnails and tests)
+  core/            the engine. No DOM, Node or Electron API
+    api.ts           everything a node file imports
+    runtime.ts       everything code outside core imports
+    nodes/           index.ts (the product's node list) and one folder per category:
+                     generate adjust filter simulate select color surface io ref
+    gpu/ eval/ graph/ session/ io/ cpu/ wgsl/ ops/
+  export/          the build pipeline, encoders, Unreal arithmetic; uses Node built-ins
+  viewport/        the viewport renderer
+  cli/             the command-line program `orogen`
   platform/
-    node/      Dawn device creation, file sink on fs, CLI
-    electron/  main process, preload bridge
-  app/         renderer UI (React)
-tests/         node:test suites and the visual test helpers
+    node/            Dawn device, files on node:fs, CPU worker thread
+    electron/        main process, preload bridge, engine worker, CPU worker
+  app/             the interface: state, shell, panels (graph viewport inspector library build)
+tests/             harness, unit, engine, nodes/<category>, export, graphs, electron, ui/<owner>
+unreal/            the experimental editor plugin, C++ source
+docs/contract/     the contract        docs/research/   research reports
+docs/changes/      change requests     docs/user/       user documentation
 ```
 
-WGSL lives in `.ts` files as template strings (`/* wgsl */ \`...\``). No loader is
-needed in any environment.
+`runtime.md` 8.4 and 8.10 give the import rules and the owners; `testing.md`
+section 1 the test folders.
 
-Imports use explicit `.ts` extensions.
+## 4. Glossary
 
-## 3. Data model
+| Term | Meaning |
+| --- | --- |
+| grid, resolution | A square lattice of `n × n` samples on vertices that covers the whole terrain; `n` is the resolution. `uv = px / (n − 1)` |
+| field, kind | A GPU texture holding one value per sample; its kind (`field`, `color`, `vec2`, …) fixes the channel count and minimum precision. Only `field` and `color` cross ports |
+| ladder | The 2:1 vertex levels of the build resolution, `(B − 1) / 2^k + 1`. Previews, drafts, thumbnails and the coarse-to-fine driver use its levels, so a coarser grid is an exact subset of a finer one |
+| unit box | The graph describes a shape in a unit box: lengths are fractions of the terrain width, heights are normalised to the height range; project settings give it physical size. Slopes and angles are physical |
+| role | What a `field` port carries: `height`, `mask` (0..1) or `data` |
+| kernel | One compute pipeline and its declared bindings, made by `defineKernel`; the framework generates the WGSL declarations, accessors and entry point |
+| node, `NodeDef` | A graph operation made by `defineNode`: ports, parameters, kernels and an `evaluate` that produces outputs through the evaluation context |
+| registry | The set of node definitions a program runs with, made by `createRegistry` |
+| evaluation: preview, build | One run of the graph at one resolution. A preview is cached and sliced finely; a build runs at build resolution and frees memory as it goes. A node cannot tell which it is in |
+| slice, tile | A slice is one GPU submission, sized by measured throughput. A tile is one band of a run that would be too long for one dispatch. Together they keep the GPU pre-emptible (the Windows watchdog resets a GPU after about two seconds) |
+| pool, budget | Every field texture comes from one pool that keeps a byte ledger and enforces a budget; the state of one simulation at 8129² fits in 3.5 GB |
+| session | `EngineSession`, the interface's only door to the engine: scheduling, the view, builds, device recovery |
+| profile | How a device is created: `core` (default limits, no optional features; what tests assert on) or `max` |
+| export node, manifest | A node that declares what a build writes. The manifest is the JSON file that describes a complete build to Unreal and to the user |
+| owner, integrator | Every path has one owner; the integrator alone changes frozen files, through change requests |
+| to calibrate | A starting value, held as a named constant, that only a measurement changes |
 
-### 3.1 Fields
+## 5. The contract documents
 
-A **field** is a 2D GPU texture at the evaluation resolution.
-
-| Kind | Format | Meaning |
+| Document | Defines | Read it if you |
 | --- | --- | --- |
-| `field` | `r32float` | scalar: a height or a mask |
-| `color` | `rgba16float` | linear RGB colour + alpha |
-| `aux` | `rgba32float` | simulation state; never crosses a port |
-
-Heights are normalised: `1.0` equals `heightRange` metres. Values outside 0..1 are
-legal inside the graph and are clamped only at export. Masks are 0..1.
-
-All field textures are created with
-`STORAGE_BINDING | TEXTURE_BINDING | COPY_SRC | COPY_DST`.
-
-### 3.2 Sampling convention
-
-Samples sit on grid vertices, matching Unreal landscape vertices:
-
-```
-uv       = vec2f(px) / vec2f(res - 1)            // 0 and 1 land exactly on the borders
-worldUV  = frame.regionOrigin + uv * frame.regionSize
-worldPos = worldUV * frame.terrainSize           // metres
-cellSize = terrainSize * regionSize / (res - 1)  // metres per texel
-```
-
-A full evaluation has `regionOrigin = (0,0)`, `regionSize = (1,1)`. The region
-exists so a later tiled evaluator can render a window of the world; generators
-must use `worldUV`, never `px`, to position features.
-
-### 3.3 Resolution independence
-
-The same graph is evaluated at 512–2048 for preview and up to 8129 for builds.
-A node must look alike at every resolution. Rules:
-
-1. Generators evaluate functions of `worldUV`. Feature size is a parameter in
-   world terms (fraction of terrain or metres), never in pixels.
-2. Neighbourhood sizes are parameters in metres or percent of terrain width and
-   are converted with `cellSize`.
-3. Slopes use world units: `(dh * heightRange) / cellSize`.
-4. Simulations scale step sizes and iteration counts with `cellSize` as section 9
-   prescribes for each algorithm.
-5. Randomness comes from integer hashes of world-space lattice coordinates and
-   the seed, never from `px` or from `fract(sin())`.
-
-### 3.4 Frame uniform
-
-Bound at `@group(0) @binding(0)` in every kernel:
-
-```wgsl
-struct Frame {
-  res: vec2u,           // output resolution in texels
-  regionOrigin: vec2f,
-  regionSize: vec2f,
-  terrainSize: vec2f,   // metres
-  cellSize: vec2f,      // metres per texel
-  heightRange: f32,     // metres represented by height 1.0
-  seed: u32,            // project seed mixed with the node's seed
-  iteration: u32,       // loop counter for simulations, else 0
-  _pad: u32,
-};
-```
-
-## 4. Kernels
-
-A kernel is one compute pipeline plus the metadata needed to bind it. Authors
-declare resources; the framework generates the WGSL declarations, an explicit
-bind group layout (never `layout: 'auto'`, which drops unused bindings), the
-uniform packing and the dispatch.
-
-```ts
-type ScalarType = 'f32' | 'i32' | 'u32' | 'vec2f' | 'vec3f' | 'vec4f';
-type FieldKind = 'field' | 'color' | 'aux';
-
-interface KernelDef {
-  name: string;                                   // unique; cache key and debug label
-  inputs?: Record<string, FieldKind>;             // texture_2d<f32>, read with textureLoad
-  outputs?: Record<string, FieldKind>;            // texture_storage_2d<fmt, write>
-  readWrite?: Record<string, 'field'>;            // texture_storage_2d<r32float, read_write>
-  params?: Record<string, ScalarType>;            // packed into `struct Params`, bound as `p`
-  luts?: Record<string, 'f32' | 'vec4f'>;         // read-only storage buffers (curves, gradients)
-  includes?: string[];                            // WGSL library strings
-  workgroup?: [number, number];                   // default [8, 8]
-  code: string;
-  mode?: 'map' | 'raw';                           // default 'map'
-}
-```
-
-`map` mode covers most nodes. The author writes one function and the framework
-generates the entry point, bounds check and store:
-
-```wgsl
-// one output of kind `field`
-fn compute(px: vec2i, uv: vec2f, wuv: vec2f) -> f32 { ... }
-// one output of kind `color` or `aux`
-fn compute(px: vec2i, uv: vec2f, wuv: vec2f) -> vec4f { ... }
-```
-
-`raw` mode gets the generated declarations only and writes its own
-`@compute fn main`. Simulations with several outputs use it.
-
-Declared inputs are plain texture variables named as declared. The standard
-library (always included) provides clamped access, so a 1×1 texture behaves as a
-constant:
-
-```wgsl
-fn ld(t: texture_2d<f32>, p: vec2i) -> f32          // clamped scalar load
-fn ld4(t: texture_2d<f32>, p: vec2i) -> vec4f
-fn bilinear(t: texture_2d<f32>, uv: vec2f) -> f32   // uv in buffer space, clamped
-fn bilinear4(t: texture_2d<f32>, uv: vec2f) -> vec4f
-fn slopeAt(t: texture_2d<f32>, p: vec2i) -> vec2f   // world-unit gradient (dz/dx, dz/dy)
-fn normalAt(t: texture_2d<f32>, p: vec2i) -> vec3f
-```
-
-An input left unbound at run time is bound to a 1×1 texture holding that input's
-default (masks default to 1, everything else to 0).
-
-Running:
-
-```ts
-ctx.run(kernel, {
-  in:  { src: a, mask: m },        // omitted optional inputs get the 1×1 default
-  out: { out: dst },
-  rw:  { h: height },
-  params: { strength: 0.5, offset: [0.1, 0.2] },
-  luts: { curve: Float32Array },
-  iteration: i,                    // optional override of frame.iteration
-});
-```
-
-`run` only encodes. Work reaches the GPU when the evaluator flushes; see 6.3.
-
-Compilation errors must be reported with the kernel name, the WGSL line and the
-surrounding source lines (from `getCompilationInfo()`), because most engine bugs
-will be shader typos.
-
-## 5. Nodes
-
-```ts
-type PortType = 'field' | 'color';
-
-interface PortDef {
-  name: string;
-  type: PortType;
-  label?: string;
-  optional?: boolean;       // inputs only
-}
-
-type ParamDef =
-  | { kind: 'float'; name: string; label?: string; default: number; min: number; max: number;
-      step?: number; unit?: 'm' | '%' | 'deg' | 'x' | ''; scale?: 'linear' | 'log'; soft?: boolean }
-  | { kind: 'int'; name: string; label?: string; default: number; min: number; max: number }
-  | { kind: 'bool'; name: string; label?: string; default: boolean }
-  | { kind: 'enum'; name: string; label?: string; default: string; options: { value: string; label: string }[] }
-  | { kind: 'seed'; name: string; label?: string; default: number }
-  | { kind: 'vec2'; name: string; label?: string; default: [number, number]; min?: number; max?: number }
-  | { kind: 'color'; name: string; label?: string; default: [number, number, number] }
-  | { kind: 'curve'; name: string; label?: string; default: CurvePoint[] }      // 0..1 → 0..1
-  | { kind: 'gradient'; name: string; label?: string; default: GradientStop[] }
-  | { kind: 'file'; name: string; label?: string; filters?: string[] }
-  | { kind: 'text'; name: string; label?: string; default: string };
-// every ParamDef may also carry: group?: string; help?: string; visibleWhen?: (params) => boolean
-
-interface NodeDef {
-  type: string;             // stable id, 'category/name', never renamed once shipped
-  title: string;
-  category: Category;
-  description: string;
-  keywords?: string[];
-  inputs: PortDef[];
-  outputs: PortDef[];
-  params: ParamDef[];
-  maskable?: boolean;       // evaluator adds a `mask` input and blends result over inputs[0]
-  cost?: 'light' | 'medium' | 'heavy';
-  version?: number;
-  migrate?(params: Record<string, unknown>, from: number): Record<string, unknown>;
-  evaluate(ctx: EvalContext): Promise<void> | void;
-}
-```
-
-The evaluation context:
-
-```ts
-interface EvalContext {
-  readonly res: [number, number];
-  readonly cellSize: [number, number];     // metres
-  readonly terrainSize: [number, number];  // metres
-  readonly heightRange: number;            // metres
-  readonly mode: 'preview' | 'build';
-  readonly signal: AbortSignal;
-  readonly params: Readonly<Record<string, any>>;   // validated, defaults filled in
-
-  input(name: string): Field | null;       // null when an optional input is unconnected
-  alloc(kind: FieldKind): Field;           // owned by the node until passed to output()
-  temp(kind: FieldKind): Field;            // released automatically when evaluate() returns
-  output(name: string, field: Field): void;
-
-  run(kernel: Kernel, bindings: RunBindings): void;
-  loop(iterations: number, body: (i: number) => void): Promise<void>;  // flushes, yields, reports progress, honours signal
-  flush(): Promise<void>;
-
-  stats(field: Field): Promise<{ min: number; max: number; mean: number }>;
-  read(field: Field): Promise<Float32Array>;                 // tightly packed, row-major
-  write(field: Field, data: Float32Array): void;
-  readFile(path: string): Promise<Uint8Array>;               // for import nodes
-  progress(fraction: number, label?: string): void;
-}
-```
-
-Rules for node authors:
-
-- A node never keeps state between evaluations and never touches the device
-  directly. Everything goes through the context so caching, budgeting and
-  cancellation keep working.
-- Passing an input straight to `output()` is allowed (the pool reference-counts).
-- A node that needs many iterations uses `ctx.loop`, never a bare `for` around
-  `ctx.run`, so long simulations cannot trip the Windows GPU watchdog and can be
-  cancelled.
-- Parameters are stored in the document exactly as the user set them. Conversion
-  to pixels or iterations happens inside `evaluate`.
-
-Each category folder exports `nodes: NodeDef[]` from its `index.ts`;
-`src/core/nodes/index.ts` concatenates them into the registry.
-
-## 6. Graph and evaluation
-
-### 6.1 Document
-
-```ts
-interface GraphDoc {
-  format: 'orogen';
-  version: number;
-  settings: {
-    terrainSize: number;        // metres, square in v1
-    heightRange: number;        // metres
-    seed: number;
-    previewResolution: number;
-    buildResolution: number;
-    seaLevel: number;           // normalised height, used by viewport and coastal nodes
-  };
-  nodes: Record<string, NodeInstance>;
-  edges: Edge[];
-  frames: Frame[];              // visual groups
-  ui: { viewNode?: PortRef; pinNode?: PortRef; graphViewport?: { x: number; y: number; zoom: number } };
-}
-interface NodeInstance {
-  id: string; type: string; version: number;
-  position: { x: number; y: number };
-  params: Record<string, unknown>;
-  title?: string; bypass?: boolean; collapsed?: boolean;
-}
-interface Edge { id: string; from: PortRef; to: PortRef }
-interface PortRef { node: string; port: string }
-```
-
-Files are JSON with the extension `.orogen`. Unknown node types load as
-placeholder nodes that keep their data and report an error, so a file from a
-newer version is never silently damaged.
-
-### 6.2 Evaluator
-
-```ts
-evaluator.evaluate(doc, targets: PortRef[], {
-  resolution, mode, signal, onNodeStatus,
-}): Promise<Map<string, Field>>
-```
-
-- Evaluation is pull-based from the targets, in topological order.
-- Each node output is cached under a key hashed from: node type and version,
-  canonical JSON of params, the keys of its inputs, resolution, region and the
-  settings that affect results. Dirty tracking falls out of hashing; there is no
-  separate invalidation pass.
-- An input of the wrong port type is converted (`field`→`color` as grey,
-  `color`→`field` as luminance) by a built-in kernel.
-- `bypass` forwards `inputs[0]` to `outputs[0]`.
-- A node failure is captured with the node id and message; nodes downstream of it
-  are skipped and report "upstream error". One bad node never takes down the
-  evaluation of unrelated branches.
-- Each node runs inside validation and out-of-memory error scopes. On
-  out-of-memory the evaluator evicts every unpinned cache entry and retries the
-  node once.
-
-### 6.3 Flushing and the GPU watchdog
-
-Windows kills a device whose single submission runs for about two seconds. The
-evaluator therefore owns the command encoder:
-
-- `run` appends a pass. The evaluator submits when the encoder holds an estimated
-  quota of work (texels × passes) and after every node.
-- `loop` measures the wall time of its first batches (submit, then
-  `queue.onSubmittedWorkDone()`), then sizes batches to about 50 ms in preview
-  mode and 250 ms in build mode. Between batches it checks the abort signal and
-  reports progress.
-
-### 6.4 Texture pool and memory budget
-
-WebGPU cannot report free VRAM, so the pool keeps its own ledger.
-
-- Textures are pooled by `(width, height, format)` and reference-counted.
-- Budget: default 60% of a configurable VRAM figure (10 GB on the target, set in
-  preferences; 4 GB assumed when unknown).
-- Preview mode keeps an LRU cache of node outputs and evicts the least recently
-  used unpinned entries when over budget.
-- Build mode frees a node's outputs as soon as its last consumer has run, so an
-  8129² build peaks at the widest cut of the graph, not its total size.
-- One 8129² `field` is 264 MB, a `color` 529 MB, an `aux` 1.06 GB. Nodes must
-  release temporaries promptly; simulations at that size are the budget's main
-  customer.
-
-## 7. Files and export
-
-```ts
-interface FileSink { write(relPath: string, data: Uint8Array): Promise<void> }
-interface FileSource { read(path: string): Promise<Uint8Array> }
-```
-
-Node implements these on `fs`; the Electron renderer implements them through the
-preload bridge; the core never imports either.
-
-Encoders in `core/io` are pure TypeScript and take a pluggable deflate function
-(`CompressionStream` by default, Node's zlib when the platform supplies it).
-
-Export nodes describe files to write. `buildProject(doc, { resolution, sink })`
-evaluates at build resolution and writes the files plus a `manifest.json`.
-
-## 8. Unreal Engine conventions
-
-*Completed from the research report before implementation; see section 12.*
-
-## 9. Simulation algorithms
-
-*Completed from the research report before implementation; see section 12.*
-
-## 10. Application
-
-The renderer owns one `GPUDevice`. The evaluator and the viewport share it, so
-the viewport draws node outputs straight from their textures with no readback.
-
-- State: one store holding the document, selection, the viewed and pinned ports,
-  per-node status and thumbnails. Every document mutation goes through named
-  actions so undo/redo is a property of the store.
-- Editing a parameter triggers a debounced preview evaluation; a newer edit
-  aborts the running one through its `AbortSignal`.
-- Heavy nodes report progress on the node and in the status bar.
-- Builds run at build resolution in the same process, in build mode, with a
-  cancellable progress dialog.
-
-## 11. Testing
-
-- Unit tests for packing, hashing, serialisation, encoders (round-trips).
-- GPU tests run each kernel through Dawn at small sizes and assert numeric
-  properties (range, symmetry, conservation, determinism across resolutions).
-- Visual checks: the CLI renders any node to a hillshaded PNG and a 3D preview so
-  a reviewer can look at the terrain rather than at numbers.
-- UI tests drive a hidden Electron window and capture screenshots.
-- CI runs type-check and the test suite on Linux and Windows using software
-  adapters, and packages the Windows build.
-
-## 12. Open sections
-
-Sections 8 and 9 and the choice of UI libraries are filled in from the research
-reports (`unreal-landscape`, `erosion-algorithms`, `ui-stack`).
+| `engine.md` | fields and kinds, units and value conventions, kernels and generated WGSL, nodes and parameters, the evaluation context, shared operations, two worked nodes | write a node; work on core |
+| `testing.md` | the harness, the conformance suite, the registry lint, definition of done, naming and text conventions, ownership and change requests, test layers, the command line, CI, the acceptance graphs | write a node; own any folder; review a change |
+| `simulation.md` | the simulation algorithms, their state, passes, stability and iteration scaling, the coarse-to-fine driver, the calibration register | write or review a `simulate` node |
+| `runtime.md` | device creation, the pool and budget, slices and tiles, the document, the evaluator and cache, errors and device loss, files and CPU tasks, the session, the application's structure | work on core, the platform code, the viewport or the interface |
+| `export-unreal.md` | export nodes, the build pipeline, encoders and decoders, Unreal conventions and formulas, the manifest, the manual import, the experimental plugin, the acceptance test in Unreal | work on export or import nodes; import a build into Unreal |
+
+By role:
+
+| Role | Reads |
+| --- | --- |
+| Node author | `engine.md` and `testing.md` sections 2 to 7; `simulation.md` for the `simulate` category |
+| Export owner | `export-unreal.md`; `engine.md`; `runtime.md` 5.2, 6 and 7.6; `testing.md` |
+| Panel, shell or state owner | `runtime.md` sections 4, 7 and 8; `testing.md` 2.9, 5.6, 7 and 8.5; `engine.md` 4.1 to 4.4 for node metadata |
+| Platform owner | `runtime.md` sections 1, 6 and 8.1 to 8.6; `testing.md` 2.9 and section 9 |
+| Viewport owner | `runtime.md` 5.11, 7.4, 7.5 and 7.8; `engine.md` section 1 |
+| Integrator | everything |
