@@ -13,7 +13,7 @@ import { NodeFileSink, NodeFileSource } from '../platform/node/files.ts';
 import { UsageError, type RenderCommand } from './args.ts';
 import { projectDocument, typeDocument, type RenderPlan } from './document.ts';
 import type { CliEngine, RunLog } from './engine.ts';
-import { inputPicture, picturesOf, writePicture } from './pictures.ts';
+import { inputPicture, picturesOf, viewIsLit, writePicture } from './pictures.ts';
 import type { Raster } from './preview.ts';
 import { describeError, exitCodeOf, HARD_CEILING_MS, overran, type RenderResult, type WrittenInput, type WrittenPicture } from './result.ts';
 
@@ -96,12 +96,12 @@ export async function renderPlan(
         const port = outputs[index - first]!;
         // The node's own terrain: its other outputs are drawn over the height it made, not over the one it was given.
         if (index === first && primaryIsHeight && field.kind === 'field' && outputs.length > 1) terrain = field;
-        for (const { suffix, draw } of picturesOf(port, field, terrain, scale, opts.crop)) {
+        for (const { suffix, draw, tone } of picturesOf(port, field, terrain, scale, opts.crop, viewIsLit(plan.type))) {
           const file = `nodes/${plan.type}/${port.name}-${opts.res}${variant}${suffix}.png`;
           const picture = draw();
           await writePicture(sink, file, picture);
           files.push(file);
-          const written = { file, width: picture.width, height: picture.height };
+          const written: WrittenPicture = { file, width: picture.width, height: picture.height, ...(tone ? { tone } : {}) };
           if (suffix === '') pictures[port.name] = written;
           if (suffix === '-3d') views[port.name] = written;
         }

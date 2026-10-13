@@ -73,16 +73,27 @@ test('simulate/hydraulic-erosion: in a closed bowl what the water takes from the
   assert.ok(meanOf(part.deposit) < 0.8 * meanOf(deposit) && meanOf(part.deposit) > 0, `the mean deposit is ${meanOf(part.deposit)} at the default removal and ${meanOf(deposit)} without`);
 });
 
+/** The mean of `f` over the rows y0..y1 of column x: across a slope that the water has cut into rills, what one texel holds says little. */
+const acrossRows = (f: FieldData, x: number, y0: number, y1: number): number => {
+  let sum = 0;
+  for (let y = y0; y <= y1; y++) sum += at(f, x, y);
+  return sum / (y1 - y0 + 1);
+};
+
 test('simulate/hydraulic-erosion: water gathers in a channel and cuts only where enough of it has gathered', async () => {
   // The notch fixture: a plane falling towards +x with a V-shaped channel along its centre line, row 128.
   const { flow, wear } = await renderNode(def, { inputs: { in: 'notch', ...alone }, settings: DRY, wants: ['flow', 'wear'] });
   assert.ok(stats(flow).min >= 0, `the least flow is ${stats(flow).min}`);
-  const channel = at(flow, 180, 128), plane = at(flow, 180, 40);
+  // The plane beside the channel, rows 20 to 60: the water of an even slope runs together into rills, so the flow is taken across them.
+  const channel = at(flow, 180, 128), plane = acrossRows(flow, 180, 20, 60);
   assert.ok(channel > 2 * plane && plane > 0, `flow is ${channel} in the channel and ${plane} on the plane`);
-  assert.ok(at(flow, 180, 40) > 3 * at(flow, 20, 40), `on the plane the flow grows down the slope: ${at(flow, 20, 40)} near the top, ${at(flow, 180, 40)} below`);
-  // At the top of the plane, less than a channel head from the divide, the film of water carves nothing.
-  assert.ok(at(wear, 180, 40) > 1e-3, `far down the plane the wear is ${at(wear, 180, 40)}`);
-  assert.ok(at(wear, 6, 40) < 0.05 * at(wear, 180, 40), `near the divide the wear is ${at(wear, 6, 40)}`);
+  assert.ok(plane > 3 * acrossRows(flow, 8, 20, 60), `on the plane the flow grows down the slope: ${acrossRows(flow, 8, 20, 60)} near the top, ${plane} below`);
+  // At the top of the plane, less than a channel head from the divide, the film of water carves nothing to speak of.
+  const below = acrossRows(wear, 180, 20, 60), top = acrossRows(wear, 2, 20, 60);
+  assert.ok(below > 1e-3, `far down the plane the wear is ${below}`);
+  assert.ok(top < 0.1 * below, `near the divide the wear is ${top}`);
+  // Where the water has gathered it cuts deeper than on the plane it comes from.
+  assert.ok(acrossRows(wear, 60, 127, 129) > 1.5 * acrossRows(wear, 60, 20, 60), `the channel is worn ${acrossRows(wear, 60, 127, 129)}, the plane beside it ${acrossRows(wear, 60, 20, 60)}`);
 });
 
 test('simulate/hydraulic-erosion: the gullies lie where the water runs, and the deposits lower and on gentler ground', async () => {
@@ -120,11 +131,22 @@ test('simulate/hydraulic-erosion: more rain, capacity, downcutting and time cut 
 });
 
 test('simulate/hydraulic-erosion: a low deposition carries the sediment further before it settles', async () => {
-  // In the bowl what travels further comes to rest lower.
-  const bowl = fixtures.bowl(257);
-  const restsAt = async (deposition: number) => weighted(bowl, (await renderNode(def, { inputs: { in: bowl, ...alone }, params: { deposition, removal: 0 }, wants: ['deposit'] })).deposit);
-  const slow = await restsAt(0.1), quick = await restsAt(3);
-  assert.ok(slow < quick - 0.001, `sediment came to rest at ${slow} with a low deposition and at ${quick} with a high one`);
+  // The cone fixture without a sea: the water runs off the cone onto level ground and drops its load there.
+  const cone = fixtures.cone(257);
+  const spread = async (deposition: number) => {
+    const { deposit } = await renderNode(def, { inputs: { in: cone, ...alone }, params: { deposition }, settings: DRY, wants: ['deposit'] });
+    // How far from the tip the deposit lies on average, in texels, and how many texels hold the thicker half of it.
+    let sum = 0, far = 0;
+    for (let i = 0; i < deposit.data.length; i++) { sum += deposit.data[i]!; far += deposit.data[i]! * Math.hypot((i % 257) - 128, Math.floor(i / 257) - 128); }
+    const thick = Float32Array.from(deposit.data).sort().reverse();
+    let held = 0, texels = 0;
+    while (held < sum / 2 && texels < thick.length) held += thick[texels++]!;
+    return { far: far / sum, texels, sum };
+  };
+  const slow = await spread(0.1), quick = await spread(3);
+  assert.ok(slow.sum > 0 && quick.sum > 0, 'both runs lay sediment down');
+  assert.ok(slow.far > quick.far + 3, `the deposit lies ${slow.far} texels from the tip with a low deposition and ${quick.far} with a high one`);
+  assert.ok(slow.texels > 1.3 * quick.texels, `half of the deposit covers ${slow.texels} texels with a low deposition and ${quick.texels} with a high one`);
 });
 
 test('simulate/hydraulic-erosion: ground at or below the sea level takes no part in the flow and is never cut', async () => {
@@ -132,7 +154,9 @@ test('simulate/hydraulic-erosion: ground at or below the sea level takes no part
   const terrain = fixtures.terrain(257);
   const { out, flow } = await renderNode(def, { inputs: { in: terrain, ...alone }, params: { talus: 90, size: 0.02 }, wants: ['out', 'flow'] });
   assert.equal(count(out, (v, i) => terrain.data[i]! <= 0.25 && v < terrain.data[i]!), 0, 'texels at or below the sea level that were lowered');
-  assert.equal(count(flow, (v, i) => terrain.data[i]! <= 0.25 && v !== 0), 0, 'texels at or below the sea level with a flow');
+  // What the water brings fills the sea up to its level, and a texel it lifts out of the sea is land from then on.
+  assert.equal(count(flow, (v, i) => out.data[i]! <= 0.25 && v !== 0), 0, 'texels at or below the sea level with a flow');
+  assert.equal(count(out, (v, i) => terrain.data[i]! > 0.25 && v <= 0.25), 0, 'texels above the sea level that were cut down to it');
   assert.ok(count(out, (v, i) => v !== terrain.data[i]) > 1000, 'the land changed');
 });
 

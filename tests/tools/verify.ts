@@ -9,11 +9,21 @@
 // It ends with the summary the change description carries. A step whose adapter the machine lacks is reported
 // as `missing` and does not fail the run; the node is not done until someone has run it.
 //
+// The first two steps cover the whole repository, and several owners work in it at once. What fails a run is
+// what is the category's own: a type error in its folders, its cases of the registry lint and of the catalog, the
+// unit tests of its folder. A type error or a failed unit case anywhere else is another owner's: it is listed in
+// the summary under its own heading and does not fail the run.
+//
+// An export node has no outputs, and `render` refuses a node without them: its three picture steps are skipped.
+//
 // Every step is a process of its own. Those that run project code start through tools/guard.mjs.
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+import type { UnitCase } from './unit-report.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const OUTPUT = path.resolve(process.env.OROGEN_TEST_OUTPUT || path.join(ROOT, 'test-output'));
@@ -25,7 +35,7 @@ const HARD_CEILING_MS = 500;
 const KEPT_OUTPUT = 4 << 20;
 const BUILD_SCALE = 4033;
 
-type Status = 'passed' | 'failed' | 'missing' | 'not run';
+type Status = 'passed' | 'failed' | 'missing' | 'skipped' | 'not run';
 interface Step {
   readonly number: number;
   readonly title: string;
@@ -49,11 +59,78 @@ interface RenderLine {
   readonly longestSliceMs: number; readonly peakBytes: number; readonly files: readonly string[];
 }
 
+// ---- whose a failure of the first two steps is ----------------------------------------------------------------------
+
+/** Whether a path of the repository, with `/`, is in the folders the owner of `category` may change (testing.md 7.1). */
+export const ownsPath = (category: string, file: string): boolean => file.startsWith(`src/core/nodes/${category}/`) || file.startsWith(`tests/nodes/${category}/`);
+
+export interface TypeError_ { readonly file: string; readonly text: string }
+
+/** The errors `tsc` printed, one per line of the form `path(line,column): error TS…`; paths with `/`. */
+export function typeErrors(output: string): TypeError_[] {
+  return [...output.matchAll(/^(.+?)\((\d+),(\d+)\): error (TS\d+: .*)$/gm)].map((found) => ({ file: found[1]!.trim().replaceAll('\\', '/'), text: `${found[1]!.trim().replaceAll('\\', '/')}(${found[2]},${found[3]}): ${found[4]!.trim()}` }));
+}
+
+/** The test files in which the registry lint, the catalog and the import rules live (testing.md section 4). */
+const LINT_FILES = ['tests/unit/registry.test.ts', 'tests/unit/catalog.test.ts', 'tests/unit/boundaries.test.ts'] as const;
+
+export interface UnitOutcome {
+  /** Failed cases that are the category's own: they fail step 2. */
+  readonly own: readonly UnitCase[];
+  /** Failed cases that are another owner's: reported, and no reason to fail. */
+  readonly foreign: readonly UnitCase[];
+  /** The cases of the category that have to have passed and did not run at all. */
+  readonly absent: readonly string[];
+  readonly total: number;
+}
+
+/**
+ * The unit layer as the owner of `category` is held to it. A failed case is the category's own when it is in
+ * the category's test folder, when it is the category's case of the lint or of the catalog (their names begin
+ * with the category), or when it is a case of the lint files that covers the whole product and its message names
+ * a file or a node of the category: every lint message begins with the rule and the node type or the file. The
+ * category's lint case, and its catalog case where the catalog lists the category, must have run and passed: a
+ * lint file that fails to load checks nothing.
+ */
+export function unitOutcome(category: string, cases: readonly UnitCase[]): UnitOutcome {
+  const named = new RegExp(`(^|[^A-Za-z0-9_-])${category}/[a-z_]`);
+  const isOwn = (failed: UnitCase): boolean => {
+    if (failed.file.startsWith(`tests/nodes/${category}/`)) return true;
+    if (!(LINT_FILES as readonly string[]).includes(failed.file)) return false;
+    return failed.name.startsWith(`${category}: `) || named.test(failed.message ?? '');
+  };
+  const failed = cases.filter((one) => one.result === 'fail');
+  // A case that ran and failed is among the failures; one that never ran is found here.
+  const ran = (file: string, begins: string): boolean => cases.some((one) => one.file === file && one.name.startsWith(begins));
+  const absent: string[] = [];
+  if (!ran(LINT_FILES[0], `${category}: `)) absent.push(`the registry lint of ${category} (${LINT_FILES[0]})`);
+  // The catalog lists every category but `ref`, whose nodes testing.md 10.1 lists.
+  if (category !== 'ref' && !ran(LINT_FILES[1], `${category}: the registered nodes`)) absent.push(`the catalog case of ${category} (${LINT_FILES[1]})`);
+  return { own: failed.filter(isOwn), foreign: failed.filter((one) => !isOwn(one)), absent, total: cases.length };
+}
+
+/** The lines of a report of tests/tools/unit-report.ts; a line that is no case is left out. */
+export function unitCases(text: string): UnitCase[] {
+  const cases: UnitCase[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.startsWith('{')) continue;
+    try {
+      const value = JSON.parse(line) as Partial<UnitCase>;
+      if ((value.result === 'pass' || value.result === 'fail') && typeof value.name === 'string' && typeof value.file === 'string') cases.push(value as UnitCase);
+    } catch {
+      // A line cut off by a killed run is no case.
+    }
+  }
+  return cases;
+}
+
+const some = (items: readonly string[], limit: number): string => (items.length <= limit ? items.join(', ') : `${items.slice(0, limit).join(', ')} and ${items.length - limit} more`);
+
 /** Runs one command, passing its output through, and keeps the end of it. */
 function run(command: string, args: readonly string[], env: NodeJS.ProcessEnv, quiet = false): Promise<{ readonly code: number; readonly output: string }> {
   return new Promise((resolve) => {
-    // npm is a script on Windows: it is started through the shell there, with arguments that hold no space.
-    const child = spawn(command, args, { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], shell: command === 'npm' });
+    // npm and npx are scripts on Windows: they are started through the shell there, with arguments that hold no space.
+    const child = spawn(command, args, { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], shell: command === 'npm' || command === 'npx' });
     let output = '';
     const keep = (stream: NodeJS.WriteStream) => (chunk: Buffer): void => {
       output = (output + chunk.toString('utf8')).slice(-KEPT_OUTPUT);
@@ -118,6 +195,17 @@ function adapterOf(envFile: string): string | null {
   return /^OROGEN_GPU_ADAPTER=(.+)$/m.exec(text)?.[1]?.trim() ?? null;
 }
 
+/** The scripts of package.json: the one place that says what the type check and the unit layer run. */
+function scripts(): Readonly<Record<string, string>> {
+  return (JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as { scripts: Record<string, string> }).scripts;
+}
+
+/** Whether the node declares what a build writes instead of producing outputs. Its file is a definition: importing it opens no device. */
+async function isExportNode(type: string): Promise<boolean> {
+  const module = await import(pathToFileURL(path.join(ROOT, 'src', 'core', 'nodes', `${type}.ts`)).href) as { default?: { export?: unknown; outputs?: readonly unknown[] } };
+  return module.default?.export !== undefined || module.default?.outputs?.length === 0;
+}
+
 async function verify(type: string): Promise<number> {
   const [category, name] = type.split('/') as [string, string];
   const testFile = path.posix.join('tests', 'nodes', category, `${name}.test.ts`);
@@ -132,6 +220,9 @@ async function verify(type: string): Promise<number> {
   /** The pictures of the connected variant, which step 6 draws for a node that has one. */
   const connectedFiles: string[] = [];
   let failed = false;
+  /** What fails outside the category's folders: its owners' to fix, and listed apart. */
+  const foreignTypeErrors: TypeError_[] = [];
+  const foreignCases: UnitCase[] = [];
 
   const begin = (step: Step): void => console.log(`\n=== verify ${type}: step ${step.number} of ${steps.length}: ${step.title}`);
   const finish = (step: Step, ok: boolean, note: string): void => {
@@ -140,13 +231,48 @@ async function verify(type: string): Promise<number> {
     if (!ok) failed = true;
   };
 
-  // Steps 1 and 2.
-  for (const [i, script] of (['check', 'test:unit'] as const).entries()) {
-    if (failed) break;
-    const step = steps[i]!;
+  // Step 1: the type check. `npm run check` is two programs joined by `&&`, so an error in the first hides the
+  // second, which holds the tests: each is run by itself, and every error is read.
+  {
+    const step = steps[0]!;
     begin(step);
-    const { code, output } = await run('npm', ['run', script], { ...process.env });
-    finish(step, code === 0, script === 'check' ? (code === 0 ? 'no type error' : 'type errors') : cases(output));
+    const programs = scripts().check!.split('&&').map((command) => command.trim().split(/\s+/));
+    const errors: TypeError_[] = [];
+    let unread = false;
+    for (const [command, ...args] of programs) {
+      const { code, output } = await run('npx', [command!, ...args, '--pretty', 'false'], { ...process.env });
+      const found = typeErrors(output);
+      errors.push(...found);
+      // A program that fails without a line this tool can read fails the step: nothing says whose the failure is.
+      if (code !== 0 && found.length === 0) unread = true;
+    }
+    const own = errors.filter((error) => ownsPath(category, error.file));
+    foreignTypeErrors.push(...errors.filter((error) => !ownsPath(category, error.file)));
+    const foreign = foreignTypeErrors.length > 0 ? `; ${foreignTypeErrors.length} outside ${category}, in ${some([...new Set(foreignTypeErrors.map((error) => error.file))], 3)}` : '';
+    finish(step, own.length === 0 && !unread, unread ? 'the type check failed without naming a file' : own.length > 0 ? `${own.length} type errors in ${category}${foreign}` : `no type error${errors.length > 0 ? ` in ${category}` : ''}${foreign}`);
+  }
+
+  // Step 2: the unit layer, with a second reporter that says of every case which file it is in.
+  if (!failed) {
+    const step = steps[1]!;
+    begin(step);
+    const report = path.join(OUTPUT, 'verify', `${category}-${name}-unit.jsonl`);
+    fs.mkdirSync(path.dirname(report), { recursive: true });
+    fs.rmSync(report, { force: true });
+    const patterns = [...scripts()['test:unit']!.matchAll(/"([^"]+)"/g)].map((found) => found[1]!);
+    const { output } = await run(process.execPath, [
+      GUARD, '--timeout=600', 'node', '--test', '--test-reporter=spec', '--test-reporter-destination=stdout',
+      `--test-reporter=${pathToFileURL(path.join(ROOT, 'tests', 'tools', 'unit-report.ts')).href}`, `--test-reporter-destination=${report}`, ...patterns,
+    ], { ...process.env });
+    const outcome = unitOutcome(category, fs.existsSync(report) ? unitCases(fs.readFileSync(report, 'utf8')) : []);
+    foreignCases.push(...outcome.foreign);
+    const foreign = outcome.foreign.length > 0 ? `; ${outcome.foreign.length} cases fail outside ${category}` : '';
+    const problems = [
+      ...(outcome.total === 0 ? [`the unit layer reported no case (${cases(output)})`] : []),
+      ...(outcome.own.length > 0 ? [`${outcome.own.length} cases of ${category} fail: ${some(outcome.own.map((one) => one.name), 3)}`] : []),
+      ...(outcome.total > 0 && outcome.absent.length > 0 ? [`did not run: ${outcome.absent.join(', ')}`] : []),
+    ];
+    finish(step, problems.length === 0, problems.length === 0 ? `the lint, the catalog and the unit tests of ${category} pass; ${outcome.total} cases in the layer${foreign}` : `${problems.join('; ')}${foreign}`);
   }
 
   // Steps 3 to 5: the node's test file under three devices.
@@ -190,10 +316,19 @@ async function verify(type: string): Promise<number> {
     ['--res', '513', '--out', OUTPUT], ['--res', String(BUILD_SCALE), '--crop', '768', '--out', OUTPUT],
     ['--res', String(BUILD_SCALE), '--max-params', '--out', maxOut],
   ];
+  // An export node has no outputs: there is nothing to draw, and what it writes is tested through builds (tests/export/).
+  const exporting = !failed && await isExportNode(type);
   for (const [i, args] of renderArgs.entries()) {
     if (failed) break;
     const step = steps[5 + i]!;
     begin(step);
+    if (exporting) {
+      step.status = 'skipped';
+      step.note = 'an export node has no outputs to draw; tests/export/ tests what it writes';
+      console.log(`skipped: ${step.note}`);
+      renders.push(null);
+      continue;
+    }
     if (!fs.existsSync(path.join(ROOT, CLI))) {
       finish(step, false, `${CLI} does not exist: \`orogen render\` belongs to the command-line stage`);
       renders.push(null);
@@ -261,10 +396,18 @@ async function verify(type: string): Promise<number> {
   }
   const pictures = [...renders.flatMap((render, i) => (render?.files ?? []).map((file) => path.resolve(renderArgs[i]!.at(-1)!, file))), ...connectedFiles];
   if (pictures.length > 0) console.log(`pictures of orogen render:\n${pictures.map((file) => `  ${file}`).join('\n')}`);
+  // What fails outside the category: said apart, because it is not this node's and does not fail its run.
+  if (foreignTypeErrors.length > 0) {
+    console.log(`outside ${category}, for their owners: ${foreignTypeErrors.length} type errors\n${foreignTypeErrors.slice(0, 10).map((error) => `  ${error.text}`).join('\n')}${foreignTypeErrors.length > 10 ? `\n  and ${foreignTypeErrors.length - 10} more` : ''}`);
+  }
+  if (foreignCases.length > 0) {
+    console.log(`outside ${category}, for their owners: ${foreignCases.length} failed unit cases\n${foreignCases.slice(0, 10).map((one) => `  ${one.file}: ${one.name}`).join('\n')}${foreignCases.length > 10 ? `\n  and ${foreignCases.length - 10} more` : ''}`);
+  }
   const missing = steps.filter((step) => step.status === 'missing');
   const notRun = steps.filter((step) => step.status === 'not run');
   if (failed) console.log(`NOT DONE: step ${steps.find((step) => step.status === 'failed')!.number} failed${notRun.length > 0 ? `; ${notRun.length} steps were not run` : ''}.`);
   else if (missing.length > 0) console.log(`Every step that ran passed. NOT DONE: step${missing.length > 1 ? 's' : ''} ${missing.map((step) => step.number).join(', ')} still ha${missing.length > 1 ? 've' : 's'} to be run on a machine with that adapter.`);
+  else if (steps.some((step) => step.status === 'skipped')) console.log(`Every step that applies passed; step${steps.filter((step) => step.status === 'skipped').length > 1 ? 's' : ''} ${steps.filter((step) => step.status === 'skipped').map((step) => step.number).join(', ')} do not apply to an export node.`);
   else console.log('Every step passed.');
   return failed ? 1 : 0;
 }

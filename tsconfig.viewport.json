@@ -1,0 +1,10 @@
+{
+  // runtime.md 8.4: worker globals and neither DOM nor Node types. For src/viewport/, and for the entry of the
+  // CPU worker, which runs without Node (8.1) although its folder's program, tsconfig.worker.json, has Node's types.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "WebWorker"],
+    "types": ["@webgpu/types"]
+  },
+  "include": ["src/viewport", "src/platform/electron/worker/cpu-worker.ts"]
+}

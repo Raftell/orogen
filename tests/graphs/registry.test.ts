@@ -35,6 +35,24 @@ test('registry: one instance of every node of the product evaluates at 129', asy
     assert.deepEqual(Object.values(doc.edges).filter((edge) => edge.from.node === broad).map((edge) => typeOf(edge.to.node)), ['ref/slope-mask']);
   }
 
+  // An input the wiring knows by name is fed what it is named for (testing.md 2.4): the stamp of surface/scatter
+  // a landform, the flow and the snow of color/natural the drainage of the first terrain and the snow on it.
+  const feedOf = (type: string, port: string): string | null => {
+    const node = Object.values(doc.nodes).find((candidate) => candidate.type === type);
+    const edge = node && Object.values(doc.edges).find((candidate) => candidate.to.node === node.id && candidate.to.port === port);
+    return edge ? `${typeOf(edge.from.node)}.${edge.from.port}` : null;
+  };
+  for (const [type, port, feed] of [['surface/scatter', 'stamp', 'generate/volcano.out'], ['color/natural', 'flow', 'simulate/flow.out'], ['color/natural', 'snow', 'simulate/snow.snow']] as const) {
+    if (byType.has(type) && byType.has(feed.split('.')[0]!)) assert.equal(feedOf(type, port), feed, `${type}: the input ${port}`);
+  }
+  if (byType.has('color/natural') && byType.has('simulate/flow') && eroded.length > 0) {
+    // The drainage is that of the terrain the node itself reads.
+    const natural = Object.values(doc.nodes).find((candidate) => candidate.type === 'color/natural')!;
+    const terrain = Object.values(doc.edges).find((edge) => edge.to.node === natural.id && edge.to.port === 'in')!.from.node;
+    const flow = Object.values(doc.edges).find((edge) => edge.to.node === natural.id && edge.to.port === 'flow')!.from.node;
+    assert.deepEqual(Object.values(doc.edges).filter((edge) => edge.to.node === flow).map((edge) => edge.from.node), [terrain]);
+  }
+
   // Every node is a target, and so is every output: nothing of the product is left unevaluated.
   const ids = Object.keys(doc.nodes);
   const outputs = ids.flatMap((id) => (byType.get(doc.nodes[id]!.type)?.outputs ?? []).map((port) => ({ id, port, target: `${id}.${port.name}` })));

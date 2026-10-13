@@ -249,6 +249,9 @@ test('the report says what the build did: its status, its targets with their tim
   assert.deepEqual(report.height, { measuredMin: min, measuredMax: max, valueMin: min, valueMax: max, clippedSamples: 0 });
   assert.deepEqual(report.layers, manifest.landscape!.layers.map(({ name, base, blend, meanWeight }) => ({ name, base, blend, meanWeight })));
   assert.ok(report.weightsMs !== null && report.weightsMs >= 0 && report.durationMs >= report.weightsMs);
+  // The commit, phase 4, has a figure of its own: with the targets and the weights it lies within the whole.
+  const phases = report.targets.reduce((sum, target) => sum + target.evaluateMs! + target.exportMs!, 0) + report.weightsMs + (report.commitMs ?? Number.NaN);
+  assert.ok(report.commitMs !== null && report.commitMs >= 0 && phases <= report.durationMs, `the phases take ${phases} ms of ${report.durationMs} ms, the commit ${report.commitMs} ms`);
   assert.ok(Date.parse(report.endedUtc) >= Date.parse(report.startedUtc));
   assert.ok(text(file(built.sink, 'TestLand.report.json')).endsWith('}\n'));
 });
@@ -467,4 +470,41 @@ test('a color connected to a field input is exported as its luma, and a field co
   // A ramp along x: the first texel column is nearly black, the last nearly white, and rows are alike.
   assert.ok(gray[0]! < 12 && gray[3 * 1023]! > 250 && gray[3 * (1024 * 500)] === gray[0]);
   assert.ok(channelOf(tint, 0).data.length === R * R);
+});
+
+test('a Color Texture whose content is data holds its three channels as they are, and the manifest says it is not sRGB', async () => {
+  // One colour field, exported twice: as a colour, and as the data a normal map or packed masks are (2.4, 5.9).
+  const spec = {
+    settings: SETTINGS,
+    sources: { packed: 'color2' as const },
+    nodes: {
+      ascolor: { type: 'io/export-color', inputs: { in: 'packed.out' } },
+      asdata: { type: 'io/export-color', params: { name: 'Packed', content: 'data' }, inputs: { in: 'packed.out' } },
+    },
+  };
+  const R = 129, S = 1024;
+  const { result, sink } = await buildGraph(spec, { resolution: R });
+  assert.equal(result.status, 'ok');
+  const packed = (await renderGraph(spec, ['packed.out'], { mode: 'build', res: R })).fields['packed.out']!;
+  const data = pngSamples(sink, 'T_Packed_1024.png', { size: S, channels: 3, bits: 8 });
+  const color = pngSamples(sink, 'T_Color_1024.png', { size: S, channels: 3, bits: 8 });
+  const expectedData = new Uint8Array(S * S * 3), expectedColor = new Uint8Array(S * S * 3);
+  for (const c of [0, 1, 2]) {
+    const plane = onTexels(packed, S, c);
+    for (let i = 0; i < S * S; i++) {
+      expectedData[3 * i + c] = unitCode(plane[i]!, 255);
+      expectedColor[3 * i + c] = SRGB8[unitCode(plane[i]!, 65535)]!;
+    }
+  }
+  expectTexture(data, expectedData, 'the data texture');
+  expectTexture(color, expectedColor, 'the color texture');
+  // Green is 1 - u: half way across, the data holds the middle code and the colour the sRGB code of one half.
+  const middle = 3 * (S * 500 + S / 2) + 1;
+  assert.ok(Math.abs(data[middle]! - 128) <= 1 && Math.abs(color[middle]! - 188) <= 1, `the middle of the ramp is ${data[middle]} as data and ${color[middle]} as a color`);
+
+  const made = manifestOf(sink, 'Export');
+  assert.equal(validate(made), true, JSON.stringify(validate.errors));
+  assert.deepEqual(made.textures.map((texture) => [texture.file, texture.content, texture.channels, texture.bits, texture.srgb]).sort(), [
+    ['T_Color_1024.png', 'color', 3, 8, true], ['T_Packed_1024.png', 'data', 3, 8, false],
+  ]);
 });

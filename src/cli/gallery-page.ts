@@ -12,6 +12,11 @@ export interface GalleryEntry {
   readonly connected: RenderResult | null;
   /** The text of conformance/<category>/<name>.json in the output folder; null when it holds none. */
   readonly conformance: string | null;
+  /**
+   * The parameters the node was drawn with beside its defaults, as the page says them: those of its conformance
+   * call, for a node with a file parameter whose report the output folder holds. Empty: drawn at its defaults.
+   */
+  readonly given: readonly { readonly name: string; readonly value: string }[];
 }
 
 export interface GalleryInfo {
@@ -33,12 +38,17 @@ export interface GallerySummary {
   readonly profile: string;
 }
 
-/** A node whose defaults cannot run because it reads a file: listed with its error, and not what makes the gallery fail. */
-const needsFile = (def: NodeDef): boolean => def.params.some((param) => param.kind === 'file');
+/** A node whose defaults cannot run because it reads a file. */
+export const needsFile = (def: NodeDef): boolean => def.params.some((param) => param.kind === 'file');
 
-/** Whether this entry makes `gallery` exit with 1. */
+/**
+ * Whether this entry makes `gallery` exit with 1. A node that reads a file and was drawn at its defaults, which
+ * select none, is listed with its error and is no failure; drawn with the file of its conformance call it is
+ * held to rendering like any other.
+ */
 export function countsAsFailure(entry: GalleryEntry): boolean {
-  return (entry.result.status !== 'ok' || (entry.connected !== null && entry.connected.status !== 'ok')) && !needsFile(entry.def);
+  const excused = needsFile(entry.def) && entry.given.length === 0;
+  return (entry.result.status !== 'ok' || (entry.connected !== null && entry.connected.status !== 'ok')) && !excused;
 }
 
 const esc = (text: unknown): string => String(text)
@@ -166,11 +176,14 @@ function conformanceSection(def: NodeDef, text: string | null): string {
   return parts.join('\n');
 }
 
-function errorBox(def: NodeDef, result: RenderResult): string {
+function errorBox(entry: GalleryEntry): string {
+  const { def, result } = entry;
   const own = (error: NodeError): string => `<pre>${esc(describeError(error, false))}</pre>`;
   const lines = result.errors.map(own);
   if (lines.length === 0) lines.push(`<pre>${esc(`The evaluation ended with status "${result.status}".`)}</pre>`);
-  const note = needsFile(def) ? '<p class="quiet">The node reads a file and its defaults select none: this error is the documented one.</p>' : '';
+  const note = needsFile(def) && entry.given.length === 0
+    ? `<p class="quiet">The node reads a file and its defaults select none: this error is the documented one. Once the node's test file has written conformance/${esc(def.type)}.json into this output folder, the gallery draws the node with the file of its conformance call.</p>`
+    : '';
   return `<div class="failed"><p>Not rendered.</p>${lines.join('')}</div>${note}`;
 }
 
@@ -180,7 +193,31 @@ function image(picture: WrittenPicture, alt: string): string {
   return `<a href="${src}"><img src="${src}" width="${picture.width}" height="${picture.height}" alt="${esc(alt)}" loading="lazy"></a>`;
 }
 
-const GIVEN: Readonly<Record<WrittenInput['kind'], string>> = { terrain: 'a terrain', mask: 'the mask', color: 'a coloring' };
+const GIVEN: Readonly<Record<WrittenInput['kind'], string>> = {
+  terrain: 'a terrain', mask: 'the mask', color: 'a coloring',
+  stamp: 'a landform', flow: 'the drainage of the terrain', snow: 'the snow on the terrain',
+};
+
+/** What black and white stand for in the picture of a data output. */
+function scaleNote(tone: WrittenPicture['tone']): string {
+  if (!tone) return '';
+  return `, ${tone.log ? 'on a logarithmic scale from' : 'from'} ${esc(num(tone.lo))} (black) to ${esc(num(tone.hi))} (white)`;
+}
+
+/**
+ * The outputs after the first, beside it: each with its picture, and a colour with its view over the terrain.
+ * A secondary output is part of what a node makes, and a reviewer who has to follow a link to see it does not.
+ */
+function secondaryRow(def: NodeDef, result: RenderResult, variant: string): string {
+  const items = def.outputs.slice(1).flatMap((port) => {
+    const picture = result.pictures[port.name];
+    if (picture === undefined) return [];
+    const view = result.views[port.name];
+    const alt = `${port.name} of ${def.type}${variant}`;
+    return [`<div class="secondary">${image(picture, alt)}${view ? image(view, `${alt}, over its terrain`) : ''}<span><code>${esc(port.name)}</code>: ${esc(portType(port))}${scaleNote(picture.tone)}</span></div>`];
+  });
+  return items.length > 0 ? `<div class="outputs">${items.join('')}</div>` : '';
+}
 
 /** What the node was given, beside what it made of it: one small picture per connected input, where there are two or more. */
 function givenRow(type: string, inputs: readonly WrittenInput[]): string {
@@ -201,7 +238,8 @@ function connectedFigure(def: NodeDef, connected: RenderResult | null, primary: 
   const view = connected.views[primary];
   const inputs = [...def.inputs.filter((port) => port.optional).map((port) => port.name), ...(def.maskable ? ['mask'] : [])];
   return `<figure class="connected">${givenRow(def.type, connected.inputs)}${image(main, `${primary} of ${def.type} with its optional inputs connected`)}${view ? image(view, `${primary} of ${def.type} with its optional inputs connected, over its terrain`) : ''}`
-    + `<figcaption>${esc(primary)} with ${inputs.map((name) => `<code>${esc(name)}</code>`).join(', ')} connected</figcaption></figure>`;
+    + `<figcaption>${esc(primary)} with ${inputs.map((name) => `<code>${esc(name)}</code>`).join(', ')} connected${scaleNote(main.tone)}</figcaption>`
+    + `${secondaryRow(def, connected, ' with its optional inputs connected')}</figure>`;
 }
 
 function nodeArticle(entry: GalleryEntry, res: number): string {
@@ -226,9 +264,13 @@ function nodeArticle(entry: GalleryEntry, res: number): string {
     `<header><h3>${esc(def.title)}</h3><code class="type">${esc(def.type)}</code>${flags}</header>`,
     `<p class="description">${esc(def.description)}</p>`,
     def.keywords && def.keywords.length > 0 ? `<p class="keywords">${def.keywords.map((word) => `<span>${esc(word)}</span>`).join('')}</p>` : '',
+    entry.given.length > 0
+      ? `<p class="quiet">Drawn with the parameters of its conformance call: ${entry.given.map((param) => `<code>${esc(param.name)}</code> = ${esc(param.value)}`).join(', ')}.</p>`
+      : '',
     main !== undefined
-      ? `<figure>${givenRow(def.type, result.inputs)}${image(main, `${primary} of ${def.type}`)}${view ? image(view, `${primary} of ${def.type} over its terrain`) : ''}<figcaption>${esc(primary)} at ${res} × ${res}: ${measuredItems.join(' · ')}</figcaption></figure>`
-      : errorBox(def, result),
+      ? `<figure>${givenRow(def.type, result.inputs)}${image(main, `${primary} of ${def.type}`)}${view ? image(view, `${primary} of ${def.type} over its terrain`) : ''}`
+        + `<figcaption>${esc(primary)} at ${res} × ${res}${scaleNote(main.tone)}: ${measuredItems.join(' · ')}</figcaption>${secondaryRow(def, result, '')}</figure>`
+      : errorBox(entry),
     connectedFigure(def, entry.connected, primary),
     '<h4>Ports</h4>',
     `<table><thead><tr><th></th><th>Name</th><th>Label</th><th>Type</th></tr></thead><tbody>\n${portRows('input', def.inputs, {})}\n${portRows('output', def.outputs, result.pictures)}\n</tbody></table>`,
@@ -270,6 +312,10 @@ figcaption { flex-basis: 100%; }
 .inputs { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; }
 .given { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--quiet); text-decoration: none; }
 .given img { width: 168px; height: 168px; }
+.outputs { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.secondary { flex: 1 1 520px; max-width: 904px; display: flex; flex-wrap: wrap; gap: 2px 8px; font-size: 12px; color: var(--quiet); }
+.secondary a { flex: 1 1 0; min-width: 0; }
+.secondary span { flex-basis: 100%; }
 .pages { list-style: none; padding: 0; margin: 24px 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .pages li { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
 .pages li.broken { border-color: var(--bad); }

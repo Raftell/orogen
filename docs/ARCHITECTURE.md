@@ -53,9 +53,17 @@ measured on the target machine or on D3D12 hardware.
 **Electron 44**
 
 - On Linux the real GPU is exposed only with `--enable-unsafe-webgpu --enable-features=Vulkan`. With the first switch alone the adapter is SwiftShader, a software rasteriser, and no error is raised. Limits there: `maxTextureDimension2D` 16384, 4 GiB buffers.
-- A worker has `node:fs` and `node:zlib` only with `sandbox: false` and `nodeIntegrationInWorker: true`.
+- A worker has `node:fs` and `node:zlib` only with `sandbox: false` and `nodeIntegrationInWorker: true`. With them every worker of the window has Node, a worker created by another worker included, and `process.env` in a worker is the environment the application was started with.
+- Console errors and uncaught exceptions of the page, of a worker and of a worker's worker all reach the `console-message` event of the window's `webContents`.
 - A hidden `BrowserWindow` (`show: false`) on a real X display can be captured with `webContents.capturePage()`, WebGPU canvases included. Under Xvfb a WebGPU canvas does not present. In a window that was never shown the page's `requestAnimationFrame` fires once per second; a worker's fires at the display rate.
-- Electron's Dawn is older than the one in the `webgpu` package: WGSL that compiles in Node can fail in the application.
+- Electron's Dawn is older than the one in the `webgpu` package: WGSL that compiles in Node can fail in the application. Measured with Electron 44.7.0 (Chromium 152, Node 24.21): every kernel of the engine and of the 96 node types compiles and runs there under both profiles, on the GTX 1660 Ti and on SwiftShader, and twelve sampled nodes agree with Dawn in Node within 1e-5.
+- Under Xvfb the first frame drawn to a WebGPU canvas costs the device: the GPU process destroys it, and every device opened after it goes the same way with its first frame (`runtime.md` 7.5 rule 9).
+- When the GPU process is killed, a new device is ready in under a second. A canvas whose control was transferred before presents nothing more, a canvas element created afterwards does, and the worker's `requestAnimationFrame` stops firing (`runtime.md` 7.8 rule 6; measured in a window that was never shown).
+- On Linux the application menu is a bar inside the window, 26 pixels high, above whatever the page draws. `setMenuBarVisibility(false)` gives the page that height back (measured in a window that was never shown; not seen in a visible one). The page draws the one menu bar (`runtime.md` 8.2 rule 7).
+- Electron 44.7.0 reports the WGSL language features `buffer_view`, `immediate_address_space`, `linear_indexing`, `packed_4x8_integer_dot_product`, `pointer_composite_access`, `readonly_and_readwrite_storage_textures`, `subgroup_id`, `subgroup_uniformity`, `swizzle_assignment`, `texture_and_sampler_let`, `uniform_buffer_standard_layout` and `unrestricted_pointer_parameters`. Dawn in Node (`webgpu` 0.6.2) reports those and `fragment_depth` and `texture_formats_tier1`.
+- A dedicated worker that is ended with `terminate()` says nothing to its page: no event, and no answer to a message. A second worker made from the same script opens a device of its own, and a canvas element created for it presents (`runtime.md` 8.5).
+- Two applications started beside each other, each with a user-data folder of its own, each open the hardware adapter, and the statistics of the field they show for one project agree within 1e-6.
+- The application runs from the `app.asar` that `electron-builder` packs: the page, the engine worker and the CPU worker load from it (measured with an unpacked Linux package; the Windows package is built on CI and not run).
 
 **GitHub-hosted runners (no GPU)**
 

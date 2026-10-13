@@ -259,7 +259,8 @@ export async function buildProject(engine: Engine, opts: BuildOptions): Promise<
   async function textureStage(nodeId: string, title: string, item: TextureItem, handle: AnyFieldHandle): Promise<void> {
     const side = textureSide(item.size, res);
     const path = textureFile(item, res);
-    const color = item.content === 'color';
+    // A data texture is read as a colour texture is, four floats a texel of which three are kept, and converted as a mask is.
+    const color = item.content === 'color' || item.content === 'data';
     const channels = item.content === 'mask' ? 1 : 3;
     const resampler = createTexelGridResampler({ srcSize: res, dstSize: side, channels, stride: color ? 4 : channels });
     const normals = item.content === 'normal' ? createNormalRows({ size: res, heightRange: settings.heightRange, terrainSize: settings.terrainSize }) : null;
@@ -350,7 +351,7 @@ export async function buildProject(engine: Engine, opts: BuildOptions): Promise<
         : item.kind === 'texture' ? textureFile(item, res) : imageFile(item);
       emit({ type: 'build-target', requestId, index, count: items.length, nodeId, label: `${title}: ${first}` });
       if (!handle) throw new BuildFailure('E_INTERNAL', `${title}: the evaluation delivered no field for its input.`, nodeId);
-      const wantsColor = item.kind === 'texture' && item.content === 'color';
+      const wantsColor = item.kind === 'texture' && (item.content === 'color' || item.content === 'data');
       if (wantsColor ? handle.kind !== 'color' : handle.kind !== 'field') {
         throw new BuildFailure('E_INTERNAL', `${title}: the evaluation delivered a ${handle.kind} where a ${wantsColor ? 'color' : 'field'} was asked for.`, nodeId);
       }
@@ -479,8 +480,10 @@ export async function buildProject(engine: Engine, opts: BuildOptions): Promise<
   const visible: { path: string; bytes: number }[] = [];
   const meanWeight = (name: string): number => (layerSums.get(name) ?? 0) / (res * res * 255);
   let manifestPath: string | null = null;
+  let commitMs: number | null = null;
   if (state.status === 'ok') {
-    lastProgress = performance.now();
+    const began = performance.now();
+    lastProgress = began;
     emit({ type: 'build-progress', requestId, phase: 'commit', fraction: 1 });
     const dataFiles = plan.files.filter((file) => file.encoding !== 'json');
     try {
@@ -534,6 +537,8 @@ export async function buildProject(engine: Engine, opts: BuildOptions): Promise<
       state.status = 'errors';
       fatal(thrown instanceof BuildFailure ? thrown : { code: 'E_COMMIT_FAILED', message: reasonOf(thrown) });
     }
+    // Closing a file is what flushes its compressor and puts it in place: at 8129 a fifth of a build's time.
+    commitMs = performance.now() - began;
   }
 
   function landscapeMember(item: LandscapeItem, h: HeightInfo): ManifestLandscape {
@@ -581,6 +586,7 @@ export async function buildProject(engine: Engine, opts: BuildOptions): Promise<
     problems,
     targets: report,
     weightsMs,
+    commitMs,
     height: h === null ? null : { measuredMin: h.measuredMin, measuredMax: h.measuredMax, valueMin: h.a, valueMax: h.b, clippedSamples: h.clipped },
     // The layers whose bytes were written: all of them in a build that succeeded.
     layers: plan.layers.filter((layer) => layerSums.has(layer.name)).map((layer) => ({ name: layer.name, base: layer.base, blend: layer.blend, meanWeight: meanWeight(layer.name) })),

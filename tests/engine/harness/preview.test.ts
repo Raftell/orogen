@@ -55,6 +55,21 @@ test('grey: the range from black to white, blue below it, red above, magenta whe
   assert.deepEqual([auto.at(0, 0), auto.at(64, 64)], [[0, 0, 0], [255, 255, 255]], "'auto' is [min, max]");
 });
 
+test("grey with the range 'data': the range of the values, or their logarithm where the largest is more than a hundred times the mean", async () => {
+  // What a relaxation moved: the largest value twice the mean, so black to white from its smallest to its largest value, as 'auto' draws it.
+  const moved = await draw('grey-data-linear', fieldOf(65, (u) => 0.002 * u), { style: 'grey', range: 'data' });
+  assert.deepEqual([moved.at(0, 3), moved.at(32, 3), moved.at(64, 3)], [[0, 0, 0], [128, 128, 128], [255, 255, 255]]);
+  // The depth of a river across the middle, three decades from left to right, on a terrain where there is none
+  // elsewhere: the middle of it, a thirtieth of the largest value, is mid-grey and not the 8 of 255 a linear
+  // scale gives it. Zero is black, and not the blue of a value out of range.
+  const river = fieldOf(65, (u, v) => (Math.abs(v - 0.5) < 0.03 ? 1e-5 * 1000 ** u : 0));
+  const drawn = await draw('grey-data-log', river, { style: 'grey', range: 'data' });
+  assert.deepEqual([drawn.at(64, 32), drawn.at(20, 2)], [[255, 255, 255], [0, 0, 0]]);
+  assert.ok(drawn.at(32, 32)[0] > 110 && drawn.at(32, 32)[0] < 145 && isGrey(drawn.at(32, 32)), `the middle is drawn ${drawn.at(32, 32)[0]}`);
+  const linear = await draw('grey-data-auto', river, { style: 'grey', range: 'auto' });
+  assert.ok(linear.at(32, 32)[0] < 12, "'auto' stays linear whatever the spread");
+});
+
 test('hillshade: level ground is one mid-tone, a slope towards the light is brighter, one away from it darker', async () => {
   const level = await draw('hillshade-level', fixtures.one(33), { style: 'hillshade' });
   assert.deepEqual([level.width, level.height], [33, 33]);
@@ -110,6 +125,18 @@ test('hillshade and 3d with `height`: the shaded terrain is tinted by a mask, or
   const painted = await draw('hillshade-color', color, { style: 'hillshade', height: terrain });
   assert.deepEqual([painted.at(10, 10), painted.at(50, 10), painted.at(10, 50), painted.at(50, 50)], [[174, 174, 0], [0, 174, 0], [174, 0, 0], [0, 0, 0]]);
   await assert.rejects(draw('hillshade-mismatch', mask, { style: 'hillshade', height: fixtures.one(33) }), /size/);
+
+  // In the 3d view a colour is lit from the viewer's side, 0.30 + 0.70 ((1 + n.L) / 2)^2 with L = normalize(-1, 1, sqrt 2):
+  // level ground keeps 0.81 of it. With `lit: false` it is drawn as it is: a colour that is a lit rendering already.
+  const white = colorOf(65, () => [1, 1, 1, 1]);
+  const lit = await draw('3d-color-lit', white, { style: '3d', height: terrain });
+  const flat = await draw('3d-color-flat', white, { style: '3d', height: terrain, lit: false });
+  assert.deepEqual([lit.at(384, 200), flat.at(384, 200)], [[207, 207, 207], [255, 255, 255]]);
+  // A slope that faces the viewer, +Y, is brighter than level ground under that light, and darker as a shaded field.
+  const facing = fieldOf(65, (_, v) => 1 - v);
+  const litSlope = await draw('3d-color-facing', white, { style: '3d', height: facing });
+  const shadedSlope = await draw('3d-field-facing', facing, { style: '3d' });
+  assert.ok(litSlope.at(384, 256)[0] > 207 && shadedSlope.at(384, 256)[0] < 174, `the slope is drawn ${litSlope.at(384, 256)[0]} under a colour and ${shadedSlope.at(384, 256)[0]} as a field`);
 });
 
 test('3d: 768 x 512 on #1a1a1a, +X to the right and row 0 at the back: the top view tilted, not mirrored', async () => {

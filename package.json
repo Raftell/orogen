@@ -8,12 +8,15 @@
   "engines": {
     "node": ">=24"
   },
+  "main": "dist/main.cjs",
   "bin": {
     "orogen": "src/cli/main.ts"
   },
   "scripts": {
     "build": "vite build",
-    "check": "tsc -p tsconfig.core.json && tsc -p tsconfig.json",
+    "start": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --win --x64 --publish never",
+    "check": "tsc -p tsconfig.core.json && tsc -p tsconfig.json && tsc -p tsconfig.worker.json && tsc -p tsconfig.viewport.json && tsc -p tsconfig.app.json",
     "test": "npm run test:unit && npm run test:gpu",
     "test:unit": "node tools/guard.mjs --timeout=600 node --test \"tests/unit/**/*.test.ts\" \"tests/nodes/*/unit/*.test.ts\" \"tests/export/unit/*.test.ts\" \"tests/ui/*/unit/*.test.ts\"",
     "test:gpu": "node tools/guard.mjs --timeout=3600 --lock node --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",

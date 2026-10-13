@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import {
   countsAsFailure, galleryIndex, galleryPage, gallerySummary, mib, ms, readGallerySummary, type GalleryEntry, type GalleryInfo, type GallerySummary,
 } from '../../../src/cli/gallery-page.ts';
+import { conformanceParams } from '../../../src/cli/gallery.ts';
 import type { RenderResult } from '../../../src/cli/result.ts';
 import { colorize, combine, gen, node, soften } from '../graph-fixtures.ts';
 
@@ -49,11 +50,11 @@ const twoOutputs = node({
 const importer = node({ type: 'io/import', title: 'Import', category: 'io', params: [{ kind: 'file', name: 'file', help: 'The image.', default: '', filters: ['png', 'r16'] }] });
 
 const ENTRIES: readonly GalleryEntry[] = [
-  { def: importer, result: failed('io/import', 'No file selected'), connected: null, conformance: null },
-  { def: colorize, result: rendered('ref/colorize', ['out'], { pictures: { out: { file: 'nodes/ref/colorize/out-513.png', width: 513, height: 513 } }, views: { out: { file: 'nodes/ref/colorize/out-513-3d.png', width: 768, height: 512 } } }), connected: null, conformance: 'not json {' },
-  { def: gen, result: rendered('ref/gen', ['out']), connected: null, conformance: REPORT },
-  { def: twoOutputs, result: rendered('ref/select', ['out', 'flow'], { longestSliceMs: 812, longestSliceKernels: ['ref/select.pass'], gpuMs: null, engineErrors: ['Validation <error>'] }), connected: null, conformance: null },
-  { def: soften, result: failed('ref/soften', 'kernel "<script>alert(1)</script>" failed'), connected: null, conformance: null },
+  { def: importer, result: failed('io/import', 'No file selected'), connected: null, conformance: null, given: [] },
+  { def: colorize, result: rendered('ref/colorize', ['out'], { pictures: { out: { file: 'nodes/ref/colorize/out-513.png', width: 513, height: 513 } }, views: { out: { file: 'nodes/ref/colorize/out-513-3d.png', width: 768, height: 512 } } }), connected: null, conformance: 'not json {', given: [] },
+  { def: gen, result: rendered('ref/gen', ['out']), connected: null, conformance: REPORT, given: [] },
+  { def: twoOutputs, result: rendered('ref/select', ['out', 'flow'], { longestSliceMs: 812, longestSliceKernels: ['ref/select.pass'], gpuMs: null, engineErrors: ['Validation <error>'] }), connected: null, conformance: null, given: [] },
+  { def: soften, result: failed('ref/soften', 'kernel "<script>alert(1)</script>" failed'), connected: null, conformance: null, given: [] },
 ];
 
 const page = galleryPage(INFO, ENTRIES);
@@ -103,7 +104,7 @@ test('a page carries what the index says of it, and the index links every page i
   assert.ok(empty.includes('<p>No category has been drawn into this folder.</p>'));
 });
 
-test('a node: title, type, description, keywords, flags, the picture of outputs[0] and what was measured', () => {
+test('a node: title, type, description, keywords, flags, the pictures of its outputs and what was measured', () => {
   const select = article('ref/select');
   assert.ok(select.includes('<h3>Select (Reference)</h3><code class="type">ref/select</code>'));
   assert.ok(select.includes('<p class="description">Selects &lt;steep&gt; &amp; &quot;flat&quot; ground.</p>'));
@@ -111,7 +112,13 @@ test('a node: title, type, description, keywords, flags, the picture of outputs[
   assert.ok(select.includes('<span class="flag marked">resolutionDependent</span>') && !select.includes('maskable'));
   // The picture is linked from the page's own folder, one below the output folder, and states its size.
   assert.ok(select.includes('<a href="../nodes/ref/select/out-513.png"><img src="../nodes/ref/select/out-513.png" width="1808" height="512" alt="out of ref/select" loading="lazy"></a>'));
-  assert.ok(!select.includes('<img src="../nodes/ref/select/flow-513.png"'), 'only outputs[0] is shown');
+  // The second output is on the page beside the first, with its name and what it carries.
+  assert.ok(select.includes(
+    '<div class="outputs"><div class="secondary"><a href="../nodes/ref/select/flow-513.png"><img src="../nodes/ref/select/flow-513.png" width="1808" height="512" alt="flow of ref/select" loading="lazy"></a>'
+    + '<span><code>flow</code>: field, data</span></div></div></figure>',
+  ));
+  assert.ok(select.indexOf('out-513.png') < select.indexOf('<div class="outputs">'), 'after the first');
+  assert.ok(!article('ref/gen').includes('class="outputs"'), 'a node with one output has no such row');
   assert.match(select, /out at 513 × 513: time 3\.46 ms · GPU time not measured · peak memory 3\.00 MiB · /);
   assert.match(select, /<span class="failed">longest slice 812 ms, above the hard ceiling of 500 ms \(ref\/select\.pass\)<\/span>/);
   assert.match(select, /<span class="failed">GPU error outside every scope: Validation &lt;error&gt;<\/span>/);
@@ -192,24 +199,69 @@ test('a node that fails is listed with its error, and nothing it says is markup'
 
   const imported = article('io/import');
   assert.ok(imported.includes('io/import failed, node-exception: No file selected'));
-  assert.ok(imported.includes('The node reads a file and its defaults select none: this error is the documented one.'));
+  assert.ok(imported.includes('The node reads a file and its defaults select none: this error is the documented one. Once the node\'s test file has written conformance/io/import.json into this output folder, the gallery draws the node with the file of its conformance call.'));
   assert.ok(!soft.includes('this error is the documented one'));
+});
+
+test('a node that reads a file is drawn with the parameters of its conformance call, which the page names', () => {
+  const given = [{ name: 'file', value: 'tests/nodes/io/assets/<terrain>-193.png' }, { name: 'channel', value: '"red"' }];
+  const drawn: GalleryEntry = { def: importer, result: rendered('io/import', ['out']), connected: null, conformance: REPORT, given };
+  const text = galleryPage({ ...INFO, category: 'io' }, [drawn]);
+  assert.ok(text.includes('<p class="quiet">Drawn with the parameters of its conformance call: <code>file</code> = tests/nodes/io/assets/&lt;terrain&gt;-193.png, <code>channel</code> = &quot;red&quot;.</p>'));
+  assert.ok(text.includes('<img src="../nodes/io/import/out-513.png"'));
+  assert.ok(!text.includes('this error is the documented one'));
+  assert.ok(!article('ref/gen').includes('Drawn with the parameters'), 'a node drawn at its defaults says nothing of the kind');
+  // Drawn the way the suite ran it, the node is held to rendering: a failure counts, and the page does not excuse it.
+  const broke: GalleryEntry = { ...drawn, result: failed('io/import', 'Cannot decode the image') };
+  assert.deepEqual([countsAsFailure(drawn), countsAsFailure(broke), countsAsFailure({ ...broke, given: [] })], [false, true, false]);
+  assert.ok(!galleryPage({ ...INFO, category: 'io' }, [broke]).includes('this error is the documented one'));
+});
+
+test('the parameters of a conformance call are read from its report, and a file that is no such report gives none', () => {
+  const report = JSON.stringify({ type: 'io/import', checks: {}, optOuts: [], params: { file: '/repo/tests/nodes/io/assets/terrain-193.png', channel: 'red', inMax: 0.5 } });
+  assert.deepEqual(conformanceParams(report), [{ name: 'file', value: '/repo/tests/nodes/io/assets/terrain-193.png' }, { name: 'channel', value: 'red' }, { name: 'inMax', value: 0.5 }]);
+  for (const text of [null, 'not json {', '[]', '{}', '{"params":null}', '{"params":[1,2]}', '{"params":"file"}', JSON.stringify({ params: {} }), REPORT]) assert.deepEqual(conformanceParams(text), [], String(text).slice(0, 20));
+});
+
+test('a data output says what black and white stand for, and that its scale is logarithmic where it is', () => {
+  const flowing = rendered('ref/select', ['out', 'flow'], {
+    pictures: {
+      out: { file: 'nodes/ref/select/out-513.png', width: 1808, height: 512, tone: { lo: 0, hi: 0.125, log: false } },
+      flow: { file: 'nodes/ref/select/flow-513.png', width: 1808, height: 512, tone: { lo: 0.0000042, hi: 0.042, log: true } },
+    },
+  });
+  const text = galleryPage(INFO, [{ def: twoOutputs, result: flowing, connected: flowing, conformance: null, given: [] }]);
+  assert.match(text, /<figcaption>out at 513 × 513, from 0 \(black\) to 0\.125 \(white\): time/);
+  assert.ok(text.includes('<span><code>flow</code>: field, data, on a logarithmic scale from 0.0000042 (black) to 0.042 (white)</span>'));
+  // The connected variant shows its second output too, and says the same of it.
+  const second = text.slice(text.indexOf('<figure class="connected">'));
+  assert.ok(second.includes('<figcaption>out with <code>weights</code> connected, from 0 (black) to 0.125 (white)</figcaption><div class="outputs"><div class="secondary">'));
+  assert.ok(second.includes('alt="flow of ref/select with its optional inputs connected"'));
+  // A colour among the secondary outputs brings its view over the terrain.
+  const tinted = node({ type: 'ref/tinted', title: 'Tinted (Reference)', inputs: [{ name: 'in', type: 'field' }], outputs: [{ name: 'out', type: 'field' }, { name: 'color', type: 'color' }] });
+  const both = rendered('ref/tinted', ['out'], {
+    pictures: { out: { file: 'nodes/ref/tinted/out-513.png', width: 1808, height: 512 }, color: { file: 'nodes/ref/tinted/color-513.png', width: 513, height: 513 } },
+    views: { color: { file: 'nodes/ref/tinted/color-513-3d.png', width: 768, height: 512 } },
+  });
+  const colored = galleryPage(INFO, [{ def: tinted, result: both, connected: null, conformance: null, given: [] }]);
+  assert.ok(colored.includes('<img src="../nodes/ref/tinted/color-513.png" width="513" height="513" alt="color of ref/tinted" loading="lazy"></a><a href="../nodes/ref/tinted/color-513-3d.png">'));
+  assert.ok(colored.includes('alt="color of ref/tinted, over its terrain"'));
 });
 
 test('gallery exits with 1 for a node that fails, unless the node reads a file its defaults do not select', () => {
   assert.deepEqual(ENTRIES.map(countsAsFailure), [false, false, false, false, true]);
-  // An import node that fails for another reason still has a file parameter: the page shows the error, a person judges it.
-  assert.equal(countsAsFailure({ def: importer, result: failed('io/import', 'Out of GPU memory'), connected: null, conformance: null }), false);
-  assert.equal(countsAsFailure({ def: gen, result: failed('ref/gen', 'No file selected'), connected: null, conformance: null }), false, 'ref/gen of the fixtures has a file parameter');
-  assert.equal(countsAsFailure({ def: colorize, result: { ...rendered('ref/colorize', []), status: 'errors' }, connected: null, conformance: null }), true);
+  // An import node drawn at its defaults that fails for another reason still has a file parameter: the page shows the error, a person judges it.
+  assert.equal(countsAsFailure({ def: importer, result: failed('io/import', 'Out of GPU memory'), connected: null, conformance: null, given: [] }), false);
+  assert.equal(countsAsFailure({ def: gen, result: failed('ref/gen', 'No file selected'), connected: null, conformance: null, given: [] }), false, 'ref/gen of the fixtures has a file parameter');
+  assert.equal(countsAsFailure({ def: colorize, result: { ...rendered('ref/colorize', []), status: 'errors' }, connected: null, conformance: null, given: [] }), true);
 });
 
 test('a node with a connected variant shows outputs[0] a second time, with its optional inputs and its mask connected', () => {
   const connected = rendered('ref/combine', ['out'], { pictures: { out: { file: 'nodes/ref/combine/out-513-connected.png', width: 1808, height: 512 } } });
   const entries: GalleryEntry[] = [
-    { def: combine, result: rendered('ref/combine', ['out']), connected, conformance: null },
-    { def: soften, result: rendered('ref/soften', ['out']), connected: failed('ref/soften', 'The <mask> broke it'), conformance: null },
-    { def: gen, result: rendered('ref/gen', ['out']), connected: null, conformance: null },
+    { def: combine, result: rendered('ref/combine', ['out']), connected, conformance: null, given: [] },
+    { def: soften, result: rendered('ref/soften', ['out']), connected: failed('ref/soften', 'The <mask> broke it'), conformance: null, given: [] },
+    { def: gen, result: rendered('ref/gen', ['out']), connected: null, conformance: null, given: [] },
   ];
   const text = galleryPage(INFO, entries);
   const of = (type: string): string => text.slice(text.indexOf(`id="${type.replace('/', '-')}"`), text.indexOf('</article>', text.indexOf(`id="${type.replace('/', '-')}"`)));
@@ -232,20 +284,20 @@ test('a node with a connected variant shows outputs[0] a second time, with its o
     type: 'filter/guided', title: 'Guided', category: 'filter', maskable: true,
     inputs: [{ name: 'in', type: 'any' }, { name: 'guide', type: 'field', optional: true }], outputs: [{ name: 'out', type: { sameAs: 'in' } }],
   });
-  const page = galleryPage({ ...INFO, category: 'filter' }, [{ def: guided, result: rendered('filter/guided', ['out']), connected: rendered('filter/guided', ['out']), conformance: null }]);
+  const page = galleryPage({ ...INFO, category: 'filter' }, [{ def: guided, result: rendered('filter/guided', ['out']), connected: rendered('filter/guided', ['out']), conformance: null, given: [] }]);
   assert.ok(page.includes('<figcaption>out with <code>guide</code>, <code>mask</code> connected</figcaption>'));
 });
 
 test('a node with two or more connected inputs shows what each was given, beside what it made of them', () => {
-  const given = (suffix: string, ports: readonly (readonly [string, 'terrain' | 'mask' | 'color'])[]) =>
+  const given = (suffix: string, ports: readonly (readonly [string, 'terrain' | 'mask' | 'color' | 'stamp' | 'flow' | 'snow'])[]) =>
     ports.map(([port, kind]) => ({ port, kind, file: `nodes/ref/combine/input-${port}-513${suffix}.png`, width: 513, height: 513 }));
   const entry: GalleryEntry = {
     def: combine,
     result: rendered('ref/combine', ['out'], { inputs: given('', [['a', 'terrain'], ['b', 'terrain']]) }),
     connected: rendered('ref/combine', ['out'], { inputs: given('-connected', [['a', 'terrain'], ['b', 'color'], ['mask', 'mask']]) }),
-    conformance: null,
+    conformance: null, given: [],
   };
-  const text = galleryPage(INFO, [entry, { def: gen, result: rendered('ref/gen', ['out']), connected: null, conformance: null }]);
+  const text = galleryPage(INFO, [entry, { def: gen, result: rendered('ref/gen', ['out']), connected: null, conformance: null, given: [] }]);
   const of = (type: string): string => text.slice(text.indexOf(`id="${type.replace('/', '-')}"`), text.indexOf('</article>', text.indexOf(`id="${type.replace('/', '-')}"`)));
   const combined = of('ref/combine');
   // Before the picture of the output, in the order of the ports, each linked to its file and named.
@@ -260,6 +312,9 @@ test('a node with two or more connected inputs shows what each was given, beside
   assert.ok(second.indexOf('input-mask-513-connected.png') < second.indexOf('out-513.png'), 'the inputs come first');
   // A node that was given one terrain, or none, shows no inputs.
   assert.ok(!of('ref/gen').includes('class="inputs"'));
+  // An input the wiring knows by name says what it was given.
+  const named = galleryPage(INFO, [{ ...entry, connected: null, result: rendered('ref/combine', ['out'], { inputs: given('', [['a', 'stamp'], ['b', 'flow'], ['mask', 'snow']]) }) }]);
+  assert.deepEqual([...named.matchAll(/<span><code>([a-z]+)<\/code>: ([a-z ]+)<\/span>/g)].map((found) => `${found[1]}: ${found[2]}`), ['a: a landform', 'b: the drainage of the terrain', 'mask: the snow on the terrain']);
 });
 
 test('times and sizes are written for a person', () => {

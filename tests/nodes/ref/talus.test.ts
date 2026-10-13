@@ -1,7 +1,7 @@
 // tests/nodes/ref/talus.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { at, conformance, expectClose, expectIdentical, expectLadder, fixtures, renderLadder, renderNode, stats, type FieldData } from '../../helpers/index.ts';
+import { at, conformance, expectClose, expectIdentical, expectLadder, fieldOf, fixtures, renderLadder, renderNode, stats, type FieldData } from '../../helpers/index.ts';
 import fbm from '../../../src/core/nodes/ref/fbm.ts';
 import def from '../../../src/core/nodes/ref/talus.ts';
 
@@ -40,6 +40,52 @@ test('ref/talus: a cone steeper than the talus angle loses its tip and grows a f
   let changedUnmoved = 0;
   for (let i = 0; i < out.data.length; i++) if (moved.data[i] === 0 && out.data[i] !== cone.data[i]) changedUnmoved++;
   assert.equal(changedUnmoved, 0, 'texels that changed although nothing moved there');
+});
+
+test('ref/talus: a plane gives way when it is steeper than the talus angle and rests when it is gentler, whichever way it faces', async () => {
+  // The slope at the middle of a pair is that of the plane, whichever way the plane faces. Between two neighbours
+  // alone a plane that faces 22.5 degrees off a row is 8 % gentler than it is: 6 % above the talus slope it rested.
+  // With the test settings a height of 1 across the terrain is a slope of 0.25, and the default talus angle is 35.
+  const talus = Math.tan((35 * Math.PI) / 180) / 0.25;
+  for (const facing of [0, 22.5, 45, 67.5, 90, 200]) {
+    const along = Math.cos((facing * Math.PI) / 180), across = Math.sin((facing * Math.PI) / 180);
+    const plane = (slope: number): FieldData => fieldOf(257, (u, v) => 0.5 + slope * ((u - 0.5) * along + (v - 0.5) * across));
+    // Along a uniform slope every texel passes on what it receives: the plane keeps its shape, and `moved` shows the stream.
+    const steeper = await renderNode(def, { inputs: { in: plane(1.06 * talus) }, wants: ['moved'] });
+    assert.ok(at(steeper.moved, 128, 128) > 1e-4, `on a plane 6 % steeper than the talus slope that faces ${facing} degrees, ${at(steeper.moved, 128, 128)} crossed the centre`);
+    const gentler = await renderNode(def, { inputs: { in: plane(0.94 * talus) } });
+    expectIdentical(gentler.out, plane(0.94 * talus));
+    assert.equal(stats(gentler.moved).max, 0, `a plane 6 % gentler than the talus slope that faces ${facing} degrees is at rest`);
+  }
+});
+
+test('ref/talus: a heap comes to rest round, not as an octagon', async () => {
+  // A cone 15 texels in radius with a flank of 63 degrees, and a reach long enough for it to spread.
+  const heap = fieldOf(257, (u, v) => Math.max(0, 0.48 * (1 - Math.hypot(u - 0.5, v - 0.5) / 0.06)));
+  const { out } = await renderNode(def, { inputs: { in: heap }, params: { reach: 0.25 }, wants: ['out'] });
+  const top = at(out, 128, 128);
+  assert.ok(top < 0.4, `the heap spread: its top is at ${top}`);
+
+  // Where the heap falls below a tenth of its height, in texels from the centre, along a ray: bilinear between texels.
+  const height = (x: number, y: number): number => {
+    const x0 = Math.floor(x), y0 = Math.floor(y), tx = x - x0, ty = y - y0;
+    return (at(out, x0, y0) * (1 - tx) + at(out, x0 + 1, y0) * tx) * (1 - ty) + (at(out, x0, y0 + 1) * (1 - tx) + at(out, x0 + 1, y0 + 1) * tx) * ty;
+  };
+  const foot = (degrees: number): number => {
+    const dx = Math.cos((degrees * Math.PI) / 180), dy = Math.sin((degrees * Math.PI) / 180);
+    const STEP = 0.25;
+    for (let r = STEP, above = top; r < 100; r += STEP) {
+      const here = height(128 + r * dx, 128 + r * dy);
+      if (here < 0.1 * top) return r - STEP * (0.1 * top - here) / (above - here);
+      above = here;
+    }
+    return Number.NaN;
+  };
+  // Along the rows and columns, the diagonals, and between them. With the threshold taken between two texels alone
+  // the contour lay 0.25 texels further out on the diagonals than on the rows.
+  const feet = [0, 22.5, 45, 67.5, 90, 135, 180, 202.5, 270, 315].map(foot);
+  const spread = Math.max(...feet) - Math.min(...feet);
+  assert.ok(spread <= 0.1, `the contour at a tenth of the height lies ${Math.min(...feet)} to ${Math.max(...feet)} texels from the centre: ${spread} apart, allowed 0.1`);
 });
 
 test('ref/talus: a longer reach moves more material', async () => {

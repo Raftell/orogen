@@ -2,7 +2,7 @@
 // wired by the rule of testing.md 2.4, which the harness's registryDoc follows too, or a project file with one
 // of its nodes named. Pure: no device, no file access.
 
-import type { NodeDef, ParamValue, PortDef } from '../core/api.ts';
+import type { Category, NodeDef, ParamValue, PortDef } from '../core/api.ts';
 import {
   addNode, connect, DocFormatError, newDoc, normalizeParams, parseDoc, setParam, setSettings,
   type DocDraft, type GraphDoc, type NodeRegistry, type PortRef, type ProjectSettings,
@@ -16,53 +16,133 @@ export const RENDER_SETTINGS = { terrainSize: 4096, heightRange: 1024, seed: 1, 
 const HEIGHTS = 'ref/fbm';
 const MASKS = 'ref/slope-mask';
 const COLORS = 'ref/colorize';
-/**
- * The first terrain, where the registry has it: smooth valleys under rough crests. ref/fbm is rough everywhere,
- * and a node that tells smooth ground from rough, or flattens the middle heights, has nothing to show on it.
- */
-const FIRST_TERRAIN = 'generate/eroded-noise';
+/** Adds the ground to a landform that stands on it. */
+const SUMS = 'ref/combine';
 
 /**
- * The feature sizes of the terrains that feed a node, in turn. The first terrain is at the defaults of its type;
+ * The mask that feeds mask inputs: the parameters of the terrain it is a slope mask of, and of the slope mask.
+ * `type`: the mask is made of a terrain of this type instead of the first terrain's own.
+ */
+export interface MaskFeed { readonly type?: string; readonly terrain: Readonly<Record<string, ParamValue>>; readonly slopes: Readonly<Record<string, ParamValue>> }
+
+/** A first terrain: its type, its parameters beside the defaults of the type, and the mask made of it. */
+export interface FirstTerrain {
+  readonly type: string;
+  readonly params: Readonly<Record<string, ParamValue>>;
+  /**
+   * The landform stands on gentle ground and not on the floor of the height range: a ref/fbm with these
+   * parameters is added to it, `strength` of its height, by a ref/combine. Ground at height 0 is the lowest a
+   * project can hold; whatever a node cuts into it lies below the range and is drawn as out of it.
+   */
+  readonly ground?: { readonly params: Readonly<Record<string, ParamValue>>; readonly strength: number };
+  /**
+   * The mask is a slope mask of the terrain's broad shape, between two angles that select about half of it, in
+   * regions. The slopes of a whole terrain are speckle at the scale of a texel, and under a mask of speckle no
+   * picture shows what a node does.
+   */
+  readonly mask: MaskFeed;
+}
+
+/**
+ * The terrains a node can be shown on (testing.md 2.4).
+ *
+ * - `eroded`: smooth valley floors under rough crests, relief everywhere. Its broad shape is in its first two
+ *   octaves; the third already cuts gullies.
+ * - `range`: a chain of peaks on gentle ground, a seventh of the height range up and rolling by a few degrees.
+ *   Detail that belongs on gentle ground and detail that belongs on steep ground both have somewhere to be, and
+ *   the ground between the spurs shows what a node adds by itself.
+ * - `island`: a landmass that drains to its coast on every side, in a sea that lies below its valley floors
+ *   and covers the borders. Water has somewhere to run and somewhere to end; nothing is drowned inland.
+ * - `fractal`: the reference noise, rough everywhere. What is left where the registry lacks the others.
+ */
+const TERRAINS = {
+  eroded: { type: 'generate/eroded-noise', params: {}, mask: { terrain: { octaves: 2 }, slopes: { slopeMin: 40, slopeMax: 55 } } },
+  // The range has slopes only where it stands: a mask of them would hide what a node does on the ground around
+  // it. Its mask is that of the reference noise, whose regions lie across the range and the ground alike.
+  range: {
+    type: 'generate/mountain-range', params: {}, ground: { params: { seed: 9, size: 0.5, octaves: 2 }, strength: 0.3 },
+    mask: { type: HEIGHTS, terrain: { octaves: 3 }, slopes: { slopeMin: 35, slopeMax: 50 } },
+  },
+  island: { type: 'generate/island', params: { size: 1 }, mask: { terrain: { size: 1, erosion: 0 }, slopes: { slopeMin: 10, slopeMax: 25 } } },
+  fractal: { type: HEIGHTS, params: {}, mask: { terrain: { octaves: 3 }, slopes: { slopeMin: 35, slopeMax: 50 } } },
+} as const satisfies Readonly<Record<string, FirstTerrain>>;
+
+/**
+ * The one table of the wiring rule that depends on what is rendered: the first terrain of a node, by the node's
+ * category. A category is shown on the terrain that shows what it is for. The eroded noise is steep and rough
+ * everywhere, and at the sea level of the pictures a fifth of it is drowned valleys: surface detail has no
+ * gentle ground to lie on there, and no river a coast to reach.
+ */
+const FIRST_TERRAIN: Readonly<Record<Category, keyof typeof TERRAINS>> = {
+  generate: 'eroded',
+  adjust: 'eroded',
+  filter: 'eroded',
+  simulate: 'island',
+  select: 'eroded',
+  color: 'island',
+  surface: 'range',
+  io: 'eroded',
+  ref: 'eroded',
+};
+
+/**
+ * The first terrain of a node of `category` in a document of this registry: that of the table where the registry
+ * holds its type, else the eroded noise, else the reference noise. null: a document that holds nodes of every
+ * category (the harness's registryDoc), which has the eroded noise for all of them.
+ */
+export function firstTerrain(registry: NodeRegistry, category: Category | null): FirstTerrain {
+  const wanted = TERRAINS[category === null ? 'eroded' : FIRST_TERRAIN[category]];
+  return [wanted, TERRAINS.eroded].find((terrain) => registry.get(terrain.type)) ?? TERRAINS.fractal;
+}
+
+/**
+ * The feature sizes of the terrains that feed a node, in turn. The first terrain is that of the node's category;
  * each further one is a ref/fbm with a seed and a size of its own, so that a node with two inputs is not shown
  * its first input twice.
  */
 const TERRAIN_SIZES: readonly number[] = [0.25, 0.1, 0.5, 0.05];
 
-/** The node type of terrain `index`: the first is generate/eroded-noise where the registry holds it, every other one ref/fbm. */
-export function terrainType(registry: NodeRegistry, index: number): string {
-  return index === 0 && registry.get(FIRST_TERRAIN) ? FIRST_TERRAIN : HEIGHTS;
+/** The node type of terrain `index`: the first is that of the category, every other one ref/fbm. */
+export function terrainType(registry: NodeRegistry, index: number, category: Category | null = null): string {
+  return index === 0 ? firstTerrain(registry, category).type : HEIGHTS;
 }
 
-/** The parameters of terrain `index` beside the defaults of its type: none for the first. */
+/** The parameters of terrain `index` ≥ 1 beside the defaults of ref/fbm; those of the first are firstTerrain's. */
 export function terrainParams(index: number): Readonly<Record<string, ParamValue>> {
   return index === 0 ? {} : { seed: index, size: TERRAIN_SIZES[index % TERRAIN_SIZES.length]! };
 }
 
-/** The mask that feeds mask inputs: the parameters of the terrain it is a slope mask of, and of the slope mask. */
-export interface MaskFeed { readonly terrain: Readonly<Record<string, ParamValue>>; readonly slopes: Readonly<Record<string, ParamValue>> }
-
-/**
- * The mask is a slope mask of the first terrain's broad shape: its first octaves alone, selected between two
- * angles, which is about half the terrain, in regions (0.43 of ref/fbm and 0.49 of generate/eroded-noise at 513).
- * The slopes of all eight octaves are speckle at the scale of a texel, and under a mask of speckle no picture
- * shows what a node does. The eroded noise has its broad shape in two octaves, the third already cuts gullies,
- * and its slopes are steeper.
- */
-const MASK_FEEDS: Readonly<Record<string, MaskFeed>> = {
-  [HEIGHTS]: { terrain: { octaves: 3 }, slopes: { slopeMin: 35, slopeMax: 50 } },
-  [FIRST_TERRAIN]: { terrain: { octaves: 2 }, slopes: { slopeMin: 40, slopeMax: 55 } },
-};
-
 /** What makes the mask in a document of this registry. */
-export function maskFeed(registry: NodeRegistry): MaskFeed {
-  return MASK_FEEDS[terrainType(registry, 0)]!;
+export function maskFeed(registry: NodeRegistry, category: Category | null = null): MaskFeed {
+  return firstTerrain(registry, category).mask;
 }
 
-/** What feeds one input: terrain `index`, the mask of the first terrain, or the colouring of terrain `index`. */
+/**
+ * Inputs that are fed by what they are named for and not by their type alone (the port names of testing.md 6.3):
+ * a terrain would do for each, and shows nothing of what the node is for.
+ *
+ * - `stamp`, a height: a landform on level ground, which is what is stamped. A terrain that fills its field has
+ *   no outline to stamp.
+ * - `flow`, a data field: the drainage of the first terrain, from the product's own flow node. A second terrain
+ *   read as a drainage area puts rivers where no water runs.
+ * - `snow`, a mask: the snow the product's snow node lays on the first terrain, and not its steep slopes, where
+ *   snow does not lie.
+ */
+const NAMED = {
+  stamp: { type: 'generate/volcano', port: 'out', role: 'height', reads: false },
+  flow: { type: 'simulate/flow', port: 'out', role: 'data', reads: true },
+  snow: { type: 'simulate/snow', port: 'snow', role: 'mask', reads: true },
+} as const;
+export type NamedFeed = keyof typeof NAMED;
+
+/**
+ * What feeds one input: terrain `index`, the mask of the first terrain, or the colouring of terrain `index`.
+ * `named`: the input is one the wiring knows by its name, and takes that feed where the registry has its node;
+ * the feed by type is what it takes otherwise, so an input counts the same in every registry.
+ */
 export type Feed =
-  | { readonly kind: 'terrain'; readonly index: number }
-  | { readonly kind: 'mask' }
+  | { readonly kind: 'terrain'; readonly index: number; readonly named?: NamedFeed }
+  | { readonly kind: 'mask'; readonly named?: NamedFeed }
   | { readonly kind: 'color'; readonly index: number };
 
 /** Whether the node has a connected variant: an optional input of its own, or the mask `maskable` gives it. */
@@ -76,6 +156,8 @@ export function hasConnectedVariant(def: NodeDef): boolean {
  * - The k-th input that takes a height, a data field or either kind gets terrain k: each a terrain of its own.
  * - A mask input gets the mask: a slope mask of the broad shape of the first terrain.
  * - The k-th colour input gets the colouring of terrain k.
+ * - A field input named `stamp`, `flow` or `snow` with the role of that name is marked: it takes the landform,
+ *   the drainage or the snow instead, where the registry has the node that makes it.
  * - An optional input is connected in the connected variant only, and so is the `mask` of a maskable node: the
  *   plain picture shows the node as a user sees it on dropping it into a graph, with its own defaults, and the
  *   connected one what its optional inputs and a mask do to that. Inputs are counted whether or not they are
@@ -85,13 +167,68 @@ export function inputFeeds(def: NodeDef, connected: boolean): Readonly<Record<st
   const feeds: Record<string, Feed | null> = {};
   let terrains = 0, colors = 0;
   for (const port of def.inputs) {
+    const role = port.type === 'field' ? port.role ?? 'height' : null;
+    const named = Object.hasOwn(NAMED, port.name) && NAMED[port.name as NamedFeed].role === role ? { named: port.name as NamedFeed } : {};
     const feed: Feed = port.type === 'color' ? { kind: 'color', index: colors++ }
-      : port.type === 'field' && port.role === 'mask' ? { kind: 'mask' }
-      : { kind: 'terrain', index: terrains++ };
+      : role === 'mask' ? { kind: 'mask', ...named }
+      : { kind: 'terrain', index: terrains++, ...named };
     feeds[port.name] = port.optional === true && !connected ? null : feed;
   }
   if (def.maskable) feeds.mask = connected ? { kind: 'mask' } : null;
   return feeds;
+}
+
+/** What an input is given, for the picture of it: a terrain, the mask, a colouring, or one of the named feeds. */
+export type Given = 'terrain' | 'mask' | 'color' | NamedFeed;
+
+/** One node the wiring adds to a document, and what it reads. */
+export interface FeedNode {
+  /** Two feeds with one key are one node. */
+  readonly key: string;
+  readonly type: string;
+  /** Beside the defaults of the type. */
+  readonly params: Readonly<Record<string, ParamValue>>;
+  /** What the inputs of the node read, by input port; an input not named is unconnected. Empty: the node is given nothing. */
+  readonly reads: Readonly<Record<string, FeedNode>>;
+  /** The output that feeds. */
+  readonly port: string;
+}
+
+/**
+ * The node that makes `feed` in a document of this registry, with the nodes it reads. `category` is that of the
+ * node being fed, which decides its first terrain; null for a document of every category. Where the registry
+ * lacks ref/slope-mask or ref/colorize the terrain itself feeds the input and the evaluator converts, and where
+ * it lacks the node of a named feed the input takes the feed its type gives it.
+ */
+export function feedSource(registry: NodeRegistry, feed: Feed, category: Category | null): { readonly node: FeedNode; readonly given: Given } {
+  const first = firstTerrain(registry, category);
+  /** A node that reads `from` at its first input. */
+  const reading = (key: string, type: string, params: Readonly<Record<string, ParamValue>>, from: FeedNode, port = 'out'): FeedNode =>
+    ({ key, type, params, reads: { [registry.get(type)!.inputs[0]!.name]: from }, port });
+  const source = (key: string, type: string, params: Readonly<Record<string, ParamValue>>): FeedNode => ({ key, type, params, reads: {}, port: 'out' });
+  const terrain = (index: number): FeedNode => {
+    if (index > 0) return source(`terrain ${index}`, HEIGHTS, terrainParams(index));
+    const combine = first.ground ? registry.get(SUMS) : undefined;
+    if (!first.ground || !combine || combine.inputs.length < 2) return source('terrain 0', first.type, first.params);
+    // The landform and the ground it stands on, added: both are what terrain 0 is made of, and neither is it.
+    const [a, b] = combine.inputs;
+    return {
+      key: 'terrain 0', type: SUMS, params: { mode: 'add', strength: first.ground.strength }, port: 'out',
+      reads: { [a!.name]: source('terrain 0 landform', first.type, first.params), [b!.name]: source('terrain 0 ground', HEIGHTS, first.ground.params) },
+    };
+  };
+  if (feed.kind !== 'color' && feed.named !== undefined && registry.get(NAMED[feed.named].type)) {
+    const named = NAMED[feed.named];
+    const node = named.reads ? reading(feed.named, named.type, {}, terrain(0), named.port) : { ...source(feed.named, named.type, {}), port: named.port };
+    return { node, given: feed.named };
+  }
+  if (feed.kind === 'terrain') return { node: terrain(feed.index), given: 'terrain' };
+  if (feed.kind === 'mask') {
+    if (!registry.get(MASKS)) return { node: terrain(0), given: 'mask' };
+    return { node: reading('mask', MASKS, first.mask.slopes, source('mask terrain', first.mask.type ?? first.type, first.mask.terrain)), given: 'mask' };
+  }
+  if (!registry.get(COLORS)) return { node: terrain(feed.index), given: 'color' };
+  return { node: reading(`color ${feed.index}`, COLORS, {}, terrain(feed.index)), given: 'color' };
 }
 
 /** A connected input of a rendered node type, for the picture of what the node was given. */
@@ -100,8 +237,8 @@ export interface PlannedInput {
   readonly port: string;
   /** The output that feeds it. */
   readonly from: PortRef;
-  /** What that output is: a terrain, the mask or a colouring. */
-  readonly kind: Feed['kind'];
+  /** What that output is: a terrain, the mask, a colouring, or a named feed. */
+  readonly kind: Given;
 }
 
 export interface RenderPlan {
@@ -153,11 +290,11 @@ function refusal(problem: string): string {
 
 /**
  * One instance of `type` at its defaults, then `maxParams` (every float, int and vec2 parameter at its max),
- * then each of `params`, then `seed`. Its inputs are fed as inputFeeds says: the first terrain is a
- * generate/eroded-noise where the registry has one and every other terrain a ref/fbm, the mask a ref/slope-mask
- * of the first terrain's broad shape and a colour a ref/colorize of its terrain; where the registry lacks one of
- * the two, the terrain itself is connected and the evaluator converts. With `connected`, the optional inputs
- * and the mask of a maskable node are connected too. Throws UsageError for what the arguments get wrong.
+ * then each of `params`, then `seed`. Its inputs are fed as inputFeeds and feedSource say: the first terrain is
+ * that of the node's category and every other terrain a ref/fbm, the mask a ref/slope-mask of the first
+ * terrain's broad shape, a colour a ref/colorize of its terrain, and an input the wiring knows by name what it
+ * is named for. With `connected`, the optional inputs and the mask of a maskable node are connected too.
+ * Throws UsageError for what the arguments get wrong.
  */
 export function typeDocument(
   registry: NodeRegistry, type: string,
@@ -176,24 +313,23 @@ export function typeDocument(
   setSettings(draft, RENDER_SETTINGS);
   const nodeId = addNode(draft, registry, type, { x: 640, y: 0 });
 
-  // One node per feed, made when an input first asks for it.
+  // One node per feed, made when an input first asks for it, with the nodes it reads before it.
   const made = new Map<string, string>();
-  const feedNode = (key: string, wiringType: string, column: number, params: Readonly<Record<string, ParamValue>>, from: string | null): string => {
-    let id = made.get(key);
+  const depthOf = (node: FeedNode): number => Object.values(node.reads).reduce((depth, read) => Math.max(depth, 1 + depthOf(read)), 0);
+  const instantiate = (node: FeedNode): string => {
+    let id = made.get(node.key);
     if (id !== undefined) return id;
-    id = addNode(draft, registry, wiringType, { x: 320 * column, y: 160 * made.size });
-    made.set(key, id);
-    for (const [name, value] of Object.entries(params)) setParam(draft, registry, id, name, value);
-    const input = registry.get(wiringType)!.inputs[0];
-    if (from !== null && input) connect(draft, registry, { node: from, port: 'out' }, { node: id, port: input.name });
+    const read = Object.entries(node.reads).map(([port, from]) => ({ port, from: { node: instantiate(from), port: from.port } }));
+    id = addNode(draft, registry, node.type, { x: 320 * depthOf(node), y: 160 * made.size });
+    made.set(node.key, id);
+    for (const [name, value] of Object.entries(node.params)) setParam(draft, registry, id, name, value);
+    for (const { port, from } of read) connect(draft, registry, from, { node: id, port });
     return id;
   };
-  const mask = maskFeed(registry);
-  const terrainOf = (index: number): string => feedNode(`terrain ${index}`, terrainType(registry, index), 0, terrainParams(index), null);
-  const sourceOf = (feed: Feed): string => {
-    if (feed.kind === 'terrain') return terrainOf(feed.index);
-    if (feed.kind === 'mask') return registry.get(MASKS) ? feedNode('mask', MASKS, 1, mask.slopes, feedNode('mask terrain', terrainType(registry, 0), 0, mask.terrain, null)) : terrainOf(0);
-    return registry.get(COLORS) ? feedNode(`color ${feed.index}`, COLORS, 1, {}, terrainOf(feed.index)) : terrainOf(feed.index);
+  const category = def.category;
+  const terrainOf = (index: number): PortRef => {
+    const { node } = feedSource(registry, { kind: 'terrain', index }, category);
+    return { node: instantiate(node), port: node.port };
   };
 
   let terrain: PortRef | null = null;
@@ -201,13 +337,15 @@ export function typeDocument(
   const inputs: PlannedInput[] = [];
   for (const [port, feed] of Object.entries(inputFeeds(def, connected))) {
     if (feed === null) continue;
-    const from: PortRef = { node: sourceOf(feed), port: 'out' };
+    const source = feedSource(registry, feed, category);
+    const from: PortRef = { node: instantiate(source.node), port: source.node.port };
     connect(draft, registry, from, { node: nodeId, port });
-    inputs.push({ port, from, kind: feed.kind });
+    inputs.push({ port, from, kind: source.given });
     const declared = def.inputs.find((input) => input.name === port);
-    if (terrain === null && declared && isHeight(declared)) terrain = { node: terrainOf(feed.kind === 'mask' ? 0 : feed.index), port: 'out' };
-    // What a mask, a data field or a colour was made of, for a node without a height input.
-    behind ??= { node: terrainOf(feed.kind === 'mask' ? 0 : feed.index), port: 'out' };
+    if (terrain === null && declared && isHeight(declared) && source.given === 'terrain') terrain = from;
+    // What a mask, a data field or a colour was made of, for a node without a height input: the terrain of its
+    // number, and the first terrain for the mask, the drainage and the snow. A stamp is a landform of its own.
+    if (source.given !== 'stamp') behind ??= terrainOf(feed.kind === 'mask' || source.given !== feed.kind ? 0 : feed.index);
   }
   terrain ??= behind;
 

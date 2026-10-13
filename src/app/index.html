@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- The page loads only files packaged with the application (runtime.md 8.2 rule 3). Inline styles are the
+         positions the dock and the popups compute, and the style sheet of the colour picker. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:" />
+    <title>Orogen</title>
+    <!-- Until the style sheet has loaded: no white window. The colour is --og-bg-app of shell/theme.css. -->
+    <style>html { background: #1b1b1b; }</style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

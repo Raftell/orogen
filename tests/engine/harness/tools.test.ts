@@ -38,6 +38,10 @@ test('a category owns its nodes, their tests and its change requests, and nothin
   for (const path of ['src/core/nodes/filter/blur.ts', 'src/core/nodes/filter/_wgsl.ts', 'src/core/nodes/filter/index.ts', 'tests/nodes/filter/blur.test.ts', 'tests/nodes/filter/unit/kernel.test.ts', 'tests/nodes/filter/assets/a.png', 'docs/changes/filter-wider-blur.md']) {
     assert.equal(owns(filter, path), true, path);
   }
+  // The node reference is generated from the registry: a change to a node brings the regenerated page with it.
+  assert.equal(owns(filter, 'docs/user/nodes.md'), true);
+  for (const path of ['docs/user/building.md', 'docs/user/examples/ridge.orogen', 'docs/user/nodes.md.bak']) assert.equal(owns(filter, path), false, path);
+  assert.equal(owns(ownerOf('ui/shell/menu')!, 'docs/user/nodes.md'), false, 'an application owner changes no node');
   for (const path of [
     'src/core/nodes/adjust/levels.ts', 'src/core/nodes/index.ts', 'src/core/nodes/ref/blur.ts', 'src/core/api.ts', 'src/core/nodes/filter', 'tests/nodes/adjust/levels.test.ts',
     'tests/helpers/conformance.ts', 'tests/unit/registry.test.ts', 'docs/contract/testing.md', 'docs/changes/LOG.md', 'docs/changes/adjust-x.md', 'docs/changes/filter-.md',

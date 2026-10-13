@@ -1,0 +1,15 @@
+// The graph panel (runtime.md 8.7): the node graph, the add-node palette, groups, clipboard, node thumbnails
+// and status. This is the panel's starting state, a PanelDef with an empty component; its owner builds it.
+
+import type { PanelDef } from '../../ui/index.ts';
+import { GraphPanel } from './GraphPanel.tsx';
+
+export const panel: PanelDef = {
+  id: 'graph',
+  title: 'Graph',
+  component: GraphPanel,
+  keepMounted: true,
+  placement: { relativeTo: 'viewport', direction: 'below' },
+  commands: [],
+  keys: [],
+};

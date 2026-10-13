@@ -4,8 +4,8 @@
 // the kernels of simulate/rivers.
 import { defineCpuTask, type CpuEnv } from '../../api.ts';
 import {
-  COURSE_SLACK, COURSE_SLACK_MIN, COURSE_SMOOTHING, COURSE_SMOOTHING_MIN, PROFILE_DEPTH, PROFILE_SMOOTHING,
-  RIVER_DEPTH_EXPONENT, RIVER_TAPER, RIVER_WIDTH_EXPONENT, VALLEY_GRADE,
+  BANK_RISE, COURSE_SLACK, COURSE_SLACK_MIN, COURSE_SMOOTHING, COURSE_SMOOTHING_MIN, PROFILE_DEPTH, PROFILE_SMOOTHING,
+  RIVER_DEPTH_EXPONENT, RIVER_TAPER, RIVER_WIDTH_EXPONENT, VALLEY_GRADE, VALLEY_REACH,
 } from './_water-constants.ts';
 
 /** Steps in which a site's place inside its texel is stored along an axis: `x + PLACE_STEPS * y`, whole numbers in one float. */
@@ -40,6 +40,66 @@ fn courseLink(code: u32) -> vec2i { return vec2i(i32(code % 3u) - 1, i32(code / 
 fn courseAt(q: vec2i) -> Course {
   let packed = u32(course_at(q));
   return Course(courseLink(packed % 9u), courseLink((packed / 9u) % 9u), f32(packed / 81u) / ${RISE_STEPS - 1}.0);
+}`;
+
+/**
+ * The valley of a river, as the kernels of simulate/rivers cut it (simulation.md 8.5). Beside the channel the
+ * ground is lowered by the depth of the valley, less with the distance, and ground that stands lower above the
+ * water than the valley is deep by that share of its height: it keeps its relief, and no side of a valley is a
+ * plane. Within a bank's width of the water the height of the ground above the water is scaled down as well, to
+ * nothing at the waterline, so that ground of any height meets the water without a step. Of two rivers the one
+ * whose valley is deeper at a texel takes it: where their valleys meet, both lower it alike.
+ */
+export const VALLEY_WGSL = /* wgsl */ `
+const VALLEY_REACH = f32(${VALLEY_REACH});
+const VALLEY_BANK_RISE = f32(${BANK_RISE});
+const VALLEY_WIDTH_EXPONENT = ${RIVER_WIDTH_EXPONENT};
+const VALLEY_DEPTH_EXPONENT = ${RIVER_DEPTH_EXPONENT};
+
+// The depth of the water in a river w metres wide, of which \`whole\` is the width and \`deep\` the depth of a river
+// that drains the whole terrain. A channel narrower than a texel is thinner, not a texel wide.
+fn channelDepth(w: f32, whole: f32, deep: f32) -> f32 {
+  let a = clamp(pow(w / max(whole, 1.0e-20), 1.0 / VALLEY_WIDTH_EXPONENT), 1.0e-12, 1.0);
+  return deep * pow(a, VALLEY_DEPTH_EXPONENT) * saturate(w / frame.cellSize);
+}
+
+// How deep the valley of a river is \`beyond\` metres from its bank, in metres. total: the depth of the valley
+// and of the channel in it. bank: the tangent of the bank's slope.
+fn valleyDepth(beyond: f32, total: f32, bank: f32) -> f32 {
+  let left = 1.0 - max(beyond, 0.0) * bank / max(VALLEY_REACH * total, 1.0e-20);
+  if (left <= 0.0) { return 0.0; }
+  return total * left * left;
+}
+
+// By what a texel takes one river and not another: the river whose valley is deepest at it. A texel inside a
+// channel belongs to that river whatever valley it lies in, and of two channels to the one it lies deeper in:
+// a tributary is whole down to the river it joins.
+fn valleyClaim(beyond: f32, total: f32, bank: f32) -> f32 {
+  if (beyond < 0.0) { return 1.0e9 - beyond; }
+  return valleyDepth(beyond, total, bank);
+}
+
+// Metres by which the river with its middle r metres away lowers ground that stands \`above\` metres over its water.
+// w: its width. d: the depth of its water. rise: how far it lies below the routing surface. All in metres.
+// 0, exactly, beyond the reach of the valley and for ground at or below the water outside the channel.
+fn riverCut(above: f32, r: f32, w: f32, d: f32, rise: f32, bank: f32) -> f32 {
+  if (r < 0.5 * w) {
+    // The parabolic bed under the water.
+    let t = 2.0 * r / w;
+    return max(above - d * (t * t - 1.0), 0.0);
+  }
+  let beyond = r - 0.5 * w;
+  let total = d + VALLEY_BANK_RISE * rise;
+  let over = max(above, 0.0);
+  // Ground lower than twice the valley's depth is lowered by less, down to a share of its own height: it keeps
+  // its relief, smaller. x - x^2 / 4 meets 1 at x = 2 without a crease and is never above x.
+  let high = min(over / max(total, 1.0e-20), 2.0);
+  var cut = valleyDepth(beyond, total, bank) * (high - 0.25 * high * high);
+  // The bank, one side's width at the bank's slope: from the waterline, where all of the height goes, to its far
+  // edge the two meet without a crease.
+  let near = 1.0 - beyond * bank / max(total, 1.0e-20);
+  if (near > 0.0) { cut += (over - cut) * near * near; }
+  return cut;
 }`;
 
 export interface CourseArgs {
@@ -200,7 +260,8 @@ export const course = defineCpuTask({
     const grade = VALLEY_GRADE * bank * cell;
     for (let i = 0; i < count; i++) {
       const c = order[i], to = down[i];
-      if (height[c] <= sea) { level[i] = sea; kept[i] = 1; continue; }
+      // A mouth: a river texel in the sea. Ground below the sea level that the sea does not reach is a basin like any other.
+      if (receivers[c] === 4 && height[c] <= sea) { level[i] = sea; kept[i] = 1; continue; }
       if (inside[i]) {
         level[i] = level[to];
         cut[i] = Math.max((filled[c] - level[i]) * range, 0);
@@ -253,9 +314,16 @@ export const course = defineCpuTask({
     // through; each knows the site before it and the one after it on its river. A point in the texel of the
     // site before it, or in a texel another river's site has taken, is left out.
     let deepest = 0;
+    // How far the river lies below the routing surface in the end: that deep its valley is. The routing surface
+    // along a river is a stair of texels and of pools, and a valley as deep as each step says would be cut in
+    // ribs: the depth is smoothed along the river as the width is.
     for (let i = 0; i < count; i++) {
-      // How far the river lies below the routing surface in the end: as high above the water its sides are cut.
       cut[i] = Math.max((filled[order[i]] - level[i]) * range, 0);
+      blend[i] = 1 / (1 + Math.max((COURSE_SMOOTHING * wide[i]) / cell, COURSE_SMOOTHING_MIN));
+    }
+    smooth(cut);
+    for (let i = 0; i < count; i++) {
+      cut[i] = Math.max(cut[i], 0);
       deepest = Math.max(deepest, cut[i]);
     }
     let texels = new Int32Array(1 << 12), links = new Int32Array(1 << 12), rises = new Float64Array(1 << 12), made = 0;

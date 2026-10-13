@@ -1,8 +1,8 @@
 // src/core/nodes/simulate/hydraulic-erosion.ts
 import { MASK_INPUT, defineKernel, defineNode, hash, mixSeed, ops, param, type Field } from '../../api.ts';
 import {
-  CARRY, CUT_SHARE, CUT_SLOPE, DETAIL_ITERATIONS_HYDRAULIC, D_MIN, ERODIBILITY_JITTER, FAN_ANGLE, FEATURE_CELLS, G, GATHER_MAX, HEAD_RAIN, H_REF, KE, NOMINAL_SPEED, PICKUP,
-  PIPE_SAFETY, RAIN_MAX, SETTLE, SIN_MIN, wgsl,
+  CARRY, CARRY_POWER, CREEP, CUT_POWER, CUT_SHARE, CUT_SLOPE, DETAIL_ITERATIONS_HYDRAULIC, D_MIN, ERODIBILITY_JITTER, FAN_ANGLE, FEATURE_CELLS, FLUSH_POWER, G, GATHER_MAX, HEAD_RAIN, H_REF, KE, NOMINAL_SPEED, PICKUP,
+  PIPE_SAFETY, RAIN_MAX, SETTLE, SETTLE_BAND, SIN_MIN, TRAVEL_MAX, wgsl,
 } from './_constants.ts';
 import { diff } from './_diff.ts';
 import { levelBudget, levelInput, refineHeight, refineKernels, refinePlane } from './_refine.ts';
@@ -48,17 +48,19 @@ fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
 
 // Pass 2 (Mei07 eq. 6 to 10, JT11 eq. 12, 13; the capacity is this engine's): the new water depth, the speed of
 // the water, how much sediment it can carry, and from that the change of the terrain in this iteration.
-// g = (that change, the depth before the flow).
+// g = (that change, the depth before the flow). stirred: the sediment of the texel after that change, which
+// the next pass moves with the water.
 const water = defineKernel({
   name: 'simulate/hydraulic-erosion.water',
   inputs: {
     b: 'field', s: 'field', rest: 'field', mask: MASK_INPUT,
     fluxE: 'field', fluxN: 'field', fluxW: 'field', fluxS: 'field',
   },
-  outputs: { g: 'vec2' },
+  outputs: { g: 'vec2', stirred: 'field' },
   inPlace: { d: 'field', flow: 'field' },
-  // perHead: one over the discharge of a channel head per metre of its width, s/m2. deepest: the depth of the deepest gully, in metres.
-  params: { dt: 'f32', sea: 'f32', capacity: 'f32', downcutting: 'f32', deposition: 'f32', perHead: 'f32', deepest: 'f32' },
+  // perHead: one over the discharge of a channel head, s/m3. deepest: the depth of the deepest gully, in metres.
+  // keep: the share of the eroded ground that stays in the water.
+  params: { dt: 'f32', sea: 'f32', capacity: 'f32', downcutting: 'f32', deposition: 'f32', perHead: 'f32', deepest: 'f32', keep: 'f32', fan: 'f32' },
   includes: [hash],
   cost: 23,
   code: /* wgsl */ `
@@ -67,8 +69,11 @@ const D_MIN = ${wgsl(D_MIN)};
 const CUT_SLOPE = ${wgsl(CUT_SLOPE)};
 const PICKUP = ${wgsl(PICKUP)};
 const SETTLE = ${wgsl(SETTLE)};
+const SETTLE_BAND = ${wgsl(SETTLE_BAND)};
 const GATHER_MAX = ${wgsl(GATHER_MAX)};
 const CARRY = ${wgsl(CARRY)};
+const CARRY_POWER = ${wgsl(CARRY_POWER)};
+const CUT_POWER = ${wgsl(CUT_POWER)};
 const SIN_MIN = ${wgsl(SIN_MIN)};
 const JITTER = ${wgsl(ERODIBILITY_JITTER)};
 const QUANTUM = 1.1920928955078125e-7;      // 2^-23: one float32 step of a height between 1 and 2
@@ -85,7 +90,7 @@ fn lowest(px: vec2i) -> f32 {
 
 fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
   let bp = b_at(px);
-  if (bp <= P.sea) { return Out(vec2f(0.0), 0.0, cur.flow); }
+  if (bp <= P.sea) { return Out(vec2f(0.0), 0.0, 0.0, cur.flow); }
   let hr = frame.heightRange;
   let dx = frame.cellSize;
   let outE = fluxE_at(px);
@@ -109,55 +114,65 @@ fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
   let slope = slopeAt(rest, px);
   let steep = dot(slope, slope);
   let sinA = sqrt(steep / (1.0 + steep));
-  // Water carries once a channel head's worth of it has gathered, and more the more there is, up to a limit: the
-  // film on a slope carves nothing. gathered: the water beyond one channel head, in channel heads.
-  let gathered = clamp(speed * dMean * P.perHead - 1.0, 0.0, GATHER_MAX);
-  let carry = P.capacity * CARRY * max(sinA, SIN_MIN) * (speed / V_MAX) * gathered;     // metres of sediment
+  // Water carries once a channel head's worth of it runs through the texel, and more than in proportion the more
+  // there is, up to a limit: the film on a slope carves nothing, and water that has run together cuts more than
+  // the same water spread out. gathered: the water beyond one channel head, in channel heads.
+  let gathered = clamp(length(through) * P.perHead - 1.0, 0.0, GATHER_MAX);
+  // The powers are taken of a number above 0: what pow gives of 0 is the device's affair.
+  let full = max(gathered / GATHER_MAX, 1.0e-12);
+  let carry = P.capacity * CARRY * max(sinA, SIN_MIN) * (speed / V_MAX) * pow(full, CARRY_POWER);     // metres of sediment
   // The deeper a channel has cut below the ground it found, the harder the ground. The depth at which it cuts no
   // further grows with its water, up to P.deepest: a rill stays shallow and a gully cuts deep. On gentle ground,
   // which has little fall to cut into, it is a share of that.
   let cut = hr * (rest_at(px) - bp);
-  let deepest = max(P.deepest * min(max(sinA, SIN_MIN) / CUT_SLOPE, 1.0) * gathered / GATHER_MAX, 1e-6);
+  let deepest = max(P.deepest * min(max(sinA, SIN_MIN) / CUT_SLOPE, 1.0) * pow(full, CUT_POWER), 1e-6);
   let erodible = mask_at(px) * (1.0 - JITTER * hash_unit(hash_cell(px, seedFor(1u)))) * saturate(1.0 - cut / deepest);
   let held = hr * s_at(px);
 
   var change = 0.0;      // metres: positive erodes, negative lays down
   if (carry > held) {
-    change = min(min(min(P.dt * P.downcutting * PICKUP, 1.0) * erodible * (carry - held), d2), hr * max(bp - lowest(px), 0.0));
-  } else {
-    change = -min(P.dt * P.deposition * SETTLE, 1.0) * (held - carry);
+    change = min(min(P.dt * P.downcutting * PICKUP, 1.0) * erodible * (carry - held), hr * max(bp - lowest(px), 0.0));
+  } else if (held > SETTLE_BAND * carry) {
+    // Water lays down what it holds beyond SETTLE_BAND times what it can carry: a load that the capacity falls
+    // below for a moment, or by a part, stays in it. And no more than leaves the bed within the fan slope of its
+    // lowest neighbour: sediment comes to rest from the foot of a slope upwards and is never a heap where the
+    // water happened to drop it.
+    let room = hr * (lowest(px) - bp) + P.fan * dx;
+    change = -max(min(min(P.dt * P.deposition * SETTLE, 1.0) * (held - SETTLE_BAND * carry), room), 0.0);
   }
   // In whole steps of the terrain plane, so that the terrain and the sediment change by the same number: the
   // subtraction of the next pass is then exact for every height below 2. (b - (b - x) would say the same, but a
   // compiler may shorten it to x.) No more is laid down than is suspended.
   var delta = round(change / hr / QUANTUM) * QUANTUM;
   if (delta < 0.0) { delta = -min(-delta, floor(s_at(px) / QUANTUM) * QUANTUM); }
-  return Out(vec2f(delta, cur.d), dNew, cur.flow + speed * dMean * P.dt);
+  // Ground above the sea stays above it: a texel the water cut down to the sea would take no more part in the flow.
+  if (delta > 0.0 && bp - delta <= P.sea) { delta = max(floor((bp - P.sea) / QUANTUM) - 1.0, 0.0) * QUANTUM; }
+  // The sediment after the change. What the water laid down earlier it takes up again whole; of the ground below
+  // that, which the run found, only the share P.keep is suspended: the rest is carried out of the terrain.
+  let loose = max(bp - rest_at(px), 0.0);
+  let whole = delta <= loose || P.keep >= 1.0;
+  let gained = select(loose + P.keep * (delta - loose), delta, whole);
+  return Out(vec2f(delta, cur.d), s_at(px) + gained, dNew, cur.flow + speed * dMean * P.dt);
 }`,
 });
 
-// Pass 3 (JT11 eq. 12c, 13c; the transport is this engine's): the terrain and the water take the change, the
-// water evaporates and the next rain falls, and the sediment moves with the water that left each texel. Of what
-// was eroded only the share P.keep is suspended: the rest is carried out of the terrain.
+// Pass 3 (the transport is this engine's): the terrain takes the change, the water evaporates and the next rain
+// falls, and the sediment moves with the water that left each texel. The ground a texel erodes is not added to
+// its water, as JT11 has it (eq. 12c): with loads of tens of metres that was most of the water there was.
 const erode = defineKernel({
   name: 'simulate/hydraulic-erosion.erode',
   inputs: {
-    g: 'vec2', s: 'field', precipitation: MASK_INPUT,
+    g: 'vec2', stirred: 'field', precipitation: MASK_INPUT,
     fluxE: 'field', fluxN: 'field', fluxW: 'field', fluxS: 'field',
   },
   outputs: { next: 'field' },
   inPlace: { b: 'field', d: 'field' },
-  params: { dt: 'f32', sea: 'f32', rain: 'f32', keep: 'f32' },      // rain: metres per second. keep: the share of the eroded material that stays in the water
+  params: { dt: 'f32', sea: 'f32', rain: 'f32' },      // rain: metres per second
   cost: 21,
   code: /* wgsl */ `
 const KE = ${wgsl(KE)};
 const D_MIN = ${wgsl(D_MIN)};
-
-// Sediment of texel q after its own change: what it held, plus the share of what it eroded that is not washed away, less what it laid down.
-fn stirred(q: vec2i) -> f32 {
-  let delta = g_at(q).x;
-  return s_at(q) + select(delta, P.keep * delta, delta > 0.0);
-}
+const QUANTUM = 1.1920928955078125e-7;      // 2^-23, as in the pass before
 
 // The share of texel q's water that left through a pipe carrying f. q had the depth g.y before the flow.
 fn share(q: vec2i, f: f32, dt: f32) -> f32 {
@@ -167,36 +182,63 @@ fn share(q: vec2i, f: f32, dt: f32) -> f32 {
 }
 
 fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
-  if (cur.b <= P.sea) { return Out(0.0, cur.b, 0.0); }
-  let delta = g_at(px).x;
-  let wet = max(0.0, cur.d + delta) * (1.0 - min(KE * P.dt, 1.0)) + P.dt * P.rain * precipitation_at(px) / frame.heightRange;
-
-  let gone = share(px, fluxE_at(px), P.dt) + share(px, fluxN_at(px), P.dt) + share(px, fluxW_at(px), P.dt) + share(px, fluxS_at(px), P.dt);
-  var held = stirred(px) * max(0.0, 1.0 - gone);
   let qe = px + vec2i(1, 0);
   let qn = px + vec2i(0, 1);
   let qw = px - vec2i(1, 0);
   let qs = px - vec2i(0, 1);
-  if (inGrid(qe)) { held += share(qe, fluxW_at(qe), P.dt) * stirred(qe); }
-  if (inGrid(qn)) { held += share(qn, fluxS_at(qn), P.dt) * stirred(qn); }
-  if (inGrid(qw)) { held += share(qw, fluxE_at(qw), P.dt) * stirred(qw); }
-  if (inGrid(qs)) { held += share(qs, fluxN_at(qs), P.dt) * stirred(qs); }
+  if (cur.b <= P.sea) {
+    // What the water brings into the sea settles where it enters it, in whole steps of the terrain plane.
+    var landed = 0.0;
+    if (inGrid(qe)) { landed += share(qe, fluxW_at(qe), P.dt) * stirred_at(qe); }
+    if (inGrid(qn)) { landed += share(qn, fluxS_at(qn), P.dt) * stirred_at(qn); }
+    if (inGrid(qw)) { landed += share(qw, fluxE_at(qw), P.dt) * stirred_at(qw); }
+    if (inGrid(qs)) { landed += share(qs, fluxN_at(qs), P.dt) * stirred_at(qs); }
+    // It fills the sea up to its level and no higher: a texel it lifts out of the sea is land from then on, and
+    // what did not fit stays in the water that will run over it.
+    let steps = floor(landed / QUANTUM);
+    let room = floor(max(P.sea - cur.b, 0.0) / QUANTUM) + 1.0;
+    if (steps < room) { return Out(0.0, cur.b + steps * QUANTUM, 0.0); }
+    return Out(landed - room * QUANTUM, cur.b + room * QUANTUM, 0.0);
+  }
+  let delta = g_at(px).x;
+  let wet = cur.d * (1.0 - min(KE * P.dt, 1.0)) + P.dt * P.rain * precipitation_at(px) / frame.heightRange;
+
+  let gone = share(px, fluxE_at(px), P.dt) + share(px, fluxN_at(px), P.dt) + share(px, fluxW_at(px), P.dt) + share(px, fluxS_at(px), P.dt);
+  var held = stirred_at(px) * max(0.0, 1.0 - gone);
+  if (inGrid(qe)) { held += share(qe, fluxW_at(qe), P.dt) * stirred_at(qe); }
+  if (inGrid(qn)) { held += share(qn, fluxS_at(qn), P.dt) * stirred_at(qn); }
+  if (inGrid(qw)) { held += share(qw, fluxE_at(qw), P.dt) * stirred_at(qw); }
+  if (inGrid(qs)) { held += share(qs, fluxN_at(qs), P.dt) * stirred_at(qs); }
   return Out(held, cur.b - delta, wet);
 }`,
 });
 
-// Pass 5: the sediment still in the water comes to rest where it is, and the accumulated flow becomes its time average.
+// Pass 5: the rain stops. The sediment still in the water comes to rest where the ground has room for it, within
+// the fan slope of its lowest neighbour; what is in water that runs too steeply to drop it leaves the terrain with
+// that water, but for the share P.left, which is all of it when nothing may leave. The accumulated flow becomes
+// its time average.
 const settle = defineKernel({
   name: 'simulate/hydraulic-erosion.settle',
-  inputs: { s: 'field' },
-  inPlace: { b: 'field', flow: 'field' },
-  params: { time: 'f32' },      // simulated seconds of the run
-  cost: 3,
+  inputs: { b: 'field', s: 'field' },
+  outputs: { out: 'field' },
+  inPlace: { flow: 'field' },
+  params: { time: 'f32', fan: 'f32', left: 'f32' },      // time: simulated seconds of the run. fan: the tangent of the fan angle
+  cost: 7,
   code: /* wgsl */ `
 fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
   let held = s_at(px);
-  // A texel that holds nothing keeps its bits.
-  return Out(select(cur.b + held, cur.b, held == 0.0), cur.flow / P.time);
+  let bp = b_at(px);
+  var low = 1e30;
+  if (inGrid(px + vec2i(1, 0))) { low = min(low, b_at(px + vec2i(1, 0))); }
+  if (inGrid(px + vec2i(0, 1))) { low = min(low, b_at(px + vec2i(0, 1))); }
+  if (inGrid(px - vec2i(1, 0))) { low = min(low, b_at(px - vec2i(1, 0))); }
+  if (inGrid(px - vec2i(0, 1))) { low = min(low, b_at(px - vec2i(0, 1))); }
+  let room = max((low - bp) + P.fan * frame.cellSize / frame.heightRange, 0.0);
+  let rests = min(held, room);
+  // With P.left = 1 all of it: the sum below would say the same but for its rounding.
+  let laid = select(rests + (held - rests) * P.left, held, P.left >= 1.0);
+  // A texel that takes nothing keeps its bits.
+  return Out(select(bp + laid, bp, laid == 0.0), cur.flow / P.time);
 }`,
 });
 
@@ -251,7 +293,7 @@ export default defineNode({
       help: 'How quickly sediment settles when the water slows. Higher values drop it sooner, as fans at the foot of the slopes.',
     },
     {
-      kind: 'float', name: 'removal', label: 'Removal', unit: 'ratio', default: 0.6, min: 0, max: 1,
+      kind: 'float', name: 'removal', label: 'Removal', unit: 'ratio', default: 0.4, min: 0, max: 1,
       help: 'Share of the eroded material that the water carries away for good. Higher values leave the gullies and lay down smaller fans.',
     },
     param.slope('talus', {
@@ -290,7 +332,10 @@ export default defineNode({
       coarsestCell: size / FEATURE_CELLS,
       begin(level) {
         const cells = size * (level.res - 1);
-        const planned = levelBudget((duration * cells) / (WAVE_CELLS * NOMINAL_SPEED), level.count, DETAIL_ITERATIONS_HYDRAULIC, 0.5);
+        // A run lasts no longer than water at the nominal speed takes to cross TRAVEL_MAX terrain widths: by then
+        // the runoff of every slope has left the terrain, and more iterations would cut the same gullies again.
+        const lasting = Math.min(duration, TRAVEL_MAX / size);
+        const planned = levelBudget((lasting * cells) / (WAVE_CELLS * NOMINAL_SPEED), level.count, DETAIL_ITERATIONS_HYDRAULIC, 0.5);
         budget = planned.iterations;
         simulatedTime = Math.max(DT_PER_METRE * level.cellSize * planned.equivalent, 1e-9);
         const base = levelInput(ctx, input, level);
@@ -308,18 +353,22 @@ export default defineNode({
         const wet = precipitation ? levelInput(ctx, precipitation, level) : null;
         const dt = DT_PER_METRE * level.cellSize;
         const pipes = () => ({ fluxE: st.fluxE, fluxN: st.fluxN, fluxW: st.fluxW, fluxS: st.fluxS });
+        // The discharge of a channel head: the runoff of a strip one feature size long under the rain HEAD_RAIN. The
+        // strip is as wide as the coarsest cell a base level has, so that a channel counts the same on every level
+        // that resolves it; on a coarser grid it is one texel wide, and a slope's even runoff is no channel there.
+        const perHead = 1 / (HEAD_RAIN * size * ctx.terrainSize * Math.max((size * ctx.terrainSize) / FEATURE_CELLS, level.cellSize));
         await ctx.loop(budget[level.index]!, () => {
           ctx.run(flux, { in: { b: st.b, d: st.d }, rw: pipes(), params: { dt, sea } });
           ctx.run(water, {
-            in: { b: st.b, s: st.s, rest: st.base, mask: gate, ...pipes() }, out: { g: st.g }, rw: { d: st.d, flow: st.flow },
-            params: { dt, sea, capacity, downcutting, deposition, perHead: 1 / (HEAD_RAIN * size * ctx.terrainSize), deepest: CUT_SHARE * size * ctx.terrainSize },
+            in: { b: st.b, s: st.s, rest: st.base, mask: gate, ...pipes() }, out: { g: st.g, stirred: st.spare }, rw: { d: st.d, flow: st.flow },
+            params: { dt, sea, capacity, downcutting, deposition, perHead, deepest: CUT_SHARE * size * ctx.terrainSize, keep: 1 - removal, fan },
           });
+          // The sediment as the pass before left it lies in the spare plane; the new sediment takes the plane of the old.
           ctx.run(erode, {
-            in: { g: st.g, s: st.s, precipitation: wet, ...pipes() }, out: { next: st.spare }, rw: { b: st.b, d: st.d },
-            params: { dt, sea, rain: rain * RAIN_MAX, keep: 1 - removal },
+            in: { g: st.g, stirred: st.spare, precipitation: wet, ...pipes() }, out: { next: st.s }, rw: { b: st.b, d: st.d },
+            params: { dt, sea, rain: rain * RAIN_MAX },
           });
-          [st.s, st.spare] = [st.spare, st.s];
-          ctx.run(talusStep, { in: { h: st.b, mask: gate, rest: st.base }, out: { next: st.spare }, params: { talus, fan, keep: 1 } });
+          ctx.run(talusStep, { in: { h: st.b, mask: gate, rest: st.base }, out: { next: st.spare }, params: { talus, fan, keep: 1, creep: CREEP } });
           [st.b, st.spare] = [st.spare, st.b];
         }, { label: 'Hydraulic erosion', progress: level.progress, preview: () => ({ out: st.b }) });
         if (gate && gate !== mask) ctx.release(gate);
@@ -344,12 +393,13 @@ export default defineNode({
       },
     });
 
-    ctx.run(settle, { in: { s: state.s }, rw: { b: state.b, flow: state.flow }, params: { time: simulatedTime } });
-    for (const plane of [state.s, state.spare, state.d, state.fluxE, state.fluxN, state.fluxW, state.fluxS, state.g]) ctx.release(plane);
-    ctx.output('out', state.b);
+    const out = state.spare;
+    ctx.run(settle, { in: { b: state.b, s: state.s }, out: { out }, rw: { flow: state.flow }, params: { time: simulatedTime, fan, left: (1 - removal) ** FLUSH_POWER } });
+    for (const plane of [state.b, state.s, state.d, state.fluxE, state.fluxN, state.fluxW, state.fluxS, state.g]) ctx.release(plane);
+    ctx.output('out', out);
     const wear = ctx.wants('wear') ? ctx.alloc('field') : null;
     const deposit = ctx.wants('deposit') ? ctx.alloc('field') : null;
-    if (wear || deposit) ctx.run(diff, { in: { before: input, after: state.b }, out: { wear, deposit } });
+    if (wear || deposit) ctx.run(diff, { in: { before: input, after: out }, out: { wear, deposit } });
     if (wear) ctx.output('wear', wear);
     if (deposit) ctx.output('deposit', deposit);
     if (state.flow) ctx.output('flow', state.flow);

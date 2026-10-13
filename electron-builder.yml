@@ -1,0 +1,25 @@
+# Packaging (runtime.md 8.9, 1.6): `npm run dist:win` builds the application and packs dist/ with the Electron
+# of package.json into release/. Unsigned: no certificate is configured and none is looked for.
+appId: app.orogen.desktop
+productName: Orogen
+copyright: Orogen
+directories:
+  output: release
+# Everything the application runs is in dist/, bundled by the build: no module of node_modules is loaded at run
+# time, and none is packed.
+files:
+  - dist/**
+  - package.json
+  - "!node_modules"
+asar: true
+# There is no native module to rebuild.
+npmRebuild: false
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+win:
+  target:
+    - target: zip
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+portable:
+  artifactName: ${productName}-${version}-${os}-${arch}-portable.${ext}

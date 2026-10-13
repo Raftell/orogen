@@ -19,10 +19,21 @@ export interface Picture {
 
 export type DrawStyle = 'grey' | 'hillshade' | '3d' | 'color' | 'sheet';
 
+/**
+ * How the values of a field become black to white: linearly from `lo` to `hi`, or, with `log`, by their
+ * logarithm, where `lo` and everything below it is black.
+ */
+export interface Tone { readonly lo: number; readonly hi: number; readonly log: boolean }
+
 export interface DrawOptions {
   readonly style?: DrawStyle;                                 // default: 'sheet' for a field, 'color' for a colour
-  readonly range?: readonly [number, number] | 'auto';        // the values drawn black and white. Default [0, 1]; 'auto' is [min, max]
+  /**
+   * The values drawn black and white. Default [0, 1]; 'auto' is [min, max]; 'data' is 'auto' for most fields and
+   * a logarithmic scale for one that spans orders of magnitude (toneOf); a Tone is taken as it is.
+   */
+  readonly range?: readonly [number, number] | 'auto' | 'data' | Tone;
   readonly height?: Raster;                                   // the terrain to shade when `f` is a mask or a colour, which is drawn over it
+  readonly lit?: boolean;                                     // '3d' of a colour over a terrain: false draws the colour as it is. Default true
   readonly terrainSize?: number;                              // metres; default 4096
   readonly heightRange?: number;                              // metres; default 1024
   readonly crop?: readonly [x: number, y: number, size: number];
@@ -37,8 +48,17 @@ const VIEW_HEIGHT = 512;
 const PANEL = 512;
 const GAP = 8;
 
-// The light of every shaded picture: towards the light, normalize(−1, −1, √2).
+// The light of a shaded field: towards the light, normalize(−1, −1, √2), the upper left of the map.
 const LIGHT: readonly [number, number, number] = [-0.5, -0.5, Math.SQRT1_2];
+/**
+ * The light of a colour drawn over a terrain in the `3d` view: normalize(−1, 1, √2), the light of the map
+ * mirrored to the viewer's side. The view looks at the slopes that face +Y, and the light of the map comes
+ * from −Y, behind them: every face a viewer sees was in the shade, and a colouring looked dark whatever it was.
+ */
+const VIEW_LIGHT: readonly [number, number, number] = [-0.5, 0.5, Math.SQRT1_2];
+
+/** `map`: the light of a shaded field. `view`: that of a colour seen in the 3d view. `flat`: none; what is drawn over the terrain is shown as it is. */
+type Lighting = 'map' | 'view' | 'flat';
 
 /**
  * Intensity of a surface with the unit normal n: 0.10 + 0.80·((1 + n·L) / 2)², which is 0.68 on level ground
@@ -46,10 +66,15 @@ const LIGHT: readonly [number, number, number] = [-0.5, -0.5, Math.SQRT1_2];
  * where max(n·L, 0) is 0 on every slope above 45°: a terrain of physical steepness is otherwise drawn in two
  * tones. Measured on `ref/fbm` at 513 with the test settings (mean slope 44°): a quarter of the texels each in
  * 0.2..0.4, 0.4..0.6, 0.6..0.8 and 0.8..0.9, none clipped.
+ *
+ * Under the light of the view a colour keeps more of itself: 0.30 + 0.70·((1 + n·L) / 2)², 0.81 on level ground
+ * and 1 on a face turned to the light, so that a colouring is seen as bright as it is where the viewer looks.
  */
-function lit(nx: number, ny: number, nz: number): number {
-  const wrapped = 0.5 + 0.5 * (nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]);
-  return 0.10 + 0.80 * wrapped * wrapped;
+function lit(nx: number, ny: number, nz: number, lighting: Lighting = 'map'): number {
+  if (lighting === 'flat') return 1;
+  const light = lighting === 'view' ? VIEW_LIGHT : LIGHT;
+  const wrapped = 0.5 + 0.5 * (nx * light[0] + ny * light[1] + nz * light[2]);
+  return lighting === 'view' ? 0.30 + 0.70 * wrapped * wrapped : 0.10 + 0.80 * wrapped * wrapped;
 }
 
 const saturate = (v: number): number => Math.min(1, Math.max(0, v));
@@ -97,25 +122,75 @@ function scalar(r: Raster, texel: number): number {
   return 0.2126 * r.data[at]! + 0.7152 * r.data[at + 1]! + 0.0722 * r.data[at + 2]!;
 }
 
-function rangeOf(r: Raster, range: DrawOptions['range']): readonly [number, number] {
-  if (range !== undefined && range !== 'auto') {
-    if (!(Number.isFinite(range[0]) && Number.isFinite(range[1]) && range[0] <= range[1])) throw new RangeError(`The range [${range.join(', ')}] is not a pair of numbers in order`);
+/** At most this many values of a field are ranked for a percentile; a larger field is read at a stride. */
+const RANKED = 1 << 20;
+/** A field whose largest value is more than this many times its mean spans orders of magnitude: drawn linearly its picture is black. */
+const LOG_SPREAD = 100;
+/** A logarithmic scale reaches this far below the largest value at the most: four decades. */
+const LOG_DEPTH = 1e4;
+
+const isTone = (range: DrawOptions['range']): range is Tone => typeof range === 'object' && range !== null && !Array.isArray(range);
+
+/**
+ * The scale `range` gives the values of `r`.
+ *
+ * `'data'` is the scale of a data output. It is `'auto'`, the smallest value black and the largest white, unless
+ * the field holds no negative value and its largest value is more than a hundred times its mean. Such a field
+ * spans orders of magnitude between what is typical of it and what is largest: a drainage area, a discharge,
+ * the depth of rivers, which are lines on a terrain where there is none. Drawn linearly it is black but for a few
+ * texels, its mean under a hundredth of white, so it is drawn by the logarithm of its values: the largest is
+ * white, and black is the first percentile of the positive values or a ten-thousandth of the largest, whichever
+ * is larger. Zero is black. The percentile is that of every `stride`-th value where the field has more than 2^20.
+ */
+export function toneOf(r: Raster, range: DrawOptions['range']): Tone {
+  if (isTone(range)) {
+    if (!(Number.isFinite(range.lo) && Number.isFinite(range.hi) && range.lo <= range.hi && (!range.log || range.lo > 0))) {
+      throw new RangeError(`The scale ${JSON.stringify(range)} is not a pair of numbers in order, above 0 for a logarithmic one`);
+    }
     return range;
   }
-  if (range === undefined) return [0, 1];
-  let lo = Infinity, hi = -Infinity;
-  for (let i = 0; i < r.width * r.height; i++) {
+  if (range !== undefined && range !== 'auto' && range !== 'data') {
+    if (!(Number.isFinite(range[0]) && Number.isFinite(range[1]) && range[0] <= range[1])) throw new RangeError(`The range [${range.join(', ')}] is not a pair of numbers in order`);
+    return { lo: range[0], hi: range[1], log: false };
+  }
+  if (range === undefined) return { lo: 0, hi: 1, log: false };
+  const count = r.width * r.height;
+  let lo = Infinity, hi = -Infinity, sum = 0, finite = 0;
+  for (let i = 0; i < count; i++) {
     const v = scalar(r, i);
     if (!Number.isFinite(v)) continue;
     if (v < lo) lo = v;
     if (v > hi) hi = v;
+    sum += v;
+    finite++;
   }
-  return lo <= hi ? [lo, hi] : [0, 1];
+  if (!(lo <= hi)) return { lo: 0, hi: 1, log: false };
+  if (range === 'auto' || lo < 0 || !(hi > LOG_SPREAD * (sum / finite))) return { lo, hi, log: false };
+
+  const stride = Math.max(1, Math.ceil(count / RANKED));
+  const positive = new Float32Array(Math.ceil(count / stride));
+  let kept = 0;
+  for (let i = 0; i < count; i += stride) {
+    const v = scalar(r, i);
+    if (Number.isFinite(v) && v > 0) positive[kept++] = v;
+  }
+  // Every stride-th value may miss the few that are above 0: the foot of the scale is then its depth below the largest.
+  const ranked = positive.subarray(0, kept).sort();
+  const first = kept > 0 ? ranked[Math.floor(0.01 * (kept - 1))]! : 0;
+  return { lo: Math.min(hi, Math.max(first, hi / LOG_DEPTH)), hi, log: true };
 }
 
-/** `range` mapped linearly to black..white; below it blue, above it red, a value that is not finite magenta. */
-function drawGrey(f: Raster, range: readonly [number, number]): Picture {
-  const [lo, hi] = range;
+/** Where `v` lies on the scale: 0 at black, 1 at white; outside 0..1 beyond them. A scale without a span puts every value in the middle. */
+function placed(tone: Tone, v: number): number {
+  if (tone.log) return v <= tone.lo ? 0 : tone.hi > tone.lo ? Math.log(v / tone.lo) / Math.log(tone.hi / tone.lo) : 0.5;
+  return tone.hi > tone.lo ? (v - tone.lo) / (tone.hi - tone.lo) : 0.5;
+}
+
+/**
+ * The scale mapped to black..white; below a linear one blue, above it red, a value that is not finite magenta.
+ * Below a logarithmic scale lies what counts as nothing, which is black as the foot of the scale is.
+ */
+function drawGrey(f: Raster, tone: Tone): Picture {
   const rgb = new Uint8Array(f.width * f.height * 3);
   for (let i = 0; i < f.width * f.height; i++) {
     const v = scalar(f, i);
@@ -123,11 +198,11 @@ function drawGrey(f: Raster, range: readonly [number, number]): Picture {
     if (!Number.isFinite(v)) {
       rgb[at] = 255;
       rgb[at + 2] = 255;
-    } else if (v < lo) rgb[at + 2] = 255;
-    else if (v > hi) rgb[at] = 255;
+    } else if (!tone.log && v < tone.lo) rgb[at + 2] = 255;
+    else if (v > tone.hi) rgb[at] = 255;
     else {
       // A constant field under 'auto' has no span: it is drawn mid-grey.
-      const grey = hi > lo ? byte((v - lo) / (hi - lo)) : 128;
+      const grey = tone.hi > tone.lo ? byte(placed(tone, v)) : 128;
       rgb[at] = grey;
       rgb[at + 1] = grey;
       rgb[at + 2] = grey;
@@ -160,7 +235,7 @@ interface Surface {
 }
 
 /** The shaded terrain: `opts.height` with `f` drawn over it, or `f` itself when it is a field and no terrain is given. */
-function surfaceOf(f: Raster, opts: DrawOptions): Surface {
+function surfaceOf(f: Raster, opts: DrawOptions, lighting: Lighting = 'map'): Surface {
   const terrainSize = opts.terrainSize ?? 4096;
   const heightRange = opts.heightRange ?? 1024;
   if (!(terrainSize > 0) || !(heightRange > 0)) throw new RangeError('terrainSize and heightRange are metres above 0');
@@ -181,7 +256,7 @@ function surfaceOf(f: Raster, opts: DrawOptions): Surface {
     }
   }
 
-  const [lo, hi] = over && f.kind === 'field' ? rangeOf(f, opts.range) : [0, 1];
+  const tone = over && f.kind === 'field' ? toneOf(f, opts.range) : null;
   const rgb = new Float32Array(count * 3);
   const cellX = terrainSize / Math.max(width - 1, 1);
   const cellY = terrainSize / Math.max(height - 1, 1);
@@ -194,7 +269,7 @@ function surfaceOf(f: Raster, opts: DrawOptions): Surface {
       const dx = right > left ? (z[y * width + right]! - z[y * width + left]!) / ((right - left) * cellX) : 0;
       const dy = down > up ? (z[down * width + x]! - z[up * width + x]!) / ((down - up) * cellY) : 0;
       const norm = Math.hypot(dx, dy, 1);
-      const intensity = lit(-dx / norm, -dy / norm, 1 / norm);
+      const intensity = lit(-dx / norm, -dy / norm, 1 / norm, lighting);
 
       // What is drawn over the shading: nothing (white), the colour, or the tint of a mask or a data field.
       let red = 1, green = 1, blue = 1;
@@ -209,7 +284,7 @@ function surfaceOf(f: Raster, opts: DrawOptions): Surface {
       } else if (over) {
         const v = f.data[i]!;
         if (Number.isFinite(v)) {
-          const t = hi > lo ? saturate((v - lo) / (hi - lo)) : 0;
+          const t = tone!.hi > tone!.lo ? saturate(placed(tone!, v)) : 0;
           red = 1 + (TINT[0] - 1) * t;
           green = 1 + (TINT[1] - 1) * t;
           blue = 1 + (TINT[2] - 1) * t;
@@ -344,18 +419,23 @@ export function drawPreview(f: Raster, opts: DrawOptions = {}): Picture {
     return drawPreview(cropped(f, crop), { ...rest, ...(opts.height ? { height: cropped(opts.height, crop) } : {}) });
   }
   const terrainSize = opts.terrainSize ?? 4096;
+  // The view of a colour is lit from the viewer's side, or not at all; a field keeps the light of the map in
+  // every picture, so that its view is its top view tilted.
+  const viewLighting: Lighting = f.kind !== 'color' ? 'map' : opts.lit === false ? 'flat' : 'view';
+  // One scale for the panels of a sheet: a percentile is ranked once.
+  const scaled = f.kind === 'field' && (style === 'grey' || style === 'sheet' || opts.height !== undefined) ? { ...opts, range: toneOf(f, opts.range) } : opts;
   switch (style) {
-    case 'grey': return drawGrey(f, rangeOf(f, opts.range));
+    case 'grey': return drawGrey(f, toneOf(f, scaled.range));
     case 'color': return drawColor(f);
-    case 'hillshade': return drawHillshade(surfaceOf(f, opts));
-    case '3d': return drawView(surfaceOf(f, opts), terrainSize);
+    case 'hillshade': return drawHillshade(surfaceOf(f, scaled));
+    case '3d': return drawView(surfaceOf(f, scaled, viewLighting), terrainSize);
     case 'sheet': {
-      const surface = surfaceOf(f, opts);
+      const surface = surfaceOf(f, scaled);
       const sheetWidth = 2 * PANEL + VIEW_WIDTH + 2 * GAP;
       const sheet: Picture = { width: sheetWidth, height: PANEL, rgb: backdrop(sheetWidth, PANEL) };
-      placeScaled(sheet, f.kind === 'color' ? drawColor(f) : drawGrey(f, rangeOf(f, opts.range)), 0);
+      placeScaled(sheet, f.kind === 'color' ? drawColor(f) : drawGrey(f, toneOf(f, scaled.range)), 0);
       placeScaled(sheet, drawHillshade(surface), PANEL + GAP);
-      const view = drawView(surface, terrainSize);
+      const view = drawView(viewLighting === 'map' ? surface : surfaceOf(f, scaled, viewLighting), terrainSize);
       for (let y = 0; y < VIEW_HEIGHT; y++) {
         const row = view.rgb.subarray(y * VIEW_WIDTH * 3, (y + 1) * VIEW_WIDTH * 3);
         sheet.rgb.set(row, (y * sheet.width + 2 * (PANEL + GAP)) * 3);

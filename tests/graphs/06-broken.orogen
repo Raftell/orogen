@@ -1,0 +1,227 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4096,
+    "heightRange": 1024,
+    "seed": 1,
+    "buildResolution": 513,
+    "previewLevel": 1,
+    "seaLevel": 0.25
+  },
+  "nodes": {
+    "fbm": {
+      "id": "fbm",
+      "type": "ref/fbm",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {}
+    },
+    "good": {
+      "id": "good",
+      "type": "ref/blur",
+      "version": 1,
+      "position": {
+        "x": 280,
+        "y": 0
+      },
+      "params": {
+        "radius": 0.01
+      }
+    },
+    "ghost": {
+      "id": "ghost",
+      "type": "legacy/unknown",
+      "version": 1,
+      "position": {
+        "x": 280,
+        "y": 160
+      },
+      "params": {
+        "foo": 1,
+        "bar": "x"
+      }
+    },
+    "after": {
+      "id": "after",
+      "type": "ref/blur",
+      "version": 1,
+      "position": {
+        "x": 560,
+        "y": 160
+      },
+      "params": {}
+    },
+    "bad": {
+      "id": "bad",
+      "type": "ref/fail",
+      "version": 1,
+      "position": {
+        "x": 280,
+        "y": 320
+      },
+      "params": {
+        "message": "Reference failure"
+      }
+    },
+    "down": {
+      "id": "down",
+      "type": "ref/blur",
+      "version": 1,
+      "position": {
+        "x": 560,
+        "y": 320
+      },
+      "params": {}
+    },
+    "old": {
+      "id": "old",
+      "type": "ref/combine",
+      "version": 1,
+      "position": {
+        "x": 560,
+        "y": 0
+      },
+      "params": {
+        "mode": "mix",
+        "amount": 25
+      }
+    },
+    "open": {
+      "id": "open",
+      "type": "ref/talus",
+      "version": 1,
+      "position": {
+        "x": 280,
+        "y": 480
+      },
+      "params": {}
+    },
+    "loopa": {
+      "id": "loopa",
+      "type": "ref/blur",
+      "version": 1,
+      "position": {
+        "x": 280,
+        "y": 640
+      },
+      "params": {}
+    },
+    "loopb": {
+      "id": "loopb",
+      "type": "ref/blur",
+      "version": 1,
+      "position": {
+        "x": 560,
+        "y": 640
+      },
+      "params": {}
+    }
+  },
+  "edges": {
+    "fbm-out-good-in": {
+      "id": "fbm-out-good-in",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "good",
+        "port": "in"
+      }
+    },
+    "fbm-out-ghost-in": {
+      "id": "fbm-out-ghost-in",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "ghost",
+        "port": "in"
+      }
+    },
+    "ghost-out-after-in": {
+      "id": "ghost-out-after-in",
+      "from": {
+        "node": "ghost",
+        "port": "out"
+      },
+      "to": {
+        "node": "after",
+        "port": "in"
+      }
+    },
+    "fbm-out-bad-in": {
+      "id": "fbm-out-bad-in",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "bad",
+        "port": "in"
+      }
+    },
+    "bad-out-down-in": {
+      "id": "bad-out-down-in",
+      "from": {
+        "node": "bad",
+        "port": "out"
+      },
+      "to": {
+        "node": "down",
+        "port": "in"
+      }
+    },
+    "fbm-out-old-a": {
+      "id": "fbm-out-old-a",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "old",
+        "port": "a"
+      }
+    },
+    "good-out-old-b": {
+      "id": "good-out-old-b",
+      "from": {
+        "node": "good",
+        "port": "out"
+      },
+      "to": {
+        "node": "old",
+        "port": "b"
+      }
+    },
+    "loopb-out-loopa-in": {
+      "id": "loopb-out-loopa-in",
+      "from": {
+        "node": "loopb",
+        "port": "out"
+      },
+      "to": {
+        "node": "loopa",
+        "port": "in"
+      }
+    },
+    "loopa-out-loopb-in": {
+      "id": "loopa-out-loopb-in",
+      "from": {
+        "node": "loopa",
+        "port": "out"
+      },
+      "to": {
+        "node": "loopb",
+        "port": "in"
+      }
+    }
+  },
+  "groups": {},
+  "ui": {}
+}

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { at, conformance, expectIdentical, expectMask, expectStats, fieldOf, fixtures, renderNode, stats, type FieldData } from '../../helpers/index.ts';
 import def from '../../../src/core/nodes/simulate/rivers.ts';
-import { BANK_RISE, RIVER_DEPTH_EXPONENT, RIVER_TAPER, RIVER_WIDTH_EXPONENT } from '../../../src/core/nodes/simulate/_water-constants.ts';
+import { BANK_RISE, RIVER_DEPTH_EXPONENT, RIVER_TAPER, RIVER_WIDTH_EXPONENT, VALLEY_REACH } from '../../../src/core/nodes/simulate/_water-constants.ts';
 import { R, RIVER_DEFAULTS, T, riversOf, type Rivers } from './_water-sites.ts';
 
 conformance(def, {
@@ -94,7 +94,7 @@ test('simulate/rivers: where no river is within reach the terrain is unchanged, 
   const { out, river } = await renderNode(def, { inputs: { in: input, ...alone }, params });
   const rivers = riversOf(input.data, 257, 0.25, params);
   // The farthest a river lowers the terrain, in texels (8.5), and a texel more for the stretch between two sites.
-  const reach = (0.5 * params.riverWidth * T + (params.riverDepth * R + BANK_RISE * rivers.deepest) / Math.tan((30 * Math.PI) / 180)) / rivers.cell + 2;
+  const reach = (0.5 * params.riverWidth * T + (VALLEY_REACH * (params.riverDepth * R + BANK_RISE * rivers.deepest)) / Math.tan((30 * Math.PI) / 180)) / rivers.cell + 2;
   const near = within(rivers, reach);
   let changed = 0, far = 0, cut = 0;
   for (let i = 0; i < near.length; i++) {
@@ -103,7 +103,7 @@ test('simulate/rivers: where no river is within reach the terrain is unchanged, 
     far++;
     if (out.data[i] !== input.data[i] || river.data[i] !== 0) changed++;
   }
-  assert.ok(far > 0.3 * near.length, `${far} texels lie beyond the reach of every river`);
+  assert.ok(far > 1000, `${far} texels lie beyond the reach of every river`);
   assert.equal(changed, 0, 'texels beyond reach that changed');
   assert.ok(cut > 300, `${cut} texels were cut`);
 });
@@ -160,9 +160,10 @@ test('simulate/rivers: a river begins as a trickle and widens along its course',
   assert.ok(widths.at(-1)! > 3 * widths[10]!, `the river grows from ${widths[10]} m to ${widths.at(-1)} m`);
 });
 
-test('simulate/rivers: a valley as deep as the share makes it, with sides at the bank slope', async () => {
-  // The notch again, now with a valley: the river lies below the ground it ran on, and its sides rise from the
-  // waterline at the bank slope until they meet the ground.
+test('simulate/rivers: a valley as deep as the share makes it, whose sides ease out from the bank slope at the water', async () => {
+  // The notch again, now with a valley: the river lies below the ground it ran on. Beside it the ground is
+  // lowered by the depth of the valley, less with the square of the way to where the valley ends, and within a
+  // bank's width of the water its height above the water is scaled down too, to nothing at the waterline.
   const input = fixtures.notch(257);
   const params = { catchment: 0.02, riverWidth: 0.05, riverDepth: 0.02, valleyDepth: 0.3, bank: 30 };
   const { out, river, surface } = await renderNode(def, { inputs: { in: input, ...alone }, params, settings: DRY });
@@ -173,18 +174,34 @@ test('simulate/rivers: a valley as deep as the share makes it, with sides at the
     const deep = params.valleyDepth * R * site.share ** RIVER_DEPTH_EXPONENT;
     const level = at(surface, x, 128);
     assert.ok(Math.abs((at(input, x, 128) - level) * R - deep) < 0.05 * deep, `column ${x}: the water lies ${(at(input, x, 128) - level) * R} m below the ground, the valley is ${deep} m deep`);
-    // Beyond the channel, on the lower half of the side, where the cut has not begun to fade.
-    let checked = 0;
-    for (let y = 129; y < 160; y++) {
+    // The depth of the valley and of the channel in it, and how far the valley reaches beyond the bank.
+    const total = params.riverDepth * R * site.share ** RIVER_DEPTH_EXPONENT + BANK_RISE * site.rise;
+    const reach = (VALLEY_REACH * total) / tan;
+    let checked = 0, before = Infinity;
+    for (let y = 129; y < 200; y++) {
       const beyond = (y - 128) * 16 - 0.5 * site.width;
-      if (at(river, x, y) > 0 || beyond < 8 || beyond > 0.45 * deep / tan) continue;
+      if (at(river, x, y) > 0 || beyond < 8) continue;
+      const over = (at(input, x, y) - level) * R, cut = (at(input, x, y) - at(out, x, y)) * R;
+      if (beyond > reach + 16) {
+        assert.equal(at(out, x, y), at(input, x, y), `column ${x}, ${beyond} m beyond the channel: past the valley the ground is as it was`);
+        continue;
+      }
+      const left = Math.max(1 - beyond / reach, 0), near = Math.max(1 - (beyond * tan) / total, 0);
+      const high = Math.min(over / total, 2);
+      const wide = total * left * left * (high - 0.25 * high * high);
+      const expected = wide + (over - wide) * near * near;
       checked++;
-      const side = (at(out, x, y) - level) * R;
-      assert.ok(Math.abs(side - tan * beyond) < 0.03 * deep + 0.5, `column ${x}, ${beyond} m beyond the channel: the side stands ${side} m above the water`);
+      assert.ok(Math.abs(cut - expected) < 0.04 * deep + 0.5, `column ${x}, ${beyond} m beyond the channel: the ground is lowered by ${cut} m; the valley is ${expected} m deep there`);
+      assert.ok(cut <= before + 0.5, `column ${x}, ${beyond} m beyond the channel: the valley is no deeper than nearer the river`);
+      before = cut;
     }
-    assert.ok(checked >= 2, `column ${x}: ${checked} texels of the valley's side were measured`);
+    assert.ok(checked >= 6, `column ${x}: ${checked} texels of the valley's side were measured`);
+    // At the waterline the side rises at the bank slope, or less where the ground stood lower than the valley is deep.
+    const first = Math.ceil((0.5 * site.width) / 16) + 1;
+    const rise = (at(out, x, 128 + first + 1) - at(out, x, 128 + first)) * R / 16;
+    assert.ok(rise > 0 && rise < 1.6 * tan, `column ${x}: beside the water the side rises by ${rise}, the bank slope is ${tan}`);
   }
-  // No valley: no cut beside the channel, which is as it was in the test before.
+  // No valley: no cut a bank's width beyond the channel, which is as it was in the test before.
   const flat = await renderNode(def, { inputs: { in: input, ...alone }, params: { ...params, valleyDepth: 0 }, settings: DRY, wants: ['out'] });
   assert.equal(at(flat.out, 220, 140), at(input, 220, 140));
   assert.ok(at(out, 220, 140) < at(input, 220, 140) - 0.02);
@@ -192,9 +209,9 @@ test('simulate/rivers: a valley as deep as the share makes it, with sides at the
 
 test('simulate/rivers: beside a steep river that runs askew to the grid the valley\'s side is even', async () => {
   // A river that is a stair of texels and falls by a fifth: its level changes by more than a metre from one
-  // river texel to the next. The side of its valley is a plane where it is cut in full, so along a row its
-  // height changes by the same amount from texel to texel. Cut from the nearest river texel alone it would
-  // stand in rungs a metre high, and measured to a course that kept a trace of the stair, in ripples.
+  // river texel to the next. The side of its valley is a smooth hollow, so along a row its bend changes little
+  // from texel to texel. Cut from the nearest river texel alone it would stand in rungs a metre high, and
+  // measured to a course that kept a trace of the stair, in ripples: there the bend changes its sign at every texel.
   const res = 513, input = askew(res);
   const params = { catchment: 0.05, valleyDepth: 0.2, riverWidth: 0.05 };
   const { out, river } = await renderNode(def, { res, inputs: { in: input, ...alone }, params, settings: DRY, wants: ['out', 'river'] });
@@ -207,14 +224,15 @@ test('simulate/rivers: beside a steep river that runs askew to the grid the vall
       const y = Math.round(line + (half + k) / Math.cos(Math.atan(0.6)));
       const i = y * res + x;
       if (!(out.data[i]! < input.data[i]! - 1e-4)) continue;
-      const bend = Math.abs(out.data[i - 1]! - 2 * out.data[i]! + out.data[i + 1]!) * R;
+      const bendAt = (j: number): number => (out.data[j - 1]! - 2 * out.data[j]! + out.data[j + 1]!) * R;
+      const bend = Math.abs(bendAt(i + 1) - bendAt(i));
       checked++;
       worst = Math.max(worst, bend);
       if (bend > 0.25) uneven++;
     }
   }
   assert.ok(checked > 800, `${checked} texels of the side were measured`);
-  assert.equal(uneven, 0, `texels at which the side bends by more than 0.25 m along a row; the most is ${worst} m`);
+  assert.equal(uneven, 0, `texels at which the bend of the side changes by more than 0.25 m along a row; the most is ${worst} m`);
 });
 
 test('simulate/rivers: a larger catchment leaves fewer rivers; no width leaves the terrain alone, no depth and no valley leave a strip of water', async () => {
@@ -232,8 +250,8 @@ test('simulate/rivers: a larger catchment leaves fewer rivers; no width leaves t
   assert.ok(stats(shallow.river!).mean > 0.0005, 'a river without depth is still marked');
   assert.ok(removed(shallow.out!) < 0.3 * removed(few.out!) && removed(few.out!) > 0, `no depth removes ${removed(shallow.out!)}, the defaults ${removed(few.out!)}`);
   // A deeper valley removes more.
-  const deep = await share({ catchment: 0.01, valleyDepth: 0.3 });
-  assert.ok(removed(deep.out!) > 2 * removed(few.out!), `a valley three times as deep removes ${removed(deep.out!)} against ${removed(few.out!)}`);
+  const slight = await share({ catchment: 0.01, valleyDepth: 0.1 }), deep = await share({ catchment: 0.01, valleyDepth: 0.4 });
+  assert.ok(removed(deep.out!) > 2 * removed(slight.out!), `a valley four times as deep removes ${removed(deep.out!)} against ${removed(slight.out!)}`);
 });
 
 test('simulate/rivers: a steeper bank keeps the valley narrow', async () => {

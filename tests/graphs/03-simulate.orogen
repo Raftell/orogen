@@ -1,0 +1,140 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4096,
+    "heightRange": 1024,
+    "seed": 1,
+    "buildResolution": 513,
+    "previewLevel": 1,
+    "seaLevel": 0.25
+  },
+  "nodes": {
+    "fbm": {
+      "id": "fbm",
+      "type": "ref/fbm",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {}
+    },
+    "talus": {
+      "id": "talus",
+      "type": "ref/talus",
+      "version": 1,
+      "position": {
+        "x": 280,
+        "y": 0
+      },
+      "params": {
+        "talus": 30,
+        "reach": 0.05
+      }
+    },
+    "steep": {
+      "id": "steep",
+      "type": "ref/slope-mask",
+      "version": 1,
+      "position": {
+        "x": 560,
+        "y": 160
+      },
+      "params": {}
+    },
+    "dist": {
+      "id": "dist",
+      "type": "ref/distance",
+      "version": 1,
+      "position": {
+        "x": 840,
+        "y": 160
+      },
+      "params": {}
+    },
+    "mixed": {
+      "id": "mixed",
+      "type": "ref/combine",
+      "version": 2,
+      "position": {
+        "x": 560,
+        "y": 0
+      },
+      "params": {
+        "mode": "mix",
+        "strength": 1
+      }
+    }
+  },
+  "edges": {
+    "fbm-out-talus-in": {
+      "id": "fbm-out-talus-in",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "talus",
+        "port": "in"
+      }
+    },
+    "talus-out-steep-in": {
+      "id": "talus-out-steep-in",
+      "from": {
+        "node": "talus",
+        "port": "out"
+      },
+      "to": {
+        "node": "steep",
+        "port": "in"
+      }
+    },
+    "steep-out-dist-in": {
+      "id": "steep-out-dist-in",
+      "from": {
+        "node": "steep",
+        "port": "out"
+      },
+      "to": {
+        "node": "dist",
+        "port": "in"
+      }
+    },
+    "talus-out-mixed-a": {
+      "id": "talus-out-mixed-a",
+      "from": {
+        "node": "talus",
+        "port": "out"
+      },
+      "to": {
+        "node": "mixed",
+        "port": "a"
+      }
+    },
+    "fbm-out-mixed-b": {
+      "id": "fbm-out-mixed-b",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "mixed",
+        "port": "b"
+      }
+    },
+    "talus-moved-mixed-mask": {
+      "id": "talus-moved-mixed-mask",
+      "from": {
+        "node": "talus",
+        "port": "moved"
+      },
+      "to": {
+        "node": "mixed",
+        "port": "mask"
+      }
+    }
+  },
+  "groups": {},
+  "ui": {}
+}

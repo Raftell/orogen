@@ -1066,7 +1066,7 @@ Also found by: rain, water, gully, rill, alluvial, fan, sediment, runoff, erode,
 | Sediment capacity | `capacity` | number |  | 1 | 0.1 to 3 | How much sediment running water can carry. Higher values deepen the gullies and enlarge the deposits. |
 | Downcutting | `downcutting` | number |  | 0.5 | 0.1 to 2 | How quickly water picks material up. Higher values cut sharper, deeper channels close to where the water gathers. |
 | Deposition | `deposition` | number |  | 1 | 0.1 to 3 | How quickly sediment settles when the water slows. Higher values drop it sooner, as fans at the foot of the slopes. |
-| Removal | `removal` | number | ratio | 0.6 | 0 to 1 | Share of the eroded material that the water carries away for good. Higher values leave the gullies and lay down smaller fans. |
+| Removal | `removal` | number | ratio | 0.4 | 0 to 1 | Share of the eroded material that the water carries away for good. Higher values leave the gullies and lay down smaller fans. |
 | Talus angle | `talus` | number | angle | 45 | 5 to 90 | Banks steeper than this slump while the water cuts. At the largest value nothing slumps and the channels keep their walls. |
 | Detail | `detail` | number | ratio | 0 | 0 to 1 | Fine roughness added each time the simulation moves to a finer grid, which gives the water new paths to find. |
 | Seed | `seed` | seed |  | 0 | 0 to 4294967295 | Changes the small differences in hardness that decide where the water starts to cut. |
@@ -1117,7 +1117,7 @@ Also found by: river, stream, channel, creek, valley, drainage, water, network.
 | Parameter | Name | Kind | Unit | Default | Range or choices | What it does |
 | --- | --- | --- | --- | --- | --- | --- |
 | Catchment | `catchment` | number | ratio | 0.001 | 0.00001 to 0.5 | The share of the terrain that must drain through a point for a river to begin there: smaller values give more and finer tributaries. |
-| Valley depth | `valleyDepth` | number | height | 0.1 | 0 to 0.5 | How deep a river that drained the whole terrain would cut its valley into the ground; smaller rivers cut shallower ones, and 0 leaves only the channel. |
+| Valley depth | `valleyDepth` | number | height | 0.2 | 0 to 0.5 | How deep a river that drained the whole terrain would cut its valley into the ground; smaller rivers cut shallower ones, and 0 leaves only the channel. |
 | River width | `riverWidth` | number | length | 0.05 | 0 to 0.25 | The width a river would have that drained the whole terrain; a river is narrower by the square root of its share. |
 | River depth | `riverDepth` | number | height | 0.03 | 0 to 0.25 | The depth of the water in a river that drained the whole terrain; smaller rivers are shallower. |
 | Bank slope | `bank` | number | angle | 30 | 5 to 80 | Steeper banks keep the valley narrow; gentler ones cut its sides further back. |
@@ -1215,7 +1215,7 @@ Also found by: talus, scree, slump, thermal, landslide, rockfall, debris, collap
 | Parameter | Name | Kind | Unit | Default | Range or choices | What it does |
 | --- | --- | --- | --- | --- | --- | --- |
 | Talus angle | `talus` | number | angle | 35 | 5 to 89 | Slopes steeper than this collapse. A lower angle flattens more of the terrain. |
-| Reach | `size` | number | length | 0.02 | 0.001 to 0.25 on the slider; any number can be typed | Width of the largest scree slope that forms completely. A longer reach lets taller cliffs collapse all the way. |
+| Reach | `size` | number | length | 0.005 | 0.001 to 0.25 on the slider; any number can be typed | Width of the largest scree slope that forms completely. A longer reach lets taller cliffs collapse all the way. |
 | Strength | `strength` | number | ratio | 1 | 0 to 1 | How far the collapse proceeds: lower values stop it early and leave cliffs partly standing. |
 | Removal | `removal` | number | ratio | 0 | 0 to 1 | Share of the fallen material that is carried away instead of piling up at the foot of the slope. |
 
@@ -1842,9 +1842,9 @@ Nodes that read image files, and the export nodes that say what a build writes. 
 
 <a id="io-export-color"></a>`io/export-color`
 
-Exports a color map as a texture that covers the landscape, for use in its material.
+Exports a color map, or three channels of data, as a texture that covers the landscape, for use in its material.
 
-Also found by: unreal, texture, albedo, diffuse, base color, png.
+Also found by: unreal, texture, albedo, diffuse, base color, packed masks, linear, srgb, png.
 
 - An export node: it has no output and takes part in a build while its Enabled switch is on.
 
@@ -1857,6 +1857,7 @@ Also found by: unreal, texture, albedo, diffuse, base color, png.
 | Enabled | `enabled` | switch |  | on |  | Include this node in builds. |
 | Name | `name` | text |  | `Color` | at most 64 characters | Names the texture file. Only its letters and digits are used. |
 | Size | `dimension` | choice |  | Auto | Auto (`auto`), 1024 (`1024`), 2048 (`2048`), 4096 (`4096`), 8192 (`8192`) | The side of the texture. Auto is the power of two that holds the build resolution, from 1024 to 8192. |
+| Content | `content` | choice |  | Color | Color (`color`), Data (`data`) | Color is stored sRGB-encoded, as a base color is. Data is stored as it is, for a normal map or packed masks: switch sRGB off for that texture in Unreal. |
 
 ### Image File
 

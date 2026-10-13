@@ -26,11 +26,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: gpu-linux, os: ubuntu-latest, adapter: llvmpipe }
-          - { name: gpu-windows, os: windows-latest, adapter: Microsoft }
+          # The suite is split by test file (node --test-shard): on the software adapters one job
+          # no longer finishes in time. Windows' adapter is the slower one and gets more shards.
+          - { name: gpu-linux-1, os: ubuntu-latest, adapter: llvmpipe, shard: 1/2 }
+          - { name: gpu-linux-2, os: ubuntu-latest, adapter: llvmpipe, shard: 2/2 }
+          - { name: gpu-windows-1, os: windows-latest, adapter: Microsoft, shard: 1/4 }
+          - { name: gpu-windows-2, os: windows-latest, adapter: Microsoft, shard: 2/4 }
+          - { name: gpu-windows-3, os: windows-latest, adapter: Microsoft, shard: 3/4 }
+          - { name: gpu-windows-4, os: windows-latest, adapter: Microsoft, shard: 4/4 }
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     env:
       OROGEN_GPU_ADAPTER: ${{ matrix.adapter }}
       OROGEN_GPU_PROFILE: core
@@ -43,9 +49,57 @@ jobs:
       - run: npm ci
       - run: npm run orogen -- probe
       - run: npm run test:gpu
+        env:
+          NODE_OPTIONS: --test-shard=${{ matrix.shard }}
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-output-${{ matrix.name }}
           path: test-output
           if-no-files-found: ignore
+
+  # The WGSL of every kernel against the compiler inside the Electron the product ships (testing.md 8.4). No GPU
+  # and no display on the runner: a virtual display, and Electron's software adapter. Not required to merge
+  # until it has passed reliably here (testing.md 9.3).
+  electron-kernels:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    env:
+      OROGEN_ELECTRON_GPU: software
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 26, cache: npm }
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      # Ubuntu 24.04 restricts unprivileged user namespaces, which Chromium's sandbox uses.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: npm ci
+      - run: npm run build
+      - run: xvfb-run -a npm run test:electron
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output-electron-kernels
+          path: test-output
+          if-no-files-found: ignore
+
+  # The Windows package, unsigned: a zip and a portable executable, kept as an artifact of the run.
+  package-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 26, cache: npm }
+      - run: npm ci
+      - run: npm run dist:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orogen-windows
+          path: |
+            release/*.zip
+            release/*.exe
+          if-no-files-found: error

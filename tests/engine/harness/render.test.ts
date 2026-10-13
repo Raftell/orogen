@@ -1,6 +1,7 @@
 // The harness on a device (testing.md 2.1, 2.3, 2.6, 2.8): the engine and its replacement, renderNode and
-// traceNode with every option and every outcome, the reports, the fbm fixture, renderLadder, expectNoLeaks,
-// and the two functions that belong to later stages.
+// traceNode with every option and every outcome, the reports, the fbm fixture, renderLadder and expectNoLeaks.
+// buildGraph is tested through builds (tests/export/, tests/graphs/05-roundtrip.test.ts), and launchApp, which
+// starts the application, where the application is tested (tests/electron/).
 //
 // Sizes: fields of at most 257 x 257; no field is handed to an assertion of node:assert.
 
@@ -9,9 +10,8 @@ import { test } from 'node:test';
 
 import { adapterNamed } from '../../../src/core/gpu/caps.ts';
 import fbm from '../../../src/core/nodes/ref/fbm.ts';
-import { DeviceLostError } from '../../../src/core/runtime.ts';
 import {
-  at, channelOf, diff, expectClose, expectIdentical, expectNoLeaks, expectStats, fieldOf, fixtures, getEngine, launchApp, makeDoc,
+  at, channelOf, diff, expectClose, expectIdentical, expectNoLeaks, expectStats, fieldOf, fixtures, getEngine, makeDoc,
   NodeFailure, renderLadder, renderNode, TEST_SETTINGS, traceNode, useNodes, type FieldData,
 } from '../../helpers/index.ts';
 import { climb, dim, either, failing, harnessNodes, pick, probe, scale, split, splitCalls } from './nodes.ts';
@@ -315,11 +315,4 @@ test('expectNoLeaks fails while a handle of a result is held, with the MemoryRep
   assert.ok(engine.memory().cacheBytes > 0);
   expectIdentical((await renderNode(scale, { res: 129, slices: 'one' })).out!, times(fixtures.terrain(129), 2));
   assert.equal((await getEngine('one')).engine.memory().cacheBytes, 0);
-});
-
-// ---- later stages --------------------------------------------------------------------------------------------------
-
-test('launchApp belongs to a later stage, and says which', async () => {
-  await assert.rejects(launchApp(), /launchApp and its AppDriver belong to the application stage/);
-  assert.ok(new DeviceLostError('x') instanceof Error);
 });

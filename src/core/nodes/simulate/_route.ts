@@ -42,6 +42,7 @@ export interface RouteArgs {
   readonly seed: number;                               // u32: mixSeed(ctx.seed, 0); used by 'single'
   readonly weight?: Float32Array;                      // contribution of each texel; default 1 everywhere
   readonly receivers?: boolean;                        // also return the receiver codes; with 'single' only
+  readonly sea?: 'all' | 'connected';                  // which ground at or below the sea level is an outlet: all of it (default), or what the border reaches through such ground
 }
 export interface RouteResult {
   readonly filled: Float32Array;                       // the routing surface w
@@ -153,7 +154,7 @@ class Waiting {
  * every other way to an open texel passes a waiting one and nothing on the way lowers a level. On a slope
  * nearly every noted texel is settled from below before the stack is empty, so only pits and their rims wait.
  */
-function flood(h: Float32Array, mark: Uint8Array, res: number, eps: number, sea: number, report: (settled: number) => void): void {
+function flood(h: Float32Array, mark: Uint8Array, res: number, eps: number, sea: number, connected: boolean, report: (settled: number) => void): void {
   const last = res - 1;
   let stack = new Int32Array(1 << 14), sp = 0;
   let noted = new Int32Array(1 << 14), np = 0;
@@ -200,7 +201,33 @@ function flood(h: Float32Array, mark: Uint8Array, res: number, eps: number, sea:
 
   for (let y = 0, i = 0; y < res; y++) {
     const ring = y === 0 || y === last;
-    for (let x = 0; x < res; x++, i++) if (ring || x === 0 || x === last || h[i] <= sea) mark[i] = OUTLET;
+    for (let x = 0; x < res; x++, i++) if (ring || x === 0 || x === last || (!connected && h[i] <= sea)) mark[i] = OUTLET;
+  }
+  if (connected) {
+    // The sea the border reaches: from the texels of the border ring at or below the sea level, through N4
+    // neighbours at or below it. A basin below the sea level that the sea does not reach fills like any other.
+    let front = new Int32Array(1 << 14), count = 0;
+    const wet = (q: number): void => {
+      if (mark[q] === OUTLET || !(h[q] <= sea)) return;
+      mark[q] = OUTLET;
+      if (count === front.length) { const grown = new Int32Array(count * 2); grown.set(front); front = grown; }
+      front[count++] = q;
+    };
+    const enter = (q: number): void => {
+      if (!(h[q] <= sea)) return;
+      if (count === front.length) { const grown = new Int32Array(count * 2); grown.set(front); front = grown; }
+      front[count++] = q;
+    };
+    for (let x = 0; x < res; x++) { enter(x); enter(last * res + x); }
+    for (let y = 1; y < last; y++) { enter(y * res); enter(y * res + last); }
+    // Depth first: every texel is entered once, and a texel of the ring has its neighbours tested for the grid.
+    while (count > 0) {
+      const c = front[--count], x = c % res, y = (c - x) / res;
+      if (x < last) wet(c + 1);
+      if (y < last) wet(c + res);
+      if (x > 0) wet(c - 1);
+      if (y > 0) wet(c - res);
+    }
   }
   for (let y = 0, i = 0; y < res; y++) {
     for (let x = 0; x < res; x++, i++) {
@@ -472,7 +499,7 @@ function runRoute(args: RouteArgs, env: CpuEnv): RouteResult {
   const share = routed ? 0.6 : 1;
 
   const marks = new Uint8Array(n);
-  flood(height, marks, res, eps, sea, (settled) => env.progress((share * settled) / n));
+  flood(height, marks, res, eps, sea, args.sea === 'connected', (settled) => env.progress((share * settled) / n));
   if (!routed) {
     env.progress(1);
     return { filled: height };

@@ -1,0 +1,165 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4096,
+    "heightRange": 1024,
+    "seed": 1,
+    "buildResolution": 513,
+    "previewLevel": 1,
+    "seaLevel": 0.25
+  },
+  "nodes": {
+    "fbm": {
+      "id": "fbm",
+      "type": "ref/fbm",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {
+        "octaves": 4
+      }
+    },
+    "steep": {
+      "id": "steep",
+      "type": "ref/slope-mask",
+      "version": 1,
+      "position": {
+        "x": 280,
+        "y": 160
+      },
+      "params": {}
+    },
+    "blur": {
+      "id": "blur",
+      "type": "ref/blur",
+      "version": 1,
+      "position": {
+        "x": 560,
+        "y": 0
+      },
+      "params": {
+        "radius": 0.02
+      }
+    },
+    "idle": {
+      "id": "idle",
+      "type": "ref/blur",
+      "version": 1,
+      "position": {
+        "x": 840,
+        "y": 0
+      },
+      "params": {
+        "radius": 0.05
+      },
+      "bypass": true
+    },
+    "peaks": {
+      "id": "peaks",
+      "type": "ref/combine",
+      "version": 2,
+      "position": {
+        "x": 1120,
+        "y": 0
+      },
+      "params": {
+        "mode": "max",
+        "strength": 1
+      }
+    },
+    "level": {
+      "id": "level",
+      "type": "ref/autolevel",
+      "version": 1,
+      "position": {
+        "x": 1400,
+        "y": 0
+      },
+      "params": {}
+    }
+  },
+  "edges": {
+    "fbm-out-steep-in": {
+      "id": "fbm-out-steep-in",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "steep",
+        "port": "in"
+      }
+    },
+    "fbm-out-blur-in": {
+      "id": "fbm-out-blur-in",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "blur",
+        "port": "in"
+      }
+    },
+    "steep-out-blur-mask": {
+      "id": "steep-out-blur-mask",
+      "from": {
+        "node": "steep",
+        "port": "out"
+      },
+      "to": {
+        "node": "blur",
+        "port": "mask"
+      }
+    },
+    "blur-out-idle-in": {
+      "id": "blur-out-idle-in",
+      "from": {
+        "node": "blur",
+        "port": "out"
+      },
+      "to": {
+        "node": "idle",
+        "port": "in"
+      }
+    },
+    "idle-out-peaks-a": {
+      "id": "idle-out-peaks-a",
+      "from": {
+        "node": "idle",
+        "port": "out"
+      },
+      "to": {
+        "node": "peaks",
+        "port": "a"
+      }
+    },
+    "fbm-out-peaks-b": {
+      "id": "fbm-out-peaks-b",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "peaks",
+        "port": "b"
+      }
+    },
+    "peaks-out-level-in": {
+      "id": "peaks-out-level-in",
+      "from": {
+        "node": "peaks",
+        "port": "out"
+      },
+      "to": {
+        "node": "level",
+        "port": "in"
+      }
+    }
+  },
+  "groups": {},
+  "ui": {}
+}

@@ -62,8 +62,12 @@ fn bilinear(t: texture_2d<f32>, uv: vec2f) -> f32 { return bilinear4(t, uv).r; }
 
 // ---- terrain shape ----------------------------------------------------------
 // The derivative at a sample from itself (a) and the next two on one side (b, c), per
-// sample: the one-sided difference of second order.
-fn _oneSided(a: f32, b: f32, c: f32) -> f32 { return 0.5 * (4.0 * b - 3.0 * a - c); }
+// sample: the one-sided difference of second order, (4b - 3a - c) / 2, taken over the
+// differences from the sample itself. Its weights total 0, and a device that rounds
+// each product by itself does not find 0 in 4k - 3k - k: level ground at 0.7 had a
+// slope of 3e-8 per sample on its border there, where a device that fuses the
+// products finds none.
+fn _oneSided(a: f32, b: f32, c: f32) -> f32 { return 2.0 * (b - a) - 0.5 * (c - a); }
 // Gradient (dz/dx, dz/dy) of the height texture t at texel p, in metres per metre.
 // Central difference; on t's border the one-sided difference of second order, so that
 // a paraboloid has its own slope up to the border, as it has inside. (The difference of

@@ -67,8 +67,11 @@ orogen render docs/user/examples/ridge.orogen --node steep
 
 **A node type** (first two lines) is drawn as one node at its default parameters. Inputs it needs are fed
 from sample terrains: each terrain input from a terrain of its own, a mask from a slope mask, a colour from a
-colouring of the terrain. The project settings are fixed: a terrain 4096 m wide with a height range of
-1024 m, project seed 1, sea level 0.25.
+colouring of the terrain. The first terrain is chosen to show what the node's category is for: a mountain
+range on gentle ground for the `surface` nodes, an island in its sea for `simulate` and `color`, an eroded
+noise for the others. An input named `stamp` is given a volcano, and the optional inputs `flow` and `snow`
+the drainage of the terrain and the snow on it. The project settings are fixed: a terrain 4096 m wide with a
+height range of 1024 m, project seed 1, sea level 0.25.
 
 | Option | Meaning |
 | --- | --- |
@@ -93,7 +96,10 @@ nodes/<category>/<name>/<output>-<res>-connected.png  with --connected
 ```
 
 A terrain is drawn as three pictures side by side: its values as grey, a shaded map seen from above, and a lit
-3D view. A mask or a data output is drawn in colour over the terrain it belongs to. On standard output the
+3D view. A mask or a data output is drawn in colour over the terrain it belongs to. A data output is drawn
+from its smallest value (black) to its largest (white); one whose largest value is more than a hundred times
+its mean, such as a flow map or the depth of rivers, is drawn on a logarithmic scale, or its picture would be
+black but for a few points. A colour map over its terrain is lit from the viewer's side. On standard output the
 command prints one line of JSON with the time, the peak graphics memory and the paths of the files:
 
 ```
@@ -114,11 +120,13 @@ orogen gallery --category select --res 257
 ```
 
 Renders every node that has an output, or the nodes of one category, as `render` does, and writes one HTML
-page per category with each node's picture, description, ports and parameters, its time and its peak memory.
+page per category with the pictures of each node's outputs, its description, ports and parameters, its time
+and its peak memory.
 The categories are `generate`, `adjust`, `filter`, `simulate`, `select`, `color`, `surface`, `io` and `ref`.
 The default resolution is 513. The pages are `gallery/<category>.html` and `gallery/index.html` under the
 output folder; the command prints the path of the page to open. It exits with 1 when a node failed, except
-for nodes that need a file.
+for nodes that need a file and were drawn without one: an import node is drawn with the file its tests use
+once they have run into the same output folder, and is listed with `No file selected` until then.
 
 Without `--category` every category is drawn, the simulations included; that took about half a minute on the
 development machine. Progress is printed on standard error, one line per node.

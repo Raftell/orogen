@@ -212,11 +212,13 @@ function itemProblems(c: Collected): { readonly code: BuildProblemCode; readonly
     case 'texture': {
       const item: TextureItem = c.item;
       named(item.name, alnumOnly, '1 to 64 ASCII letters and digits');
-      const broken = !oneOf(item.content, ['color', 'mask', 'normal']) ? 'content'
+      // A colour texture and a data texture are both made of a colour field: the first holds colour, the second three channels of data.
+      const wanted = item.content === 'color' || item.content === 'data' ? 'color' : 'field';
+      const broken = !oneOf(item.content, ['color', 'data', 'mask', 'normal']) ? 'content'
         : !oneOf(item.size, ['auto', 1024, 2048, 4096, 8192]) ? 'size'
         : !oneOf(item.bits, [8, 16]) ? 'bits'
         : item.bits === 16 && item.content !== 'mask' ? 'bits (16 only for a mask)'
-        : inputType !== (item.content === 'color' ? 'color' : 'field') ? `source (a ${item.content === 'color' ? 'color' : 'field'})`
+        : inputType !== wanted ? `source (a ${wanted})`
         : null;
       if (broken) fail('E_FORMAT_INVALID', `${c.title}: the texture item has an invalid ${broken}`);
       break;

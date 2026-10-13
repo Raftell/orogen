@@ -1,6 +1,6 @@
 // src/core/nodes/simulate/snow.ts
 import { MASK_INPUT, defineKernel, defineNode, ops, param, type Field } from '../../api.ts';
-import { DETAIL_ITERATIONS_RELAX, FEATURE_CELLS_RELAX, RELAX, SNOW_COVER, SUN_ELEVATION } from './_constants.ts';
+import { DETAIL_ITERATIONS_RELAX, FEATURE_CELLS_RELAX, RELAX, SNOW_COVER, SNOW_CREEP, SUN_ELEVATION } from './_constants.ts';
 import { layerLimit, simulateLayer } from './_layer.ts';
 import { levelBudget, levelInput, refineKernels, refinePlane } from './_refine.ts';
 
@@ -13,7 +13,7 @@ const move = defineKernel({
   inputs: { bed: 'field', layer: 'field', lim: 'field', mask: MASK_INPUT },
   outputs: { next: 'field' },
   // slip: the tangent of the slip angle. fall: the snowfall of this iteration, as a height. sun: the unit vector towards the sun.
-  params: { slip: 'f32', fall: 'f32', snowLine: 'f32', band: 'f32', melt: 'f32', exposure: 'f32', sun: 'vec3f' },
+  params: { slip: 'f32', creep: 'f32', full: 'f32', fall: 'f32', snowLine: 'f32', band: 'f32', melt: 'f32', exposure: 'f32', sun: 'vec3f' },
   includes: [simulateLayer],
   cost: 38,
   code: /* wgsl */ `
@@ -29,7 +29,7 @@ fn compute(px: vec2i, uv: vec2f) -> f32 {
   let n = normalize(vec3f(-gx, -gy, 1.0));
   let lit = 1.0 + P.exposure * (saturate(dot(n, P.sun)) - 1.0);
   let source = P.fall * (mask_at(px) * alt - P.melt * lit * (2.0 - alt));
-  let net = simulateLayer_net(bed, layer, lim, px, P.slip);
+  let net = simulateLayer_net(bed, layer, lim, px, P.slip, P.creep, P.full);
   return max(0.0, layer_at(px) + net / frame.heightRange + source);
 }`,
 });
@@ -123,9 +123,10 @@ export default defineNode({
         const where = mask ? levelInput(ctx, mask, level) : null;
         // One iteration here counts 0.25^index iterations of the base level: it brings that share of the run's snowfall (simulation.md 2.5).
         const fall = (snowfall * 0.25 ** level.index) / Math.max(equivalent, 1);
-        const params = { slip, fall, snowLine, band: ctx.params.band, melt, exposure, sun };
+        // Snow as thick as the snowfall creeps in full, and thinner snow by its share of that.
+        const params = { slip, creep: SNOW_CREEP, full: Math.max(snowfall, 1e-9), fall, snowLine, band: ctx.params.band, melt, exposure, sun };
         await ctx.loop(budget[level.index]!, () => {
-          ctx.run(layerLimit, { in: { bed: s.bed, layer: s.layer }, out: { lim: s.lim }, params: { repose: slip } });
+          ctx.run(layerLimit, { in: { bed: s.bed, layer: s.layer }, out: { lim: s.lim }, params: { repose: slip, creep: SNOW_CREEP, full: Math.max(snowfall, 1e-9) } });
           ctx.run(move, { in: { bed: s.bed, layer: s.layer, lim: s.lim, mask: where }, out: { next: s.next }, params });
           [s.layer, s.next] = [s.next, s.layer];
         }, { label: 'Snow', progress: level.progress });

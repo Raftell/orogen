@@ -57,7 +57,8 @@ export const talusStep = defineKernel({
   name: 'simulate/talus.step',
   inputs: { h: 'field', mask: MASK_INPUT, rest: { kind: 'field', default: 0 } },
   outputs: { next: 'field' },
-  params: { talus: 'f32', fan: 'f32', keep: 'f32' },      // talus, fan: tangents of the two angles
+  // talus, fan: tangents of the two angles. creep: the share of a height difference that loose material evens out on any slope.
+  params: { talus: 'f32', fan: 'f32', keep: 'f32', creep: 'f32' },
   cost: 27,
   code: /* wgsl */ `
 const TRANSFER = ${wgsl(TRANSFER)};
@@ -68,8 +69,15 @@ const TRANSFER = ${wgsl(TRANSFER)};
 fn give(over: f32, steep: f32, kept: f32, loose: f32, steps: f32, gate: f32) -> f32 {
   if (over <= 0.0 || steep <= 0.0) { return 0.0; }
   let slump = over * max(steep - kept, 0.0) / steep;
-  let slide = min(over * max(steep - P.fan, 0.0) / steep, loose);
+  let slide = min(over * max(max(steep - P.fan, 0.0) / steep, P.creep), loose);
   return TRANSFER * gate * max(slump, slide) / steps;
+}
+
+// The slope a pair may keep whose ground at rest has the slope rested: the talus slope across the slope it had.
+// A bank cut into a face stands at the talus angle in its cross-section, however steep the face is.
+fn kept(rested: f32) -> f32 {
+  if (rested <= 0.0) { return P.talus; }
+  return sqrt(P.talus * P.talus + rested * rested);
 }
 
 fn compute(px: vec2i, uv: vec2f) -> f32 {
@@ -88,8 +96,8 @@ ${TALUS_PAIRS.map((pair) => `  if (inGrid(px + vec2i(${pair.dx}, ${pair.dy}))) {
     let rested = sqrt(${pair.steep2('r')}) * perTexel;
     let theirs = max(h${pair.at} - r${pair.at}, 0.0) * metres;
     let gate = min(m11, m${pair.at});
-    gain += give((h${pair.at} - h11) * metres, steep, max(P.talus, rested - theirs / (steps * frame.cellSize)), theirs, steps, gate);
-    loss += give((h11 - h${pair.at}) * metres, steep, max(P.talus, rested - loose / (steps * frame.cellSize)), loose, steps, gate);
+    gain += give((h${pair.at} - h11) * metres, steep, kept(rested - theirs / (steps * frame.cellSize)), theirs, steps, gate);
+    loss += give((h11 - h${pair.at}) * metres, steep, kept(rested - loose / (steps * frame.cellSize)), loose, steps, gate);
   }`).join('\n')}
   return h11 + (gain * P.keep - loss) / metres;
 }`,

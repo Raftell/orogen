@@ -18,7 +18,7 @@ export nodes.
 | --- | --- | --- | --- |
 | **Unreal Landscape** | `io/export-landscape` | a terrain | the landscape's heightmap, and with it everything that is one per landscape: scale, location, layout. At most one per build |
 | **Landscape Layer** | `io/export-layer` | a mask | one landscape target layer, the weights a landscape material paints with |
-| **Color Texture** | `io/export-color` | a colour map | a colour texture for materials |
+| **Color Texture** | `io/export-color` | a colour map | a colour texture for materials; with **Content** Data, a texture of three data channels: a normal map or packed masks made in the graph |
 | **Mask Texture** | `io/export-mask` | a mask | a grey texture for materials, 8 or 16 bits |
 | **Normal Texture** | `io/export-normal` | a terrain | a normal map computed from the terrain's real slopes |
 | **Image File** | `io/export-field` | any field | one image for other tools: PNG, raw, OpenEXR or TIFF |
@@ -35,8 +35,9 @@ The [node reference](nodes.md#io) lists every parameter. Rules:
 node src/cli/main.ts build docs/user/examples/ridge.orogen --out D:\Build\Ridge
 ```
 
-[The command-line page](command-line.md#build) lists the options and exit codes. In the desktop application,
-which is not yet built, the Build panel will run the same pipeline.
+[The command-line page](command-line.md#build) lists the options and exit codes. In the desktop application
+**Engine → Build…** (`Ctrl+B`) asks for an output folder and runs the same pipeline; its Build panel, with the
+settings, the plan and the list of files, is not yet built.
 
 ### The output folder belongs to Orogen
 
@@ -160,6 +161,12 @@ minus one, from 1024 to 8192 (1024 for a build at 1009, 4096 at 4033, 8192 at 81
   manifest's `actorLocationCm` and the extent the terrain size in centimetres.
 - A colour texture holds sRGB colour; a mask or a normal texture holds data. The manifest says which
   (`srgb`), and you switch sRGB off in Unreal for the data textures.
+- **Content** of a Color Texture says what its three channels are. **Color**, the default, is a colouring:
+  the file is sRGB-encoded, as a base colour texture is. **Data** is for a colour map that holds numbers
+  and no colour: a normal map made with a Normal Map node, or masks packed into red, green and blue with
+  Pack Channels. The file then holds the values as they are and the manifest says `"srgb": false`. Left on
+  Color, such a texture would come out too bright in Unreal: a level normal's 0.5 would be stored as 188
+  instead of 128. The alpha channel is not written in either case: a texture has three channels.
 - A normal texture stores the normal's X, Y and Z in red, green and blue, in the landscape's own axes.
   Whether Unreal's default handling of normal maps expects the green channel this way is unconfirmed; if
   lighting from the texture is inverted along Y, flip the green channel in Unreal. Unreal shades a landscape
@@ -215,8 +222,9 @@ text editor. The members you use:
 
 Numbers are written with all their digits. Copy them whole.
 
-`<Name>.report.json` holds what happened: start and end time, the time each export took, the measured lowest
-and highest height, every warning and error. The manifest holds no time, so that the same project builds to
+`<Name>.report.json` holds what happened: start and end time, the time each export took, the time the layer
+weights took (`weightsMs`) and the time it took to finish the files and put them in place (`commitMs`), the
+measured lowest and highest height, every warning and error. The manifest holds no time, so that the same project builds to
 the same bytes.
 
 ## 9. Problems a build reports

@@ -11,8 +11,10 @@ export type PreviewStyle = 'grey' | 'hillshade' | '3d' | 'color' | 'sheet';
 
 export interface PreviewOptions {
   readonly style?: PreviewStyle;                              // default: 'sheet' for a field, 'color' for a colour
-  readonly range?: readonly [number, number] | 'auto';        // 'grey': the values drawn black and white. Default [0, 1]; 'auto' is [min, max]
+  /** The values drawn black and white. Default [0, 1]; 'auto' is [min, max]; 'data' is the scale of a data output: 'auto', or logarithmic for a field that spans orders of magnitude (2.7). */
+  readonly range?: readonly [number, number] | 'auto' | 'data';
   readonly height?: FieldData;                                // the terrain to shade when `f` is a mask or a colour, which is drawn over it
+  readonly lit?: boolean;                                     // '3d' of a colour over a terrain: false draws the colour as it is. Default true
   readonly terrainSize?: number;                              // metres; default 4096
   readonly heightRange?: number;                              // metres; default 1024
   readonly crop?: readonly [x: number, y: number, size: number];

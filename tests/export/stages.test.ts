@@ -228,6 +228,7 @@ test('cancelling before a build begins, in a stage and in the weights leaves the
   expectOnlyReport(inWeights, 'TestLand', 'aborted');
   assert.equal(types(inWeights.events).filter((t) => t === 'build-target').length, 9, 'every stage had run');
   assert.ok(reportOf(inWeights.sink, 'TestLand').weightsMs !== null);
+  assert.equal(reportOf(inWeights.sink, 'TestLand').commitMs, null, 'a build cancelled before its commit has no time for it');
   assert.ok(reportOf(inWeights.sink, 'TestLand').targets.every((t) => t.exportMs !== null));
 });
 
@@ -305,8 +306,9 @@ test('the commit: a file that reports another size is E_WRITE_FAILED, one that c
   assert.deepEqual(stuck.sink.open, []);
   assert.deepEqual([stuck.result.files, stuck.result.manifest], [[], null]);
   assert.deepEqual(reportOf(stuck.sink, 'TestLand').files.map((f) => f.path), before, 'the report lists what became visible');
-  // The commit had begun: progress reached 1.
+  // The commit had begun: progress reached 1, and the report says how long the commit took until it failed.
   assert.ok(stuck.events.some((e) => e.type === 'build-progress' && e.phase === 'commit' && e.fraction === 1));
+  assert.ok((reportOf(stuck.sink, 'TestLand').commitMs ?? -1) >= 0);
 
   // The manifest itself cannot be written.
   const full = memorySink();

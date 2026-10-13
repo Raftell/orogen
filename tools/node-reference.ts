@@ -6,7 +6,8 @@
 //   tools/guard node tools/node-reference.ts --check    writes nothing; exit code 1 when the file is out of date
 //
 // The text of a node comes from its definition alone. What is written here by hand is the introduction and the
-// one paragraph per category.
+// one paragraph per category. tests/unit/docs.test.ts makes the comparison of --check in the unit layer, so the
+// page cannot fall behind the registry unnoticed.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,7 +17,8 @@ import { nodes } from '../src/core/nodes/index.ts';
 import { createRegistry } from '../src/core/runtime.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
-const TARGET = path.join(ROOT, 'docs', 'user', 'nodes.md');
+/** The page this tool writes. */
+export const REFERENCE_FILE = path.join(ROOT, 'docs', 'user', 'nodes.md');
 
 /** The categories in the order of engine.md 4.1, with the sentence the reference says of each. */
 const CATEGORIES: readonly (readonly [Category, string, string])[] = [
@@ -162,7 +164,8 @@ function section(def: NodeDef): string[] {
   return lines;
 }
 
-function page(defs: readonly NodeDef[]): string {
+/** The text of the reference for these definitions, in the order given. */
+export function referencePage(defs: readonly NodeDef[]): string {
   const lines: string[] = [
     '# Node reference',
     '',
@@ -215,22 +218,28 @@ function page(defs: readonly NodeDef[]): string {
   return `${lines.join('\n').trimEnd()}\n`;
 }
 
-const args = process.argv.slice(2);
-if (args.some((arg) => arg !== '--check')) {
-  process.stderr.write('usage: node tools/node-reference.ts [--check]\n');
-  process.exit(2);
+/** The text docs/user/nodes.md has to hold: the reference of the product's registry, which refuses two definitions of one type as the product would. */
+export function nodeReference(): string {
+  return referencePage(createRegistry(nodes).list());
 }
-// The registry refuses two definitions of one type, as the product would.
-const text = page(createRegistry(nodes).list());
-if (args.includes('--check')) {
-  const held = fs.existsSync(TARGET) ? fs.readFileSync(TARGET, 'utf8') : null;
-  if (held !== text) {
-    process.stderr.write(`${path.relative(ROOT, TARGET)} is not what the registry gives: run tools/guard node tools/node-reference.ts\n`);
-    process.exit(1);
+
+if (import.meta.main) {
+  const args = process.argv.slice(2);
+  if (args.some((arg) => arg !== '--check')) {
+    process.stderr.write('usage: node tools/node-reference.ts [--check]\n');
+    process.exit(2);
   }
-  process.stdout.write(`${path.relative(ROOT, TARGET)} is up to date\n`);
-} else {
-  fs.mkdirSync(path.dirname(TARGET), { recursive: true });
-  fs.writeFileSync(TARGET, text);
-  process.stdout.write(`${TARGET}\n`);
+  const text = nodeReference();
+  if (args.includes('--check')) {
+    const held = fs.existsSync(REFERENCE_FILE) ? fs.readFileSync(REFERENCE_FILE, 'utf8') : null;
+    if (held !== text) {
+      process.stderr.write(`${path.relative(ROOT, REFERENCE_FILE)} is not what the registry gives: run tools/guard node tools/node-reference.ts\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`${path.relative(ROOT, REFERENCE_FILE)} is up to date\n`);
+  } else {
+    fs.mkdirSync(path.dirname(REFERENCE_FILE), { recursive: true });
+    fs.writeFileSync(REFERENCE_FILE, text);
+    process.stdout.write(`${REFERENCE_FILE}\n`);
+  }
 }

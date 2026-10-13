@@ -238,11 +238,14 @@ test('E_NAME_INVALID, E_LAYER_NAME_INVALID, E_RANGE_INVALID and E_FORMAT_INVALID
     { kind: 'landscape', worldPartition: { enabled: true, gridSize: 0, regionSize: 32 } }, { kind: 'landscape', worldPartition: { enabled: true, gridSize: 4, regionSize: 65 } },
     { kind: 'landscape', dither: 'yes' }, { kind: 'landscape', zeroAt: 'top' }, { kind: 'landscape', origin: 'middle' }, { kind: 'landscape', layerBlend: 'none' },
     { kind: 'texture', content: 'height' }, { kind: 'texture', size: 512 }, { kind: 'texture', bits: 32 }, { kind: 'texture', content: 'normal', bits: 16 },
-    // A colour texture takes a colour: the test node's input is a field.
-    { kind: 'texture', content: 'color' },
+    // A colour texture takes a colour, and so does a texture of three data channels: the test node's input is a field.
+    { kind: 'texture', content: 'color' }, { kind: 'texture', content: 'data' }, { kind: 'texture', content: 'data', bits: 16 },
     { kind: 'image', format: 'jpeg' }, { kind: 'image', map: 'auto' },
   ];
   for (const item of formats) one({ out: raw(item) }, 'E_FORMAT_INVALID');
+  // A texture of data is made of a colour, as a colour texture is, and is an 8-bit RGB file like it.
+  const data = plan({ out: { type: 'io/export-color', params: { name: 'Packed', content: 'data' }, in: 'paint.out' } });
+  assert.deepEqual([codes(data), data.items.map((entry) => (entry.item.kind === 'texture' ? entry.item.content : entry.item.kind)), data.files[0]!.path, data.files[0]!.encoding], [[], ['data'], 'T_Packed_1024.png', 'png-rgb8']);
   one({ land2: landscape(), out: raw({ kind: 'layer', weightBlended: 'true' }, 'steep.out') }, 'E_FORMAT_INVALID');
 });
 

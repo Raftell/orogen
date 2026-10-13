@@ -7,14 +7,34 @@ const step = defineKernel({
   outputs: { next: 'field' },      // new heights: the other half of the ping-pong pair
   inPlace: { moved: 'field' },     // accumulator: read and written at the own texel only
   params: { talus: 'f32', rate: 'f32' },
+  cost: 33,                        // per texel: its own height, and for each of its eight pairs the neighbour and the two or four heights beside the pair
   code: /* wgsl */ `
-// Height this texel receives from neighbour q (negative: gives). The amount
-// depends only on the two heights, so both texels compute the same magnitude
-// with opposite sign and the total is conserved.
-fn exchange(hp: f32, q: vec2i, dist: f32) -> f32 {
+// Height this texel receives from its neighbour at offset o (negative: gives).
+// A pair exchanges the share of its height difference by which the slope at its
+// middle is above the talus slope. That slope has two parts: along the pair the
+// difference of the two heights, and across it the other diagonal of the cell
+// the two share, or for a pair in a row or column the mean of the two central
+// differences beside it. Measured between the two texels alone, a slope that
+// faces between a row and a diagonal is gentler than it is, and a heap comes to
+// rest as an octagon. Seen from the other texel the sums are the same and the
+// differences only change sign, so both compute the same magnitude with
+// opposite sign and the total is conserved.
+fn exchange(px: vec2i, hp: f32, o: vec2i) -> f32 {
+  let q = px + o;
   if (!inGrid(q)) { return 0.0; }
-  let d = h_at(q) - hp;
-  return sign(d) * max(abs(d) - P.talus * dist, 0.0) * P.rate / dist;
+  let along = h_at(q) - hp;
+  var across: f32;
+  var run = 1.0;                   // texels between the two
+  if (o.x != 0 && o.y != 0) {
+    across = h_at(px + vec2i(o.x, 0)) - h_at(px + vec2i(0, o.y));
+    run = sqrt(2.0);
+  } else {
+    let e = vec2i(abs(o.y), abs(o.x));
+    across = 0.25 * ((h_at(px + e) + h_at(q + e)) - (h_at(px - e) + h_at(q - e)));
+  }
+  let steep = sqrt(along * along + across * across) / run;
+  if (steep <= P.talus) { return 0.0; }
+  return along * (steep - P.talus) / steep * P.rate / run;
 }
 
 // moved accumulates the height that crossed the texel: half of what it gave and
@@ -28,7 +48,7 @@ fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
   for (var j = -1; j <= 1; j++) {
     for (var i = -1; i <= 1; i++) {
       if (i != 0 || j != 0) {
-        let e = exchange(hp, px + vec2i(i, j), length(vec2f(vec2i(i, j))));
+        let e = exchange(px, hp, vec2i(i, j));
         net += e;
         gross += abs(e);
       }

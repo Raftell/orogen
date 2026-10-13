@@ -1,0 +1,27 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4096,
+    "heightRange": 1024,
+    "seed": 1,
+    "buildResolution": 513,
+    "previewLevel": 1,
+    "seaLevel": 0.25
+  },
+  "nodes": {
+    "fbm": {
+      "id": "fbm",
+      "type": "ref/fbm",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {}
+    }
+  },
+  "edges": {},
+  "groups": {},
+  "ui": {}
+}

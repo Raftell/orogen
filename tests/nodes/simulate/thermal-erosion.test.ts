@@ -128,9 +128,10 @@ test('simulate/thermal-erosion: strength 0 runs no iteration and returns the inp
   const run = async (params: Record<string, number>) => (await renderNode(def, { inputs: { in: terrain, ...alone }, params, wants: ['out'] })).out;
   // With a reach of several levels: the refinement of an unchanged terrain is the input (simulation.md 1.7 item 4).
   expectIdentical(await run({ strength: 0, size: 0.1, talus: 20 }), terrain);
-  const weak = meanChange(await run({ strength: 0.1, talus: 25 }), terrain);
-  const full = meanChange(await run({ strength: 1, talus: 25 }), terrain);
-  const low = meanChange(await run({ strength: 1, talus: 15 }), terrain);
+  // A reach of 0.02: five texels of the fixture's grid, over which a slope has the iterations to tell the angles apart.
+  const weak = meanChange(await run({ strength: 0.1, talus: 25, size: 0.02 }), terrain);
+  const full = meanChange(await run({ strength: 1, talus: 25, size: 0.02 }), terrain);
+  const low = meanChange(await run({ strength: 1, talus: 15, size: 0.02 }), terrain);
   assert.ok(weak > 0 && full > 1.5 * weak, `mean change ${weak} at strength 0.1 and ${full} at 1`);
   assert.ok(low > 1.5 * full, `mean change ${full} at 25 degrees and ${low} at 15`);
   // At 89 degrees no pair of the fixture is steep enough.

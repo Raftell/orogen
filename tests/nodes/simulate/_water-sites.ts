@@ -18,7 +18,7 @@ export interface RiverParams {
   readonly seed: number;
 }
 /** The defaults of simulate/rivers. */
-export const RIVER_DEFAULTS: RiverParams = { catchment: 0.001, valleyDepth: 0.1, riverWidth: 0.05, riverDepth: 0.03, bank: 30, seed: 0 };
+export const RIVER_DEFAULTS: RiverParams = { catchment: 0.001, valleyDepth: 0.2, riverWidth: 0.05, riverDepth: 0.03, bank: 30, seed: 0 };
 
 export interface Site {
   readonly texel: number;      // the texel the site lies in
@@ -52,7 +52,7 @@ export function riversOf(height: Float32Array, res: number, seaLevel: number, gi
   const params = { ...RIVER_DEFAULTS, ...given };
   const cell = T / (res - 1);
   const routed = route.run({
-    height: height.slice(), res, eps: routeEps(R), seaLevel, routing: 'single', seed: mixSeed(mixSeed(PROJECT_SEED, params.seed), 0), weight, receivers: true,
+    height: height.slice(), res, eps: routeEps(R), seaLevel, routing: 'single', seed: mixSeed(mixSeed(PROJECT_SEED, params.seed), 0), weight, receivers: true, sea: 'connected',
   }, { progress() {} });
   const filled = routed.filled.slice(), area = routed.area!.slice(), receivers = routed.receivers!.slice();
   const width = params.riverWidth * T;

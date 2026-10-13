@@ -23,10 +23,11 @@ lists. The cells are written so:
 
 | Column | Form |
 | --- | --- |
-| Id | the node type in backticks. A table without the columns below lists nodes another document specifies: several ids in one cell, of which only their being registered is checked |
+| Id | the node type in backticks. A table without the port columns lists nodes another document specifies. With a `Parameters` column it has one node a row, registered and with every parameter and option the row names; without one, several ids in one cell, of which only their being registered is checked |
 | Inputs, Outputs | ports in declaration order, separated by `;`: the name in backticks, then the type: `field` (role `height`), `field, mask`, `field, data`, `color`, `any`, or `same as <input>` for an output of the kind of that input (`engine.md` 4.2); then `, optional` for an optional input. Empty: none |
 | Parameters | names in backticks, separated by commas, in the order of the inspector; an `enum` is followed by its option values in parentheses. Empty: none |
 | Flags | `maskable`, `resolutionDependent` (`engine.md` 4.6), in backticks. Empty: neither |
+| Private index, Private modules | in the table of two owners who share a category: the file of the owner's private index, and the file names of the owner's other private modules, each in backticks, with `*` for any run of characters. Every file of the category whose name begins with `_` is one owner's index or matches a name of exactly one owner |
 
 ## 1. `generate`: 16 nodes
 
@@ -36,8 +37,8 @@ concatenates:
 
 | Owner | Private index | Nodes | Private modules |
 | --- | --- | --- | --- |
-| basics | `_basics.ts` | `constant`, `gradient`, `radial-gradient`, `shape`, `waves`, `fractal-noise`, `cellular-noise`, `eroded-noise` | names beginning `_noise`, `_shape` |
-| landforms | `_landforms.ts` | `mountain`, `mountain-range`, `island`, `volcano`, `crater`, `crater-field`, `canyon`, `dunes` | names beginning `_land` |
+| basics | `_basics.ts` | `constant`, `gradient`, `radial-gradient`, `shape`, `waves`, `fractal-noise`, `cellular-noise`, `eroded-noise` | `_noise*.ts`, `_shape*.ts` |
+| landforms | `_landforms.ts` | `mountain`, `mountain-range`, `island`, `volcano`, `crater`, `crater-field`, `canyon`, `dunes` | `_land.ts`, `_land-*.ts` |
 
 Each owner's WGSL libraries carry its own prefix (`generateNoise…`,
 `generateLand…`: a library name has no slash or hyphen, `engine.md` 3.7), so
@@ -105,13 +106,27 @@ one private index module that `simulate/index.ts` concatenates:
 
 | Owner | Private index | Nodes | Private modules |
 | --- | --- | --- | --- |
-| erosion | `_erosion.ts` | `fluvial-erosion`, `hydraulic-erosion`, `thermal-erosion`, `sediment`, `snow` | `_refine*.ts`, `_constants.ts`, `_talus*.ts`, `_pipes*.ts`, `_stream*.ts`, `_layers*.ts` and others not beginning with `_route`, `_water` |
+| erosion | `_erosion.ts` | `fluvial-erosion`, `hydraulic-erosion`, `thermal-erosion`, `sediment`, `snow` | `_refine*.ts`, `_constants.ts`, `_talus*.ts`, `_layer*.ts`, `_diff.ts` |
 | hydrology | `_hydrology.ts` | `fill`, `flow`, `rivers`, `lakes`, `sea` | `_route*.ts`, `_water*.ts` |
 
-| Id | Specified in |
-| --- | --- |
-| `simulate/fluvial-erosion`, `simulate/hydraulic-erosion`, `simulate/thermal-erosion`, `simulate/sediment`, `simulate/snow` | `simulation.md` sections 3, 4, 5, 5.9 and 10 |
-| `simulate/fill`, `simulate/flow`, `simulate/rivers`, `simulate/lakes`, `simulate/sea` | `simulation.md` sections 6, 7, 8, 9.1 and 9.2 |
+The ports, and what each parameter means, are in `simulation.md`; the names
+are listed here as the owners built them. Two are beyond the first design of
+their node: `removal` of `simulate/hydraulic-erosion`, the share of the eroded
+material that leaves the terrain, and `valleyDepth` of `simulate/rivers`, how
+deep a river cuts the valley around its channel.
+
+| Id | Parameters | Specified in |
+| --- | --- | --- |
+| `simulate/fluvial-erosion` | `size`, `duration`, `concavity`, `talus`, `uplift`, `lakeFill`, `detail`, `seed` | `simulation.md` section 3 |
+| `simulate/hydraulic-erosion` | `size`, `duration`, `rain`, `capacity`, `downcutting`, `deposition`, `removal`, `talus`, `detail`, `seed` | `simulation.md` section 4 |
+| `simulate/thermal-erosion` | `talus`, `size`, `strength`, `removal` | `simulation.md` section 5 |
+| `simulate/sediment` | `thickness`, `repose`, `size` | `simulation.md` 5.9 |
+| `simulate/snow` | `snowfall`, `snowLine`, `band`, `slipAngle`, `melt`, `exposure`, `angle`, `size` | `simulation.md` section 10 |
+| `simulate/fill` | `tilt` | `simulation.md` 6.4 |
+| `simulate/flow` | `routing` (`single`, `multiple`), `seed` | `simulation.md` section 7 |
+| `simulate/rivers` | `catchment`, `valleyDepth`, `riverWidth`, `riverDepth`, `bank`, `seed` | `simulation.md` section 8 |
+| `simulate/lakes` | `minDepth`, `minSize` | `simulation.md` 9.1 |
+| `simulate/sea` | `mode` (`connected`, `global`), `strength`, `shoreSize`, `shoreHeight` | `simulation.md` 9.2 |
 
 Two private modules exist from the start, written by the integrator:
 `_refine.ts`, the refine module of `simulation.md` section 2 (`levelInput`,
@@ -120,10 +135,16 @@ Two private modules exist from the start, written by the integrator:
 calibration register of `simulation.md` section 13, which starts with the two
 constants the refine module uses. The erosion owner owns both from then on and
 adds its rows of the register to `_constants.ts`; the hydrology owner keeps the
-rows that only sections 6 to 9 use in a `_route*.ts` or `_water*.ts` module of
-its own. `tests/engine/ops/refine.test.ts` and `coarse-to-fine.test.ts` hold
-the refine module to what `simulation.md` states of it: a change of its
-behaviour is a change of that document first.
+rows that only sections 6 to 9 use in `_water-constants.ts`. The other private
+modules are `_talus.ts` (the pairwise exchange of thermal erosion), `_layer.ts`
+(the mobile layers) and `_diff.ts` (wear and deposit) of the erosion owner, and
+`_route.ts` (the router), `_water-course.ts` and `_water-jump.ts` (the courses
+of rivers) of the hydrology owner; `simulation.md` 1.1 lists what each holds.
+The virtual pipes and the stream-power solver have no module of their own:
+their kernels belong to one node each and are in its file.
+`tests/engine/ops/refine.test.ts` and `coarse-to-fine.test.ts` hold the refine
+module to what `simulation.md` states of it: a change of its behaviour is a
+change of that document first.
 
 The erosion nodes use the routing of `simulation.md` section 6 where it says
 so. The hydrology owner delivers the router first and the two agree on its
@@ -169,14 +190,14 @@ valley floors. The `radius` of `select/slope`, `select/aspect` and
 
 | Id | Title | Inputs | Outputs | Parameters | Flags | What it adds |
 | --- | --- | --- | --- | --- | --- | --- |
-| `surface/terraces` | Terraces | `in` field | `out` field | `levels`, `sharpness`, `irregularity`, `size`, `seed` | `maskable` | Steps the terrain into flat benches with steep risers; `size` is that of the irregularity |
-| `surface/strata` | Strata | `in` field | `out` field | `thickness`, `angle`, `tilt`, `strength`, `warpStrength`, `seed` | `maskable` | Tilted rock layers of varying hardness that stand out on slopes; `thickness` is a height, `tilt` an angle |
+| `surface/terraces` | Terraces | `in` field | `out` field | `levels`, `sharpness`, `irregularity`, `size`, `radius`, `seed` | `maskable` | Steps the terrain into flat benches with steep risers; `size` is that of the irregularity, and features of the terrain smaller than `radius` do not shape the edges of the benches |
+| `surface/strata` | Strata | `in` field | `out` field | `thickness`, `angle`, `tilt`, `strength`, `slopeMin`, `warpStrength`, `warpSize`, `radius`, `seed` | `maskable` | Tilted rock layers of varying hardness that stand out on slopes; `thickness` is a height, `tilt` an angle. The layers show on ground steeper than `slopeMin`; `warpSize` is the width of the folds `warpStrength` gives them, and features of the terrain smaller than `radius` do not shape their edges |
 | `surface/outcrops` | Outcrops | `in` field | `out` field; `coverage` field, mask | `size`, `strength`, `slopeMin`, `seed` | `maskable` | Angular rock faces breaking out of steep ground |
 | `surface/stones` | Stones | `in` field | `out` field; `coverage` field, mask | `size`, `density`, `height`, `slopeMax`, `seed` | `maskable` | Scattered stones and boulders; `density` is a ratio |
 | `surface/roughen` | Roughen | `in` field | `out` field | `size`, `strength`, `slopeBias`, `seed` | `maskable` | Fine multi-scale roughness, stronger on steep ground; `slopeBias` is a ratio |
 | `surface/cracks` | Cracks | `in` field | `out` field | `size`, `depth`, `width`, `seed` | `maskable` | A network of fissures: dried mud, jointed rock; `depth` is a height, `width` a length |
-| `surface/ripples` | Ripples | `in` field | `out` field | `size`, `angle`, `height`, `irregularity`, `seed` | `maskable` | Small directional ripples such as wind-blown sand |
-| `surface/fault` | Faults | `in` field | `out` field | `count`, `height`, `angle`, `spread`, `seed` | `maskable` | Straight fault lines that offset the ground on either side; `height` is the throw, `spread` an angle |
+| `surface/ripples` | Ripples | `in` field | `out` field | `size`, `angle`, `height`, `irregularity`, `slopeMax`, `seed` | `maskable` | Small directional ripples such as wind-blown sand, on ground no steeper than `slopeMax` |
+| `surface/fault` | Faults | `in` field | `out` field | `count`, `height`, `angle`, `spread`, `reach`, `seed` | `maskable` | Straight fault lines that offset the ground on either side; `height` is the throw, `spread` an angle, and `reach` how far from a fault the ground is moved |
 | `surface/scatter` | Scatter | `in` field; `stamp` field | `out` field | `count`, `sizeMin`, `sizeMax`, `mode` (`add`, `maximum`, `subtract`), `seed` | `maskable` | Stamps copies of a second input over the terrain with random place, size and turn |
 
 ## 8. `io`: 8 nodes
@@ -188,9 +209,14 @@ Owned by the export owner (`testing.md` 7.1).
 | `io/import-field` | Import Heightmap | | `out` field | `file`, `channel` (`red`, `green`, `blue`, `alpha`, `luma`), `inMin`, `inMax`, `fit` (`stretch`, `contain`, `cover`), `filter` (`nearest`, `linear`, `cubic`) | | A PNG (8 or 16 bit), TIFF, OpenEXR or raw file as heights or a mask; `inMin` and `inMax` are the range of file values mapped to 0..1, without clamping. A raw file is told by its extension (`.r16` and `.raw` 16 bits, `.r8` 8 bits, `.r32` floats) and is square. `fit` places an image that is not square: stretched, whole in the middle of level ground at height 0, or cut to its middle square. `filter` reads an image coarser than the grid; a finer one is averaged, except with `nearest`. Cache key through the default `externalKey` of a `file` parameter (`engine.md` 4.12) |
 | `io/import-color` | Import Image | | `out` color | `file`, `fit` (`stretch`, `contain`, `cover`), `filter` (`nearest`, `linear`, `cubic`) | | A colour image (PNG, TIFF, OpenEXR), with the same fitting options; sRGB to linear on input for whole-number samples, while an OpenEXR file and a float TIFF hold linear values and are taken as they are. The output is opaque: a file's alpha is not kept, and `contain` sets the image on black |
 
-| Id | Specified in |
-| --- | --- |
-| `io/export-landscape`, `io/export-layer`, `io/export-mask`, `io/export-field`, `io/export-color`, `io/export-normal` | `export-unreal.md` section 2 |
+| Id | Parameters | Specified in |
+| --- | --- | --- |
+| `io/export-landscape` | `enabled`, `name`, `rangeMode` (`measured`, `fixed`), `headroom`, `heightMin`, `heightMax`, `dither`, `zeroAt` (`seaLevel`, `bottom`), `origin` (`center`, `corner`), `baseLayer`, `layerBlend` (`advanced`, `final`), `layerFloor`, `layerLimit`, `partition`, `gridComponents`, `regionComponents` | `export-unreal.md` 2.4 |
+| `io/export-layer` | `enabled`, `layer`, `weightBlended` | `export-unreal.md` 2.4 |
+| `io/export-mask` | `enabled`, `name`, `dimension` (`auto`, `1024`, `2048`, `4096`, `8192`), `bits` (`8`, `16`) | `export-unreal.md` 2.4 |
+| `io/export-field` | `enabled`, `name`, `format` (`png8`, `png16`, `r16`, `r32`, `exr`, `tiff16`, `tiff32`), `rangeMode` (`unit`, `measured`) | `export-unreal.md` 2.4 |
+| `io/export-color` | `enabled`, `name`, `dimension` (`auto`, `1024`, `2048`, `4096`, `8192`), `content` (`color`, `data`) | `export-unreal.md` 2.4 |
+| `io/export-normal` | `enabled`, `name`, `dimension` (`auto`, `1024`, `2048`, `4096`, `8192`) | `export-unreal.md` 2.4 |
 
 ## 9. Not in the first release
 

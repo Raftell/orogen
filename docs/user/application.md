@@ -1,9 +1,34 @@
 # The desktop application
 
-**Not yet built.** The repository holds no source of the application: no window, no graph editor, no
-viewport. Nothing on this page can be run or tried today. It describes the application only as far as the
-project's design documents fix it (`docs/contract/runtime.md`, sections 7 and 8), so that you know what the
-command-line program is a stand-in for. Details that the design leaves to the people who will build the
+**Its frame is built; its panels are not.** The window exists, and so does everything around the panels: the
+menus, the command palette, the status bar, docking, project files, undo and redo, the preferences and the
+recovery of the graphics device. The five panels are still placeholders. The viewport shows the terrain of the
+project from above and has no camera; the graph, the inspector, the library and the build panel are empty. A
+project can therefore be opened, computed, saved and built in the window, and cannot yet be edited there.
+
+The application has been tested on Linux in a window that is never shown. **Nobody has started it on Windows,
+and no test has looked at it in a visible window.**
+
+## What works today
+
+| You can | How |
+| --- | --- |
+| start with a project of one mountain range, or with a project file | `npm start`; `npx electron . <file.orogen>` |
+| open, save and save under another name; open a recent project | **File**, or `Ctrl+O`, `Ctrl+S`, `Ctrl+Shift+S`. Unsaved changes are asked about before they are discarded, also when the window is closed |
+| see the terrain the project shows | the Viewport panel, from above, lit from one side |
+| undo and redo | **Edit**, or `Ctrl+Z` and `Ctrl+Shift+Z` |
+| run any command by its name | the command palette: `Ctrl+Shift+P` or `F1` |
+| build the project | **Engine → Build…** (`Ctrl+B`) asks for the output folder |
+| pause and resume computing | **Engine → Pause or Resume Previews**, or `` ` `` |
+| see what the engine does | the status bar: the graphics device and its adapter, what is being computed, the resolution shown, the graphics memory in use against its budget, and the number of nodes that failed. A press on that number lists the errors |
+| change the memory budget and the keys, and reset the layout | **Edit → Preferences…** (`Ctrl+,`) |
+| rearrange the panels | drag their tabs; the layout is kept for the next start, and **View → Reset Layout** brings the default back |
+| start the engine anew when it hangs | **Engine → Restart Engine**. The project is not in the engine, so nothing is lost |
+
+A software adapter is said in the status bar for as long as the application runs on one: everything is then slow.
+
+The rest of this page describes the application as the project's design documents fix it
+(`docs/contract/runtime.md`, sections 7 and 8). Details that the design leaves to the people who will build the
 panels are not described here, and what is described may change before it ships.
 
 ## What it is
@@ -61,6 +86,7 @@ from disk. After three failures it stops trying and waits for you.
 | --- | --- | --- |
 | `Mod+N`, `Mod+O`, `Mod+S`, `Mod+Shift+S` | new, open, save, save as | everywhere |
 | `Mod+Z`; `Mod+Shift+Z` or `Mod+Y` | undo; redo | everywhere |
+| `Mod+,` | the preferences | everywhere |
 | `Mod+Shift+P` or `F1` | the command palette | everywhere |
 | `` ` `` (the key left of 1) | pause and resume computing | everywhere |
 | `Mod+B` | start a build | everywhere |
@@ -76,13 +102,13 @@ from disk. After three failures it stops trying and waits for you.
 | `Mod+0` or `Home` | fit the graph into the panel | graph |
 | `F` | frame the terrain | viewport |
 
-## How it will be started
+## How it is started
 
-`npm run build` will build the application into the folder `dist`, and `electron .` in the repository's
-folder will start it. Today `npm run build` fails, because there is nothing to build. A packaged Windows
-version is planned.
+`npm start` builds the application into the folder `dist` and starts it; `npm run build` and then
+`npx electron .`, both in the repository's folder, do the same in two steps. `npm run dist:win` packs a zip and
+a portable executable for Windows into the folder `release`; that package has never been built or started.
 
-## Until then
+## Until the panels exist
 
 - Write the project file by hand: [Concepts](concepts.md#the-project-file).
 - Look at a node, or at a node of your project, with `orogen render`: [command line](command-line.md#render).

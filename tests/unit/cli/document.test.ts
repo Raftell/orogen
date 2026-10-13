@@ -9,7 +9,7 @@ import type { NodeDef } from '../../../src/core/api.ts';
 import { createRegistry, newDoc, previewResolution, serializeDoc, type GraphDoc, type NodeRegistry } from '../../../src/core/runtime.ts';
 import { UsageError } from '../../../src/cli/args.ts';
 import {
-  hasConnectedVariant, inputFeeds, maskFeed, projectDocument, RENDER_SETTINGS, terrainParams, terrainType, typeDocument, type RenderPlan,
+  feedSource, firstTerrain, hasConnectedVariant, inputFeeds, maskFeed, projectDocument, RENDER_SETTINGS, terrainParams, terrainType, typeDocument, type RenderPlan,
 } from '../../../src/cli/document.ts';
 import { colorize, combine, everyKind, gen, node, select, sink, soften } from '../graph-fixtures.ts';
 
@@ -37,7 +37,7 @@ const subject = node({
   type: 'filter/subject', title: 'Subject', category: 'filter',
   inputs: [
     { name: 'in', type: 'field' },
-    { name: 'flow', type: 'field', role: 'data' },
+    { name: 'area', type: 'field', role: 'data' },
     { name: 'either', type: 'any' },
     { name: 'weights', type: 'field', role: 'mask' },
     { name: 'tint', type: 'color', optional: true },
@@ -85,11 +85,11 @@ test('a node type: each height, data and `any` input takes a terrain of its own;
   assert.equal(plan.connected, true);
   assert.equal(plan.doc.nodes[plan.nodeId]!.type, 'filter/subject');
   assert.deepEqual(
-    ['in', 'flow', 'either', 'weights', 'tint'].map((port) => sourceOf(plan, port)),
+    ['in', 'area', 'either', 'weights', 'tint'].map((port) => sourceOf(plan, port)),
     ['ref/fbm.out', 'ref/fbm.out', 'ref/fbm.out', 'ref/slope-mask.out', 'ref/colorize.out'],
   );
   // Three terrains: the first is ref/fbm at its defaults, the others have a seed and a feature size of their own.
-  assert.deepEqual(['in', 'flow', 'either'].map((port) => feedOf(plan, port)!.params), [FIRST, { ...FIRST, seed: 1, size: 0.1 }, { ...FIRST, seed: 2, size: 0.5 }]);
+  assert.deepEqual(['in', 'area', 'either'].map((port) => feedOf(plan, port)!.params), [FIRST, { ...FIRST, seed: 1, size: 0.1 }, { ...FIRST, seed: 2, size: 0.5 }]);
   assert.deepEqual([0, 1, 2, 3, 4, 5].map(terrainParams), [{}, { seed: 1, size: 0.1 }, { seed: 2, size: 0.5 }, { seed: 3, size: 0.05 }, { seed: 4, size: 0.25 }, { seed: 5, size: 0.1 }]);
   assert.deepEqual(typesOf(plan.doc), ['filter/subject', 'ref/colorize', 'ref/fbm', 'ref/fbm', 'ref/fbm', 'ref/fbm', 'ref/slope-mask']);
   // The colour is made of the first terrain. The mask is a slope mask of that terrain's broad shape, its first
@@ -105,11 +105,11 @@ test('a node type: each height, data and `any` input takes a terrain of its own;
   assert.deepEqual(plan.warnings, []);
   // What the node was given, in the order of its ports: the pictures of the inputs are drawn from this.
   assert.deepEqual(plan.inputs.map((input) => `${input.port}: ${input.kind} ${plan.doc.nodes[input.from.node]!.type}.${input.from.port}`), [
-    'in: terrain ref/fbm.out', 'flow: terrain ref/fbm.out', 'either: terrain ref/fbm.out', 'weights: mask ref/slope-mask.out', 'tint: color ref/colorize.out',
+    'in: terrain ref/fbm.out', 'area: terrain ref/fbm.out', 'either: terrain ref/fbm.out', 'weights: mask ref/slope-mask.out', 'tint: color ref/colorize.out',
   ]);
 
   assert.deepEqual(inputFeeds(subject, true), {
-    in: { kind: 'terrain', index: 0 }, flow: { kind: 'terrain', index: 1 }, either: { kind: 'terrain', index: 2 }, weights: { kind: 'mask' }, tint: { kind: 'color', index: 0 },
+    in: { kind: 'terrain', index: 0 }, area: { kind: 'terrain', index: 1 }, either: { kind: 'terrain', index: 2 }, weights: { kind: 'mask' }, tint: { kind: 'color', index: 0 },
   });
   // A second colour input is the colouring of the second terrain.
   const twoColors = node({ type: 'color/blend', title: 'Blend', category: 'color', inputs: [{ name: 'a', type: 'color' }, { name: 'b', type: 'color' }], outputs: [{ name: 'out', type: 'color' }] });
@@ -124,12 +124,12 @@ test('a node type: the plain variant is the node as it is dropped into a graph: 
   // An optional input of any type: the colour of the subject.
   const dropped = typeDocument(full, 'filter/subject');
   assert.equal(dropped.connected, false);
-  assert.deepEqual(['in', 'flow', 'either', 'weights', 'tint'].map((port) => sourceOf(dropped, port)), ['ref/fbm.out', 'ref/fbm.out', 'ref/fbm.out', 'ref/slope-mask.out', null]);
+  assert.deepEqual(['in', 'area', 'either', 'weights', 'tint'].map((port) => sourceOf(dropped, port)), ['ref/fbm.out', 'ref/fbm.out', 'ref/fbm.out', 'ref/slope-mask.out', null]);
   assert.deepEqual(typesOf(dropped.doc), ['filter/subject', 'ref/fbm', 'ref/fbm', 'ref/fbm', 'ref/fbm', 'ref/slope-mask'], 'no colouring is made for an input that is not connected');
   assert.deepEqual(inputFeeds(subject, false), {
-    in: { kind: 'terrain', index: 0 }, flow: { kind: 'terrain', index: 1 }, either: { kind: 'terrain', index: 2 }, weights: { kind: 'mask' }, tint: null,
+    in: { kind: 'terrain', index: 0 }, area: { kind: 'terrain', index: 1 }, either: { kind: 'terrain', index: 2 }, weights: { kind: 'mask' }, tint: null,
   });
-  assert.deepEqual(dropped.inputs.map((input) => input.port), ['in', 'flow', 'either', 'weights']);
+  assert.deepEqual(dropped.inputs.map((input) => input.port), ['in', 'area', 'either', 'weights']);
 
   // A node's own optional mask.
   const plain = typeDocument(masks, 'ref/combine');
@@ -191,7 +191,7 @@ test('a node type: the first terrain is generate/eroded-noise where the registry
 
   const plan = typeDocument(product, 'filter/subject', { connected: true });
   // Terrain 0 at the defaults of its type; every further terrain is a ref/fbm with a seed and a size of its own.
-  assert.deepEqual(['in', 'flow', 'either'].map((port) => `${feedOf(plan, port)!.type} ${JSON.stringify(feedOf(plan, port)!.params)}`), [
+  assert.deepEqual(['in', 'area', 'either'].map((port) => `${feedOf(plan, port)!.type} ${JSON.stringify(feedOf(plan, port)!.params)}`), [
     'generate/eroded-noise {"size":0.25,"octaves":8,"seed":0}', 'ref/fbm {"seed":1,"size":0.1,"octaves":8}', 'ref/fbm {"seed":2,"size":0.5,"octaves":8}',
   ]);
   // The colouring is of terrain 0. The mask is of its broad shape, which the eroded noise has in two octaves,
@@ -208,9 +208,146 @@ test('a node type: the first terrain is generate/eroded-noise where the registry
   assert.deepEqual(typesOf(typeDocument(product, 'generate/eroded-noise').doc), ['generate/eroded-noise']);
 });
 
+// ---- the first terrain by category, and the inputs the wiring knows by name ---------------------------------------
+
+const eroded = node({
+  type: 'generate/eroded-noise', title: 'Eroded Noise', category: 'generate',
+  params: [
+    { kind: 'float', name: 'size', unit: 'length', help: 'A size.', default: 0.25, min: 0.001, max: 4, soft: true, scale: 'log' },
+    { kind: 'int', name: 'octaves', help: 'Octaves.', default: 8, min: 1, max: 16 },
+    { kind: 'seed', name: 'seed', help: 'A seed.', default: 0 },
+  ],
+});
+const landform = (type: string, title: string, size: number): NodeDef => node({
+  type, title, category: 'generate',
+  params: [
+    { kind: 'float', name: 'size', unit: 'length', help: 'A size.', default: size, min: 0.05, max: 2, soft: true, scale: 'log' },
+    { kind: 'float', name: 'erosion', unit: 'ratio', help: 'Gullies.', default: 0.6, min: 0, max: 1 },
+  ],
+});
+const range = landform('generate/mountain-range', 'Mountain Range', 0.55), island = landform('generate/island', 'Island', 0.7), volcano = landform('generate/volcano', 'Volcano', 0.9);
+const flowNode = node({
+  type: 'simulate/flow', title: 'Flow', category: 'simulate',
+  inputs: [{ name: 'in', type: 'field' }, { name: 'precipitation', type: 'field', role: 'mask', optional: true }],
+  outputs: [{ name: 'out', type: 'field', role: 'data' }, { name: 'wetness', type: 'field', role: 'data' }],
+});
+const snowNode = node({
+  type: 'simulate/snow', title: 'Snow', category: 'simulate',
+  inputs: [{ name: 'in', type: 'field' }, { name: 'mask', type: 'field', role: 'mask', optional: true }],
+  outputs: [{ name: 'out', type: 'field' }, { name: 'snow', type: 'field', role: 'mask' }, { name: 'depth', type: 'field', role: 'data' }],
+});
+const natural = node({
+  type: 'color/natural', title: 'Natural Color', category: 'color',
+  inputs: [{ name: 'in', type: 'field' }, { name: 'flow', type: 'field', role: 'data', optional: true }, { name: 'snow', type: 'field', role: 'mask', optional: true }],
+  outputs: [{ name: 'out', type: 'color' }],
+});
+const scatter = node({ type: 'surface/scatter', title: 'Scatter', category: 'surface', inputs: [{ name: 'in', type: 'field' }, { name: 'stamp', type: 'field' }], maskable: true });
+const world: NodeRegistry = createRegistry([fbm, slopeMask, colorize, combine, eroded, range, island, volcano, flowNode, snowNode, natural, scatter, subject, select]);
+
+/** `type params` of the node an input is connected to, and of what that node reads. */
+function chainOf(plan: RenderPlan, port: string): string[] {
+  const chain: string[] = [];
+  const edge = Object.values(plan.doc.edges).find((candidate) => candidate.to.node === plan.nodeId && candidate.to.port === port);
+  for (let from = edge?.from, hops = 0; from !== undefined && hops < 8; hops++) {
+    const at = plan.doc.nodes[from.node]!;
+    chain.push(`${at.type}.${from.port} ${JSON.stringify(at.params)}`);
+    from = Object.values(plan.doc.edges).find((candidate) => candidate.to.node === at.id)?.from;
+  }
+  return chain;
+}
+
+test('the first terrain is that of the category: a range on gentle ground for surface, an island for simulate and color, the eroded noise for the others', () => {
+  const kinds = (['generate', 'adjust', 'filter', 'simulate', 'select', 'color', 'surface', 'io', 'ref'] as const).map((category) => `${category}: ${firstTerrain(world, category).type} ${JSON.stringify(firstTerrain(world, category).params)}`);
+  assert.deepEqual(kinds, [
+    'generate: generate/eroded-noise {}', 'adjust: generate/eroded-noise {}', 'filter: generate/eroded-noise {}', 'simulate: generate/island {"size":1}', 'select: generate/eroded-noise {}',
+    'color: generate/island {"size":1}', 'surface: generate/mountain-range {}', 'io: generate/eroded-noise {}', 'ref: generate/eroded-noise {}',
+  ]);
+  // A document of every category has one first terrain for all of them.
+  assert.equal(firstTerrain(world, null).type, 'generate/eroded-noise');
+  assert.deepEqual([terrainType(world, 0, 'surface'), terrainType(world, 1, 'surface'), terrainType(world, 0), terrainType(world, 0, 'simulate')], ['generate/mountain-range', 'ref/fbm', 'generate/eroded-noise', 'generate/island']);
+  // A registry that lacks the terrain of a category has the eroded noise for it, and one that lacks that too the reference noise.
+  assert.equal(firstTerrain(createRegistry([fbm, eroded]), 'surface').type, 'generate/eroded-noise');
+  assert.deepEqual([firstTerrain(full, 'surface').type, firstTerrain(full, 'simulate').type, firstTerrain(full, null).type], ['ref/fbm', 'ref/fbm', 'ref/fbm']);
+
+  // The mask of each: a slope mask of the terrain's broad shape. The range has slopes only where it stands, so
+  // its mask is that of the reference noise, whose regions lie across the range and the ground alike.
+  assert.deepEqual(maskFeed(world, 'simulate'), { terrain: { size: 1, erosion: 0 }, slopes: { slopeMin: 10, slopeMax: 25 } });
+  assert.deepEqual(maskFeed(world, 'surface'), { type: 'ref/fbm', terrain: { octaves: 3 }, slopes: { slopeMin: 35, slopeMax: 50 } });
+  assert.deepEqual(maskFeed(world, 'filter'), { terrain: { octaves: 2 }, slopes: { slopeMin: 40, slopeMax: 55 } });
+
+  // In a document: the surface node on the range under a mask of the reference noise. The range does not stand
+  // on the floor of the height range, where whatever a node cuts into the ground would lie below it: a broad,
+  // low reference noise is added to it, three tenths of its height.
+  assert.deepEqual(firstTerrain(world, 'surface').ground, { params: { seed: 9, size: 0.5, octaves: 2 }, strength: 0.3 });
+  assert.deepEqual([firstTerrain(world, 'simulate').ground, firstTerrain(world, 'filter').ground], [undefined, undefined]);
+  const stamped = typeDocument(world, 'surface/scatter', { connected: true });
+  assert.deepEqual(chainOf(stamped, 'in'), ['ref/combine.out {"mode":"add","strength":0.3}', 'generate/mountain-range.out {"size":0.55,"erosion":0.6}']);
+  const ground = stamped.doc.nodes[Object.values(stamped.doc.edges).find((edge) => edge.to.port === 'b' && stamped.doc.nodes[edge.to.node]!.type === 'ref/combine')!.from.node]!;
+  assert.deepEqual([ground.type, ground.params], ['ref/fbm', { seed: 9, size: 0.5, octaves: 2 }]);
+  assert.deepEqual(Object.values(stamped.doc.edges).filter((edge) => stamped.doc.nodes[edge.to.node]!.type === 'ref/combine').map((edge) => edge.to.port), ['a', 'b'], 'the mask of the sum is unconnected');
+  assert.deepEqual(chainOf(stamped, 'mask'), ['ref/slope-mask.out {"slopeMin":35,"slopeMax":50}', 'ref/fbm.out {"seed":0,"size":0.25,"octaves":3}']);
+  // Without ref/combine the range stands where its node puts it.
+  assert.deepEqual(chainOf(typeDocument(createRegistry([fbm, range, scatter]), 'surface/scatter'), 'in'), ['generate/mountain-range.out {"size":0.55,"erosion":0.6}']);
+  // A simulation on the island, its mask the slopes of the island without its gullies.
+  const snowed = typeDocument(world, 'simulate/snow', { connected: true });
+  assert.deepEqual(chainOf(snowed, 'in'), ['generate/island.out {"size":1,"erosion":0.6}']);
+  assert.deepEqual(chainOf(snowed, 'mask'), ['ref/slope-mask.out {"slopeMin":10,"slopeMax":25}', 'generate/island.out {"size":1,"erosion":0}']);
+  // A node of another category stays on the eroded noise, whatever the registry holds.
+  assert.deepEqual(chainOf(typeDocument(world, 'filter/subject'), 'in'), ['generate/eroded-noise.out {"size":0.25,"octaves":8,"seed":0}']);
+  // The terrain a mask or a colour is drawn over is the first terrain of the category.
+  const colored = typeDocument(world, 'color/natural');
+  assert.deepEqual([colored.doc.nodes[colored.terrain!.node]!.type, colored.doc.nodes[colored.terrain!.node]!.params], ['generate/island', { size: 1, erosion: 0.6 }]);
+});
+
+test('an input named stamp, flow or snow is fed what it is named for: a landform, the drainage of the first terrain, the snow on it', () => {
+  assert.deepEqual(inputFeeds(scatter, false), { in: { kind: 'terrain', index: 0 }, stamp: { kind: 'terrain', index: 1, named: 'stamp' }, mask: null });
+  assert.deepEqual(inputFeeds(natural, true), { in: { kind: 'terrain', index: 0 }, flow: { kind: 'terrain', index: 1, named: 'flow' }, snow: { kind: 'mask', named: 'snow' } });
+  assert.deepEqual(inputFeeds(natural, false), { in: { kind: 'terrain', index: 0 }, flow: null, snow: null });
+  // The name alone does not make it: the role is that of the name. A mask named flow is a mask, a colour named snow a colour.
+  const odd = node({ type: 'filter/odd', title: 'Odd', category: 'filter', inputs: [{ name: 'flow', type: 'field', role: 'mask' }, { name: 'snow', type: 'color' }, { name: 'stamp', type: 'field', role: 'data' }] });
+  assert.deepEqual(inputFeeds(odd, true), { flow: { kind: 'mask' }, snow: { kind: 'color', index: 0 }, stamp: { kind: 'terrain', index: 0 } });
+
+  // The stamp of a surface node is a volcano at its defaults, in both variants: the input is required.
+  const stamped = typeDocument(world, 'surface/scatter');
+  assert.deepEqual(chainOf(stamped, 'stamp'), ['generate/volcano.out {"size":0.9,"erosion":0.6}']);
+  assert.deepEqual(stamped.inputs.map((input) => `${input.port}: ${input.kind}`), ['in: terrain', 'stamp: stamp']);
+  assert.equal(stamped.terrain, null, 'its output is a height');
+
+  // The drainage and the snow are those of the terrain the node reads, from the product's own nodes; their
+  // optional inputs stay unconnected.
+  const colored = typeDocument(world, 'color/natural', { connected: true });
+  const terrain = '{"size":1,"erosion":0.6}';
+  assert.deepEqual(chainOf(colored, 'in'), [`generate/island.out ${terrain}`]);
+  assert.deepEqual(chainOf(colored, 'flow'), ['simulate/flow.out {}', `generate/island.out ${terrain}`]);
+  assert.deepEqual(chainOf(colored, 'snow'), ['simulate/snow.snow {}', `generate/island.out ${terrain}`]);
+  assert.deepEqual(typesOf(colored.doc), ['color/natural', 'generate/island', 'simulate/flow', 'simulate/snow'], 'one island feeds the node, its drainage and its snow');
+  assert.deepEqual(colored.inputs.map((input) => `${input.port}: ${input.kind} ${input.from.port}`), ['in: terrain out', 'flow: flow out', 'snow: snow snow']);
+  assert.deepEqual(typesOf(typeDocument(world, 'color/natural').doc), ['color/natural', 'generate/island'], 'the plain variant has neither');
+
+  // A registry without those nodes: the input takes what its type gives it, counted as it always is.
+  const without = createRegistry([fbm, slopeMask, colorize, natural, scatter]);
+  const bareColored = typeDocument(without, 'color/natural', { connected: true });
+  assert.deepEqual(['in', 'flow', 'snow'].map((port) => chainOf(bareColored, port)[0]), ['ref/fbm.out {"seed":0,"size":0.25,"octaves":8}', 'ref/fbm.out {"seed":1,"size":0.1,"octaves":8}', 'ref/slope-mask.out {"slopeMin":35,"slopeMax":50}']);
+  assert.deepEqual(bareColored.inputs.map((input) => `${input.port}: ${input.kind}`), ['in: terrain', 'flow: terrain', 'snow: mask']);
+  assert.deepEqual(chainOf(typeDocument(without, 'surface/scatter'), 'stamp'), ['ref/fbm.out {"seed":1,"size":0.1,"octaves":8}']);
+
+  // feedSource is the one place that says what a feed is made of: the harness's registryDoc builds from it too.
+  assert.deepEqual(feedSource(world, { kind: 'mask', named: 'snow' }, 'color'), {
+    node: { key: 'snow', type: 'simulate/snow', params: {}, port: 'snow', reads: { in: { key: 'terrain 0', type: 'generate/island', params: { size: 1 }, reads: {}, port: 'out' } } }, given: 'snow',
+  });
+  assert.deepEqual(feedSource(world, { kind: 'terrain', index: 2 }, 'color'), { node: { key: 'terrain 2', type: 'ref/fbm', params: { seed: 2, size: 0.5 }, reads: {}, port: 'out' }, given: 'terrain' });
+  assert.deepEqual(feedSource(world, { kind: 'color', index: 0 }, null).node.reads, { in: { key: 'terrain 0', type: 'generate/eroded-noise', params: {}, reads: {}, port: 'out' } });
+  assert.deepEqual(feedSource(world, { kind: 'terrain', index: 0, named: 'stamp' }, 'surface'), { node: { key: 'stamp', type: 'generate/volcano', params: {}, reads: {}, port: 'out' }, given: 'stamp' });
+  // The first terrain of a surface node is a sum: the landform and its ground are the two things it reads.
+  const sum = feedSource(world, { kind: 'terrain', index: 0 }, 'surface').node;
+  assert.deepEqual([sum.key, sum.type, sum.params, Object.entries(sum.reads).map(([port, read]) => `${port}: ${read.key} ${read.type}`)], [
+    'terrain 0', 'ref/combine', { mode: 'add', strength: 0.3 }, ['a: terrain 0 landform generate/mountain-range', 'b: terrain 0 ground ref/fbm'],
+  ]);
+});
+
 test('a node type: where the registry lacks ref/slope-mask or ref/colorize, the terrain itself is connected', () => {
   const plan = typeDocument(bare, 'filter/subject', { connected: true });
-  assert.deepEqual(['in', 'flow', 'either', 'weights', 'tint'].map((port) => sourceOf(plan, port)), Array<string>(5).fill('ref/fbm.out'));
+  assert.deepEqual(['in', 'area', 'either', 'weights', 'tint'].map((port) => sourceOf(plan, port)), Array<string>(5).fill('ref/fbm.out'));
   assert.deepEqual(typesOf(plan.doc), ['filter/subject', 'ref/fbm', 'ref/fbm', 'ref/fbm']);
   assert.deepEqual(['weights', 'tint'].map((port) => feedOf(plan, port)!.id), [feedOf(plan, 'in')!.id, feedOf(plan, 'in')!.id], 'the first terrain stands in for its mask and its colouring');
 });

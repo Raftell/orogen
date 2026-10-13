@@ -1,8 +1,8 @@
 // src/core/nodes/simulate/rivers.ts
 import { defineKernel, defineNode, mixSeed, param, type Field } from '../../api.ts';
 import { route, routeEps, routeWeight, routeWeightKernels } from './_route.ts';
-import { BANK_FADE, BANK_RISE, COURSE_REFINE, RIVER_DEPTH_EXPONENT, RIVER_WIDTH_EXPONENT } from './_water-constants.ts';
-import { course, COURSE_WGSL, PLACE_STEPS } from './_water-course.ts';
+import { BANK_RISE, COURSE_REFINE, RIVER_WIDTH_EXPONENT, VALLEY_REACH } from './_water-constants.ts';
+import { course, COURSE_WGSL, PLACE_STEPS, VALLEY_WGSL } from './_water-course.ts';
 import { jumpKernels, nearestSites } from './_water-jump.ts';
 
 // A site lies in the texel that holds a share above 0, where the course task put it.
@@ -21,10 +21,10 @@ fn compute(px: vec2i, uv: vec2f) -> vec2f {
 }`,
 });
 
-// One step along the river towards the site whose river's edge is nearest. A jump flood finds a site near the
-// nearest one: beside a river the texels that share a nearest site form a strip a texel wide, which a wide
-// stride steps over. A site a few places up or down the river is as near as makes no difference, but on a
-// steep river its level is another, and the valley side would be cut in sectors.
+// One step along the river towards the site whose river's edge is nearest. The flood gives a texel the river
+// whose valley is deepest at it, by a site that need not be the nearest of that river: a site down the river has
+// the deeper valley. A site a few places up or down a river is as near as makes no difference, but on a steep
+// river its level is another, and the valley side would be cut in ribs.
 const along = defineKernel({
   name: 'simulate/rivers.along',
   inputs: { site: 'vec2', share: 'field', place: 'field', course: 'field' },
@@ -48,6 +48,8 @@ fn compute(px: vec2i, uv: vec2f) -> vec2f {
   if (s.x < 0.0) { return s; }
   let here = vec2f(px);
   let q = vec2i(round(s));
+  // The texel a site lies in is that river's, however thin its channel.
+  if (all(q == px)) { return s; }
   let own = courseAt(q);
   var best = q;
   var nearest = edge(here, q);
@@ -64,11 +66,11 @@ fn compute(px: vec2i, uv: vec2f) -> vec2f {
 }`,
 });
 
-// The valley of the nearest river, cut into the terrain: a parabolic bed under a level water surface, and sides
-// that rise from the waterline at a fixed angle. The river is the line through its sites: the texel is measured
-// to the nearer of the two stretches that meet at its nearest site, and the river's level and width are those
-// of the point on it, between the two sites. Taken from the nearest site alone they would change from one
-// texel to the next abreast of a river, and a steep river's valley would be cut in rungs.
+// The valley of the river whose valley is deepest at the texel, cut into the terrain: a parabolic bed under a
+// level water surface, and beside it ground lowered by the depth of the valley, less with the distance. The river is the
+// line through its sites: the texel is measured to the nearer of the two stretches that meet at its site, and the
+// river's level and width are those of the point on it, between the two sites. Taken from the site alone they
+// would change from one texel to the next abreast of a river, and a steep river's valley would be cut in rungs.
 const carve = defineKernel({
   name: 'simulate/rivers.carve',
   inputs: { height: 'field', site: 'vec2', water: 'field', share: 'field', place: 'field', course: 'field' },
@@ -77,11 +79,7 @@ const carve = defineKernel({
   // the routing surface. bank: the tangent of the bank's angle.
   params: { width: 'f32', depth: 'f32', rise: 'f32', bank: 'f32' },
   cost: 14,
-  code: /* wgsl */ `${COURSE_WGSL}
-const WIDTH_EXPONENT = ${RIVER_WIDTH_EXPONENT};
-const DEPTH_EXPONENT = ${RIVER_DEPTH_EXPONENT};
-const BANK_RISE = f32(${BANK_RISE});
-const BANK_FADE = ${BANK_FADE};
+  code: /* wgsl */ `${COURSE_WGSL}${VALLEY_WGSL}
 
 // The river at one point of its line: how far the texel lies from its edge, in texels and below 0 inside it;
 // its level; half its width, in texels; and how far it lies below the routing surface, in metres.
@@ -89,7 +87,7 @@ struct Reach { edge: f32, level: f32, half: f32, rise: f32 }
 
 // The river at the site in the texel q, which lies at \`place\`. The share of a site no texel may take is stored below 0.
 fn reachAt(here: vec2f, q: vec2i, place: vec2f, rise: f32) -> Reach {
-  let half = 0.5 * P.width / frame.cellSize * pow(min(abs(share_at(q)), 1.0), WIDTH_EXPONENT);
+  let half = 0.5 * P.width / frame.cellSize * pow(min(abs(share_at(q)), 1.0), VALLEY_WIDTH_EXPONENT);
   return Reach(length(here - place) - half, water_at(q), half, P.rise * rise);
 }
 
@@ -135,32 +133,10 @@ fn compute(px: vec2i, uv: vec2f) -> Out {
     let other = stretch(here, place, alone, q + own.up);
     if (other.edge < at.edge) { at = other; }
   }
-  // Depth from the share of the terrain a river of this width drains. A channel narrower than a texel is
-  // carved thinner, not a texel wide: a preview shows no wider river than the build.
   let w = 2.0 * at.half * frame.cellSize;                               // metres
   let r = (at.edge + at.half) * frame.cellSize;                         // metres to the middle of the river
-  let a = clamp(pow(w / max(P.width, 1.0e-20), 1.0 / WIDTH_EXPONENT), 1.0e-12, 1.0);
-  let d = P.depth * pow(a, DEPTH_EXPONENT) * saturate(w / frame.cellSize);
-  // Heights are compared before they are scaled.
-  let above = (h - at.level) * frame.heightRange;                       // metres above the water
-
-  // The profile, in metres above the water: the bed below it, then the side of the valley.
-  var profile = 0.0;
-  var keep = 1.0;
-  if (r < 0.5 * w) {
-    let t = 2.0 * r / w;
-    profile = d * (t * t - 1.0);
-  } else {
-    // The side is cut as high above the water as the river lies below the routing surface there, and the
-    // river's depth more; over the upper part of that the cut fades out, so that ground steeper than the bank
-    // is met without a step.
-    let beyond = r - 0.5 * w;
-    let reach = (d + BANK_RISE * at.rise) / P.bank;
-    profile = P.bank * beyond;
-    keep = 1.0 - smoothstep((1.0 - BANK_FADE) * reach, reach, beyond);
-    if (beyond >= reach) { keep = 0.0; }
-  }
-  let cut = max(above - profile, 0.0) * keep;                           // metres; 0 leaves the texel as it is
+  // Heights are compared before they are scaled. A cut of 0 leaves the texel as it is, bit for bit.
+  let cut = riverCut((h - at.level) * frame.heightRange, r, w, channelDepth(w, P.width, P.depth), at.rise, P.bank);
   let out = h - cut / frame.heightRange;
 
   let river = saturate(min((0.5 * w - r) / frame.cellSize + 0.5, w / frame.cellSize));
@@ -196,7 +172,7 @@ export default defineNode({
       help: 'The share of the terrain that must drain through a point for a river to begin there: smaller values give more and finer tributaries.',
     },
     {
-      kind: 'float', name: 'valleyDepth', label: 'Valley depth', unit: 'height', default: 0.1, min: 0, max: 0.5,
+      kind: 'float', name: 'valleyDepth', label: 'Valley depth', unit: 'height', default: 0.2, min: 0, max: 0.5,
       help: 'How deep a river that drained the whole terrain would cut its valley into the ground; smaller rivers cut shallower ones, and 0 leaves only the channel.',
     },
     {
@@ -233,7 +209,7 @@ export default defineNode({
 
     const height = await ctx.read(input);
     const routed = await ctx.cpu(route, {
-      height, res: ctx.res, eps: routeEps(ctx.heightRange), seaLevel, routing: 'single', seed: mixSeed(ctx.seed, 0), weight, receivers: true,
+      height, res: ctx.res, eps: routeEps(ctx.heightRange), seaLevel, routing: 'single', seed: mixSeed(ctx.seed, 0), weight, receivers: true, sea: 'connected',
     }, weight ? [height.buffer, weight.buffer] : [height.buffer]);
     // The router consumed its copy of the terrain: the input is read a second time.
     const terrain = await ctx.read(input);
@@ -252,11 +228,12 @@ export default defineNode({
     ctx.run(sites, { in: { share, place }, out: { site } });
 
     // The farthest a river lowers the terrain: half the widest river and the reach of its valley's side, in texels.
-    const reach = (0.5 * width + (deep + BANK_RISE * rivers.deepest) / tanBank) / ctx.cellSize + 1;
-    const half = (0.5 * width) / ctx.cellSize;
-    let [nearest, other] = await nearestSites(ctx, site, spare, reach, [0.7, 0.9], 'Rivers', { share, half });
+    const reach = (0.5 * width + (VALLEY_REACH * (deep + BANK_RISE * rivers.deepest)) / tanBank) / ctx.cellSize + 1;
+    const measures = { width, depth: deep, rise: rivers.deepest, bank: tanBank };
+    const planes = { share, place, course: out };
+    let [nearest, other] = await nearestSites(ctx, site, spare, reach, [0.7, 0.9], 'Rivers', { planes, params: measures });
     await ctx.loop(COURSE_REFINE, () => {
-      ctx.run(along, { in: { site: nearest, share, place, course: out }, out: { next: other }, params: { half } });
+      ctx.run(along, { in: { site: nearest, ...planes }, out: { next: other }, params: { half: (0.5 * width) / ctx.cellSize } });
       [nearest, other] = [other, nearest];
     }, { progress: [0.9, 1], label: 'Rivers' });
     ctx.release(other);
@@ -265,7 +242,7 @@ export default defineNode({
     ctx.run(carve, {
       in: { height: input, site: nearest, water, share, place, course: texels },
       out: { out, river, depth, surface },
-      params: { width, depth: deep, rise: rivers.deepest, bank: tanBank },
+      params: measures,
     });
     ctx.release(nearest);
     ctx.release(texels);

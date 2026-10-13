@@ -344,7 +344,12 @@ test('orogen gallery --category ref: every reference node rendered, the page a r
     const expected = def.outputs[0]!.type === 'color' ? [RES, RES] : [1808, 512];
     assert.deepEqual([png.width, png.height], expected, def.type);
     assert.ok(look(png, 0, Math.min(png.width, 512)).spread >= 40, `${def.type}: the picture of outputs[0] is not flat`);
-    for (const port of def.outputs.slice(1)) assert.ok(fs.existsSync(fileOf(out, def.type, `${port.name}-${RES}.png`)), `${def.type}.${port.name}`);
+    // A secondary output is drawn, and shown on the page beside the first: in both variants.
+    for (const port of def.outputs.slice(1)) {
+      assert.ok(fs.existsSync(fileOf(out, def.type, `${port.name}-${RES}.png`)), `${def.type}.${port.name}`);
+      assert.ok(page.includes(`<img src="../nodes/${def.type}/${port.name}-${RES}.png"`), `the page shows ${port.name} of ${def.type}`);
+      assert.equal(page.includes(`<img src="../nodes/${def.type}/${port.name}-${RES}-connected.png"`), hasSecond(def), `${def.type}.${port.name}, connected`);
+    }
     // The second variant of a node with an optional input or a mask: outputs[0] with them connected, shown below the plain picture.
     assert.equal(fs.existsSync(fileOf(out, def.type, `out-${RES}-connected.png`)), hasSecond(def), `${def.type}: the connected variant`);
     assert.equal(page.includes(`<img src="../nodes/${def.type}/out-${RES}-connected.png"`), hasSecond(def), `${def.type}: the connected picture on the page`);
@@ -373,6 +378,28 @@ test('orogen gallery --category ref: every reference node rendered, the page a r
   assert.match(page, new RegExp(`${withOutputs.length} nodes of the category ref at ${RES} × ${RES}`));
   assert.ok(page.includes('Checked on the adapter of this test, profile core.'));
   assert.match(done.err, new RegExp(`^orogen gallery: ${withOutputs.length}/${withOutputs.length} `, 'm'));
+});
+
+test('orogen gallery: a node that reads a file is drawn with the file of its conformance call, once the output folder holds its report', () => {
+  const out = path.join(OUTPUT, 'gallery-file');
+  // What the node's test file writes (testing.md 3.6 rule 2): the parameters of its conformance call, the file as an absolute path.
+  const image = path.join(ROOT, 'tests', 'graphs', 'assets', 'heights-253.png');
+  fs.mkdirSync(path.join(out, 'conformance', 'ref'), { recursive: true });
+  fs.writeFileSync(path.join(out, 'conformance', 'ref', 'image.json'), JSON.stringify({ type: 'ref/image', checks: {}, optOuts: [], budget: null, params: { file: image } }));
+  // The report of a node without a file parameter holds parameters too: those are not applied, the gallery shows defaults.
+  fs.writeFileSync(path.join(out, 'conformance', 'ref', 'fbm.json'), JSON.stringify({ type: 'ref/fbm', checks: {}, optOuts: [], budget: null, params: { size: 0.01 } }));
+
+  const done = orogen(['gallery', '--category', 'ref', '--res', String(RES), '--out', out]);
+  assert.equal(done.code, 0, done.err);
+  const page = fs.readFileSync(path.join(out, 'gallery', 'ref.html'), 'utf8');
+  const article = page.slice(page.indexOf('id="ref-image"'), page.indexOf('</article>', page.indexOf('id="ref-image"')));
+  assert.ok(article.includes('<p class="quiet">Drawn with the parameters of its conformance call: <code>file</code> = tests/graphs/assets/heights-253.png.</p>'), 'the page names the file, from the working directory');
+  assert.ok(article.includes(`<img src="../nodes/ref/image/out-${RES}.png"`) && !article.includes('Not rendered'));
+  // The picture is that of the file: the terrain fixture, which has relief.
+  expectSheet(fileOf(out, 'ref/image', `out-${RES}.png`), 'ref/image with the file of its conformance call');
+  assert.ok(!page.includes('class="node broken"'), 'no node of the page failed');
+  // Only a node with a file parameter is drawn with what its report holds: the others show their defaults.
+  assert.ok(!page.slice(page.indexOf('id="ref-fbm"'), page.indexOf('</article>', page.indexOf('id="ref-fbm"'))).includes('Drawn with the parameters'));
 });
 
 test('orogen build fails with a message until src/export/cli.ts implements it', () => {

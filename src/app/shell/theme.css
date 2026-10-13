@@ -1,0 +1,124 @@
+/*
+ * The design tokens of the application (runtime.md 8.7 rule 4): every colour, size, space and font of the shell
+ * and of every panel is one of these custom properties. A panel's own CSS module uses them and hard-codes none.
+ * The names are frozen during panel work; a panel that needs another asks the shell owner.
+ *
+ * The interface is neutral and dark so that the terrain is judged against grey, not against a tint: the greys
+ * have no hue, one accent marks selection and focus, and the only other colours are the three states and the
+ * categories of the nodes.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- surfaces, darkest to lightest ---- */
+  --og-bg-canvas: #161616;          /* behind the terrain and behind the graph */
+  --og-bg-app: #1b1b1b;             /* the window between the panels, the menu bar, the status bar */
+  --og-bg-panel: #242424;           /* a panel's content */
+  --og-bg-raised: #2c2c2c;          /* tab strips, section headers, node bodies */
+  --og-bg-popup: #2f2f2f;           /* menus, popovers, dialogs */
+  --og-bg-tooltip: #0e0e0e;         /* tooltips: darker than everything they may lie on */
+  --og-bg-sunken: #1a1a1a;          /* text entry, wells */
+  --og-bg-widget: #3a3a3a;          /* buttons, fields, sliders */
+  --og-bg-widget-hover: #454545;
+  --og-bg-widget-active: #525252;
+  --og-bg-hover: rgba(255, 255, 255, 0.06);     /* a row or an item under the pointer */
+  --og-bg-backdrop: rgba(0, 0, 0, 0.45);        /* behind a dialog */
+
+  /* ---- lines ---- */
+  --og-border: #111111;             /* between surfaces */
+  --og-border-widget: #4a4a4a;      /* around a widget */
+  --og-border-strong: #5c5c5c;
+  --og-divider: rgba(255, 255, 255, 0.07);      /* inside a surface */
+
+  /* ---- text ---- */
+  --og-text: #e6e6e6;
+  --og-text-secondary: #b4b4b4;
+  --og-text-dim: #8a8a8a;
+  --og-text-disabled: #646464;
+  --og-text-on-accent: #ffffff;
+
+  /* ---- the accent: selection and focus, nothing else ---- */
+  --og-accent: #4a7fd1;
+  --og-accent-hover: #5b8fe0;
+  --og-accent-active: #3f6fba;
+  --og-accent-muted: rgba(74, 127, 209, 0.32);  /* a selected row, the fill of a field */
+  --og-accent-text: #8db4f2;                    /* accent as text on a dark surface */
+  --og-focus-ring: #6fa3f5;
+  --og-focus-shadow: 0 0 0 1px var(--og-bg-panel), 0 0 0 2px var(--og-focus-ring);
+  --og-selection: var(--og-accent);             /* a selected node, wire or item */
+
+  /* ---- states ---- */
+  --og-error: #e0625c;
+  --og-error-bg: rgba(224, 98, 92, 0.16);
+  --og-warning: #dba23a;
+  --og-warning-bg: rgba(219, 162, 58, 0.16);
+  --og-ok: #6cb86a;
+  --og-ok-bg: rgba(108, 184, 106, 0.16);
+  --og-info: var(--og-text-secondary);
+
+  /* ---- node categories (testing.md 6.7): header colours, with --og-category-text on them ---- */
+  --og-category-generate: #79461d;
+  --og-category-adjust: #246283;
+  --og-category-filter: #412b51;
+  --og-category-simulate: #2b652b;
+  --og-category-select: #3c3c83;
+  --og-category-color: #6e6e23;
+  --og-category-surface: #1d725e;
+  --og-category-io: #82354c;
+  --og-category-ref: #374725;
+  --og-category-text: #e6e6e6;
+
+  /* ---- the graph ---- */
+  --og-graph-bg: var(--og-bg-canvas);
+  --og-graph-grid: #262626;
+  --og-node-bg: var(--og-bg-raised);
+  --og-node-border: #0d0d0d;
+  --og-wire: #8d8d8d;
+  --og-port-height: #c7c7c7;        /* a field of role height */
+  --og-port-mask: #7ac77a;          /* a field of role mask */
+  --og-port-data: #6aa6c9;          /* a field of role data */
+  --og-port-color: #c9b84a;         /* a colour */
+
+  /* ---- type ---- */
+  --og-font-ui: system-ui, "Segoe UI", "Noto Sans", "DejaVu Sans", "Helvetica Neue", Arial, sans-serif;
+  --og-font-mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
+  --og-font-size: 12px;
+  --og-font-size-small: 11px;
+  --og-font-size-large: 13px;
+  --og-font-size-title: 15px;
+  --og-line-height: 16px;
+  --og-font-weight: 400;
+  --og-font-weight-medium: 500;
+  --og-font-weight-bold: 600;
+
+  /* ---- space ---- */
+  --og-space-1: 2px;
+  --og-space-2: 4px;
+  --og-space-3: 6px;
+  --og-space-4: 8px;
+  --og-space-5: 12px;
+  --og-space-6: 16px;
+  --og-space-7: 24px;
+
+  /* ---- sizes ---- */
+  --og-control-height: 22px;        /* a field, a button, a select */
+  --og-control-height-small: 18px;
+  --og-row-height: 24px;            /* a row of a property list or a menu */
+  --og-tab-height: 26px;
+  --og-menubar-height: 26px;
+  --og-statusbar-height: 22px;
+  --og-icon-size: 14px;
+  --og-label-width: 38%;            /* the label column of a property row */
+
+  /* ---- shape ---- */
+  --og-radius-small: 2px;
+  --og-radius: 3px;
+  --og-radius-large: 5px;
+  --og-shadow-popup: 0 6px 20px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.6);
+  --og-shadow-dialog: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(0, 0, 0, 0.7);
+
+  /* ---- motion ---- */
+  --og-duration: 90ms;
+  --og-ease: cubic-bezier(0.2, 0, 0, 1);
+}

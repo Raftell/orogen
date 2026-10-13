@@ -96,7 +96,7 @@ by one node carries that node's name.
 | layer (`_layer.ts`) | `simulate/layer.limit`, `simulate/layer.move`; the library `simulateLayer` | | 5.9 |
 | route (`_route.ts`) | task `simulate/route`; `simulate/route.receivers`, `simulate/route.sweep`, `simulate/route.weight` | `routeEps`, `routeWeight` | 6 |
 | water-jump (`_water-jump.ts`) | `simulate/water-jump.step`, `simulate/water-jump.rivers` | `nearestSites`, `jumpStrides` | 8.5 |
-| water-course (`_water-course.ts`) | task `simulate/water-course` | `COURSE_WGSL`, the form in which the task hands a river's sites to kernels | 8.5 |
+| water-course (`_water-course.ts`) | task `simulate/water-course` | `COURSE_WGSL`, the form in which the task hands a river's sites to kernels; `VALLEY_WGSL`, the measures and the cross section of a river's valley | 8.5 |
 | diff (`_diff.ts`) | `simulate/diff` | | 5.5 |
 | constants (`_constants.ts`, `_water-constants.ts`) | | every constant of section 13; `wgsl(value)`, a constant as a WGSL float literal | 13 |
 
@@ -459,11 +459,11 @@ Starting schedules for a build at 8129 with default parameters:
 | --- | --- | --- | --- | --- |
 | `simulate/fluvial-erosion` | size 0.125, duration 1 | 1017 to 8129 | 818, 256, 256, 256 | 8331 |
 | `simulate/hydraulic-erosion` | size 0.05, duration 2 | 2033 to 8129 | 2011, 384, 384 | 9196 |
-| `simulate/thermal-erosion` | size 0.02, strength 1 | 509 to 8129 | 382, 96, 96, 96, 96 | 105 702 |
+| `simulate/thermal-erosion` | size 0.005, strength 1 | 2033 to 8129 | 383, 96, 96 | 6606 |
 
-The same nodes in a preview at 1017 run 1042, 1150, and 389 + 96
-iterations: there the first two have a single level, the one their base
-level is.
+The same nodes in a preview at 1017 run 1042, 1150 and 104 iterations, each
+on the one level 1017: the base level of the first, and a level coarser than
+the base level of the other two (2.8 item 3).
 
 ### 2.6 Order of work in `refine`
 
@@ -865,35 +865,38 @@ The gross wear cost a plane of state and a rounding rule of its own.)
 | Param | Kind, unit | Default | Range | Meaning |
 | --- | --- | --- | --- | --- |
 | `seed` | seed | 0 | | erodibility jitter, refinement jitter |
-| `size` | float, length (`param.size`) | 0.05 | 0.005..0.5, log | feature size: the scale of the largest gullies. The water of a slope about twice this long cuts, and less only where it runs together; the deepest gully is `CUT_SHARE` of it deep. Sets the base level |
+| `size` | float, length (`param.size`) | 0.05 | 0.005..0.5, log | feature size: the scale of the largest gullies. Water cuts where it has run together; a gully that drains a square half the feature size across under the default rain is cut to the full depth, `CUT_SHARE` of the size, and one that drains less to less. Sets the base level |
 | `duration` | float, none | 2 | 0.05..16, log | how far water at nominal speed travels, in feature sizes |
 | `rain` | float, ratio | 0.24 | 0..1 | rainfall rate as a fraction of `RAIN_MAX` |
 | `capacity` | float, none | 1 | 0.1..3 | sediment capacity coefficient `Kc` |
 | `downcutting` | float, none | 0.5 | 0.1..2 | pick-up rate `Ks`, per second |
 | `deposition` | float, none | 1 | 0.1..3 | settling rate `Kd`, per second |
-| `removal` | float, ratio | 0.6 | 0..1 | share of the eroded material that leaves the terrain instead of being suspended; 0 conserves it, 1 lays nothing down |
+| `removal` | float, ratio | 0.4 | 0..1 | share of the ground the water cuts that leaves the terrain instead of being suspended; 0 conserves it, 1 lays nothing down. What was laid down and is taken up again is suspended whole |
 | `talus` | float, angle (`param.slope`) | 45 | 5..90 | banks the water cut steeper than this slump; 90 disables |
 | `detail` | float, ratio | 0 | 0..1 | fine noise injected at each refinement (2.4) |
 
 Defaults and ranges of `rain`, `capacity`, `downcutting` and `deposition` are
 the typical values and ranges of JT11 Table 2. What they mean on a terrain
 measured in metres is set by the constants of the capacity (4.6): `CARRY`,
-`HEAD_RAIN`, `GATHER_MAX`, `PICKUP`, `SETTLE`, `CUT_SHARE` and `CUT_SLOPE`.
-Section 13 says which of them are calibrated and which are still starting
-values.
+`CARRY_POWER`, `HEAD_RAIN`, `GATHER_MAX`, `PICKUP`, `SETTLE`, `SETTLE_BAND`,
+`CUT_SHARE`, `CUT_POWER` and `CUT_SLOPE`. Section 13 says which of them are
+calibrated and which are still starting values.
 
 ### 4.3 Model and units
 
 The pipe model of Mei07 with the erosion and deposition step of JT11
 (**published**). The restructuring into the passes of 4.5, the flux-form
 sediment transport, the choice of the pipe cross-section, the open border, the
-form of the capacity (its channel head, its slope taken from the input), the
-depth a gully is held to, the removal, the slump that spares the input's own
-slopes and the slide of what was laid down are **design, to validate**.
+form of the capacity (its channel head by the discharge through a texel, its
+growth with the water gathered, its slope taken from the input), the depth a
+gully is held to, the room a deposit needs, the removal, the sea that fills,
+the end of the run, the slump that spares the input's own slopes and the slide
+and creep of what was laid down are **design, to validate**.
 
 - Each texel exchanges water with its N4 neighbours through four virtual pipes. A pipe carries a one-way flux `F_k >= 0` in m³/s.
 - Pipe length is `dx`. The pipe cross-section is `dx * H_REF`, so the wave speed of the model, `sqrt(G * H_REF)`, does not depend on the cell size, and the same simulated time moves water the same distance on every level. With `H_REF = 20 m` and `dx = 1 m` the model has JT11's pipe area of 20.
 - Simulated seconds are not real time. The rates are artistic constants, as in JT11.
+- **The water is thin, and the ground it takes does not become water** (**design, to validate**). JT11 adds what a texel erodes to its water column and takes what it lays down from it (eq. 12c, 13c), against ripples in long runs. With loads of tens of metres of sediment in a run of a thousand iterations that term was the simulation: measured on `generate/mountain` at 1009, four fifths of the water that ran was ground the water had eroded, the valleys stood under metres of it from wall to wall, and the wear was a sheet across every basin that had begun to erode and nothing beside it. Without the term the mean wear of that run fell to a tenth and lay in lines along the valleys. The rain is a hundredth of JT11's as well (`RAIN_MAX`): at JT11's rate the runoff of a slope 1500 m long is a sheet a metre deep at its foot, deeper than the rills it should run in.
 
 In this section `b`, `d` and `s` denote stored, normalised values; `R * b`
 and so on are metres.
@@ -912,9 +915,9 @@ and so on are metres.
 
 9 `field` + 1 `vec2` = 2907 MB at 8129² with every output wanted: the loop holds 8 `field` and the `vec2` with `flow`, and at the end `b`, `flow`, `wear` and `deposit` remain.
 
-- `b`, `s` and `spare` rotate: pass 3 writes the new `s` into `spare` and the old `s` plane becomes `spare`; pass 4 writes the new `b` into `spare` and the old `b` plane becomes `spare`. Three planes serve two ping-pongs.
+- `b`, `s` and `spare` rotate: pass 2 writes the sediment after the texel's own change into `spare`, pass 3 reads it there and writes the new `s` into the plane of the old, which no pass reads after pass 2; pass 4 writes the new `b` into `spare` and the old `b` plane becomes `spare`. Three planes serve two ping-pongs. Pass 5 writes `out` into `spare`.
 - The fluxes are four planar `field`s because they are updated in place, which only `field` supports. `g` is written whole every iteration and read by the next pass, so it is an ordinary output; `vec2` keeps both channels at full precision.
-- After pass 5 the node releases `s`, `spare`, `d`, the fluxes and `g` before it allocates `wear` and `deposit`.
+- After pass 5 the node releases `b`, `s`, `d`, the fluxes and `g` before it allocates `wear` and `deposit`.
 - The inputs `mask` and `precipitation` are brought to each level with `levelInput` at the start of `simulate` and released at its end (2.7); at `ctx.res` they are the inputs themselves, so they add nothing to the peak state. An unconnected one is bound as `null` and reads 1.
 - Passes 2 and 4 also read `base`, the node's input on the level (`levelInput`, the `coarseBase` and `fineBase` of the refinement): at `ctx.res` it is the input itself, and on a coarser level one more `field` of that level, which the refinement releases.
 
@@ -925,9 +928,8 @@ Per iteration:
 | # | Kernel | Reads | Writes | In place | Loads |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `simulate/hydraulic-erosion.flux` | `b` own + N4, `d` own + N4 | | `fluxE`, `fluxN`, `fluxW`, `fluxS` | 14 |
-| 2 | `simulate/hydraulic-erosion.water` | fluxes own (4) and one per N4 neighbour (4), `b` own + N4, `base` own + N4, `s` own, `mask` own | `g` | `d`, `flow` | 23 |
-| 3 | `simulate/hydraulic-erosion.erode` | `g` own + N4, `s` own + N4, fluxes own (4) and one per N4 neighbour (4), `precipitation` own | `spare` (the new `s`) | `b`, `d` | 21 |
-| | swap `s`/`spare` | | | | |
+| 2 | `simulate/hydraulic-erosion.water` | fluxes own (4) and one per N4 neighbour (4), `b` own + N4, `base` own + N4, `s` own, `mask` own | `g`, `spare` (the sediment `s1` after the texel's own change) | `d`, `flow` | 23 |
+| 3 | `simulate/hydraulic-erosion.erode` | `g` own + N4, `s1` own + N4, fluxes own (4) and one per N4 neighbour (4), `precipitation` own | the plane of the old `s` (the new `s`) | `b`, `d` | 21 |
 | 4 | `simulate/talus.step` | `b` own + N8, `mask` own + N8, `base` own + N8 (its `rest`) | `spare` (the new `b`) | | 27 |
 | | swap `b`/`spare` | | | | |
 
@@ -935,8 +937,8 @@ After the last level:
 
 | # | Kernel | Reads | Writes | In place |
 | --- | --- | --- | --- | --- |
-| 5 | `simulate/hydraulic-erosion.settle` | `s` own | | `b`, `flow` |
-| 6 | `simulate/diff` (5.5), when `wear` or `deposit` is wanted | `in` own, `b` own | `wear`, `deposit`; either may be `null` | |
+| 5 | `simulate/hydraulic-erosion.settle` | `b` own + N4, `s` own | `spare` (`out`) | `flow` |
+| 6 | `simulate/diff` (5.5), when `wear` or `deposit` is wanted | `in` own, `out` own | `wear`, `deposit`; either may be `null` | |
 
 Why each in-place access is safe:
 
@@ -945,9 +947,9 @@ Why each in-place access is safe:
 | 1 | the four fluxes | none: a texel's new fluxes depend on its own old fluxes and on `b`, `d` |
 | 2 | `d`, `flow` | none: neighbours contribute through their fluxes |
 | 3 | `b`, `d` | none: the terrain change and the depth of the neighbours come from `g` |
-| 5 | `b`, `flow` | none |
+| 5 | `flow` | none |
 
-No pass has more than 4 writable textures; pass 1 has four. The loads count
+No pass has more than 4 writable textures; passes 1 and 2 have four. The loads count
 the own texel of every in-place target, which the pass reads too.
 
 ### 4.6 Update equations
@@ -981,73 +983,103 @@ d2     = R * dNew
 Wx     = 0.5 * (in_2 − F_2 + F_0 − in_0)
 Wy     = 0.5 * (in_3 − F_3 + F_1 − in_1)
 dMean  = 0.5 * (d1 + d2)
-speed  = dMean > D_MIN ? min(length(vec2f(Wx, Wy)) / (dx * dMean), V_MAX) : 0
+Q      = length(vec2f(Wx, Wy))                             // m³/s through the texel
+speed  = dMean > D_MIN ? min(Q / (dx * dMean), V_MAX) : 0
 slope  = slopeAt(base, px)                                 // m/m, central differences, of the input on this level
 sinA   = max(length(slope) / sqrt(1 + dot(slope, slope)), SIN_MIN)
-n      = clamp(speed * dMean / qHead − 1, 0, GATHER_MAX)    // the water passing, in channel heads beyond the first
-C      = capacity * CARRY * sinA * (speed / V_MAX) * n      // metres of sediment
-deep   = max(CUT_SHARE * size * T * min(sinA / CUT_SLOPE, 1) * n / GATHER_MAX, 1e-6)       // metres: how deep this water may cut
+n      = clamp(Q / Qhead − 1, 0, GATHER_MAX)                // the water passing, in channel heads beyond the first
+C      = capacity * CARRY * sinA * (speed / V_MAX) * (n / GATHER_MAX)^CARRY_POWER      // metres of sediment
+deep   = max(CUT_SHARE * size * T * min(sinA / CUT_SLOPE, 1) * (n / GATHER_MAX)^CUT_POWER, 1e-6)   // metres: how deep this water may cut
 E      = mask_i * (1 − ERODIBILITY_JITTER * ξ_i) * saturate(1 − R * (base_i − b_i) / deep)  // ξ_i: stream 1 of 1.4
 sM     = R * s_i
+low    = min_{k, inGrid} b(q_k)
 
-if C > sM:   Δ = min(min(dt * downcutting * PICKUP, 1) * E * (C − sM),  d2,  R * max(b_i − min_{k, inGrid} b(q_k), 0))
-else:        Δ = −min(dt * deposition * SETTLE, 1) * (sM − C)
+if C > sM:                    Δ = min(min(dt * downcutting * PICKUP, 1) * E * (C − sM),  R * max(b_i − low, 0))
+else if sM > SETTLE_BAND * C: Δ = −max(min(min(dt * deposition * SETTLE, 1) * (sM − SETTLE_BAND * C),  R * (low − b_i) + tan(FAN_ANGLE) * dx), 0)
+else:                         Δ = 0
 
 δ      = round(Δ / R / QUANTUM) * QUANTUM                  // Δ in whole steps of the terrain plane, normalised
 if δ < 0:  δ = −min(−δ, floor(s_i / QUANTUM) * QUANTUM)    // never lay down more than is suspended
+if δ > 0 and b_i − δ <= sea:  δ = max(floor((b_i − sea) / QUANTUM) − 1, 0) * QUANTUM      // land stays land
+
+loose  = max(b_i − base_i, 0)                              // what was laid down here earlier
+s1     = s_i + (δ <= loose or removal = 0 ? δ : loose + (1 − removal) * (δ − loose))
 
 g      ← (δ, d_i)
+spare  ← s1
 d      ← dNew
 flow   ← flow + speed * dMean * dt
-sink:  g ← (0, 0),  d ← 0
+sink:  g ← (0, 0),  spare ← 0,  d ← 0
 
-qHead  = HEAD_RAIN * size * T                               // m²/s: the runoff, per metre of width, of a slope one feature size long under the rain HEAD_RAIN
+Qhead  = HEAD_RAIN * size * T * max(size * T / FEATURE_CELLS, dx)      // m³/s: the runoff of a strip one feature size long under the rain HEAD_RAIN
 ```
 
 - `V_MAX = sqrt(2 * G * H_REF)`, the fastest speed the time step resolves.
 - **The capacity** (**design, to validate**; its constants are in section 13). JT11 prints `Kc * sin(α) * |v| * saturate(d / Kd_max)` (eq. 10). What did not survive terrains measured in metres, and what stands in its place:
-  - *A channel head.* With a capacity that grows with the depth from 0, the film of water on every slope carries, and the terrain is stripped to smooth sheets; with a depth from which it is full, a river carries no more than a rill, the gullies stay a texel wide and a few metres deep, and what the eye sees of the node is its deposits. (That was the first version: valley floors filled smooth, slopes untouched.) The capacity here is 0 until the water passing a texel, per metre of its width, is what a slope one feature size long sheds under the rain `HEAD_RAIN`, and grows with the water beyond that, up to `GATHER_MAX` times as much. `HEAD_RAIN` is twice the default rain: at the defaults the sheet of water on an even slope carves only from two feature sizes below the divide, and above that only the lines where water runs together do.
+  - *A channel head, counted by the water through a texel.* With a capacity that grows with the depth from 0, the film of water on every slope carries, and the terrain is stripped to smooth sheets. The capacity here is 0 until the water passing a texel is that of a channel head, `Qhead`: what a strip one feature size long sheds under the rain `HEAD_RAIN`. The strip is as wide as the coarsest cell a base level has (`size * T / FEATURE_CELLS`), so a channel a texel wide counts the same on every level that resolves it, and the gullies of a build are those of its base level; on a coarser grid the strip is one texel wide, and there the even runoff of a slope is no channel. (Counted per metre of a texel's width, as the first calibration did, a channel a texel wide carried twice the heads at twice the resolution.)
+  - *More than in proportion to the water gathered.* The capacity grows with the heads beyond the first to the power `CARRY_POWER`, up to `GATHER_MAX` of them. A capacity in proportion to the water wears an even slope evenly: where the transport grows no faster than the discharge, water that runs together cuts no more than the same water spread out, and nothing makes a rill (the condition of Smith and Bretherton, as commonly cited). The first calibration was full at three heads beyond the first, and a long even slope wore as a sheet below the first two feature sizes of its length. With the power 1.5 the water of an even slope runs together: the plane of the `notch` fixture at 1025 is cut into rills two to four texels apart, with ground between them that holds a tenth of their flow or less.
   - *The speed as a share of `V_MAX`.* The pipes have no friction, so water on any slope runs near `V_MAX` and the speed says where water runs and where it stands, not how fast.
   - *The slope of the input.* With the slope of the bed as it changes, a deposit that steepens carries more at its front and less behind it, and the valley floors came out as ripples and concentric terraces a few texels apart. The slope of `base` does not answer to the bed, so sediment settles smooth; a fan still lies where the input's slope breaks.
-- **The depth of a gully** (**design, to validate**). The more water runs in a cut, the faster it deepens, without end: with the capacity alone the deepest lines went 150 m into a mountain 900 m high while the slopes beside them had not begun. A cut is therefore held to a depth below the ground the run found: `CUT_SHARE` of the feature size for water of `GATHER_MAX` channel heads on ground of at least `CUT_SLOPE`, less in proportion for less water and for gentler ground, which has little fall to cut into. A rill stays shallow, a gully is deep, and the deepest gullies of a run are of the feature size.
-- **Slow pick-up, quick settling.** `PICKUP` and `SETTLE` are the shares of the two rates that act. At the rates of JT11 the load of the water follows its capacity within a texel: everything is cut in the first moments of the run and laid down beside where it was taken. With `PICKUP` 0.05 a gully deepens over the whole run; with `SETTLE` 0.2 sediment travels a few hundred metres at `deposition` 1, further at a lower one.
-- The three limits on erosion are: the rate, the water available (JT11), and the height above the lowest N4 neighbour (**design**: a texel never digs itself into a pit).
-- `QUANTUM` is `2^-23`, one float32 step of a height between 1 and 2 (**fixed**). A `δ` of whole steps makes the subtraction of pass 3 exact for every height below 2, so terrain, sediment and water change by exactly the same amount. (`b − (b − Δ / R)` says the same in exact float32 arithmetic. Measured with that form on NVIDIA, with a plane that summed the erosion: 249 texels of the `terrain` fixture at 257 lost more than the sum recorded, up to 1.9 times as much, which exact arithmetic cannot give and a compiler that shortens the expression to `Δ / R` does. With whole steps the count is 0.) A change below half a step per iteration, 0.06 mm with a height range of 1 km, is lost, as 1.2 rule 4 accepts.
+- **The depth of a gully** (**design, to validate**). The more water runs in a cut, the faster it deepens, without end. A cut is therefore held to a depth below the ground the run found: `CUT_SHARE` of the feature size for water of `GATHER_MAX` channel heads on ground of at least `CUT_SLOPE`, less by the power `CUT_POWER` of the heads for less water, and less in proportion for gentler ground, which has little fall to cut into. A rill stays shallow, a gully is deep, and a gully deepens down the slope as its water gathers. (The first calibration reached the full depth at three heads: every gully that had any water was as deep as every other, and with banks at one angle as wide.)
+- **Slow pick-up.** `PICKUP` is the share of the pick-up rate that acts: a gully deepens over the whole run, and how deep the smaller ones get is a matter of `capacity`, `downcutting` and `duration`. The water available is no limit on the pick-up, as it is in JT11: the ground a texel takes is not added to its water (4.3).
+- **Settling** (**design, to validate**). Water lays down what it holds beyond `SETTLE_BAND` times its capacity, at the rate `deposition * SETTLE`: a capacity that wavers by a part along a channel leaves no row of heaps. And it lays down no more than leaves the bed within the slope `tan(FAN_ANGLE)` of its lowest N4 neighbour: sediment has room only on ground that gentle. It comes to rest from the foot of a slope upwards, as a fan does, fills a hollow level, and is never a heap where the water happened to drop it; on a steep reach it stays in the water. At `deposition` 1 a load that has lost its capacity settles within some tens of metres, at 0.1 it runs out as a thin sheet over hundreds.
+- The two limits on erosion are the rate and the height above the lowest N4 neighbour (**design**: a texel never digs itself into a pit). Ground above the sea is never cut down to it: it would be a sink from then on.
+- `QUANTUM` is `2^-23`, one float32 step of a height between 1 and 2 (**fixed**). A `δ` of whole steps makes the subtraction of pass 3 exact for every height below 2, so terrain and sediment change by exactly the same amount. (`b − (b − Δ / R)` says the same in exact float32 arithmetic. Measured with that form on NVIDIA, with a plane that summed the erosion: 249 texels of the `terrain` fixture at 257 lost more than the sum recorded, up to 1.9 times as much, which exact arithmetic cannot give and a compiler that shortens the expression to `Δ / R` does. With whole steps the count is 0.) A change below half a step per iteration, 0.06 mm with a height range of 1 km, is lost, as 1.2 rule 4 accepts.
+- **Removal** (**design, to validate**). Of the ground a texel cuts, the share `removal` is not suspended: it has left the terrain, as the fine part of a real load leaves a catchment in the water. What the water laid down earlier, the ground above `base`, it takes up again whole: a deposit that is moved on is not lost by the share at every move, as it was when the share was taken of everything eroded.
 
-**Pass 3, apply and transport** (JT11 eq. 12c and 13c for the water; the
-transport is **design, to validate** and replaces the semi-Lagrangian step of
-Mei07 eq. 14, which loses sediment):
+**Pass 3, apply and transport** (the transport is **design, to validate** and
+replaces the semi-Lagrangian step of Mei07 eq. 14, which loses sediment):
 
 ```
 b    ← b_i − δ_i
-d    ← max(0, d_i + δ_i) * (1 − min(KE * dt, 1)) + dt * r * precipitation_i / R
+d    ← d_i * (1 − min(KE * dt, 1)) + dt * r * precipitation_i / R
 
-s1(j)   = s_j + (δ_j > 0 ? (1 − removal) * δ_j : δ_j)   for j = i and its N4 neighbours
 φ_k(j)  = dt * F_k(j) / (dx² * R * g.y_j)   if R * g.y_j > D_MIN, else 0
                                                       // share of j's water that left through pipe k
 sNew_i  = s1(i) * max(0, 1 − Σ_k φ_k(i)) + Σ_{k, inGrid(q_k)} φ_opp(k)(q_k) * s1(q_k)
 
-sink: b unchanged, d ← 0, sNew ← 0
+sink:   landed = Σ_{k, inGrid(q_k)} φ_opp(k)(q_k) * s1(q_k)
+        steps  = floor(landed / QUANTUM),   room = floor(max(sea − b_i, 0) / QUANTUM) + 1
+        steps < room:   b ← b_i + steps * QUANTUM,  sNew ← 0,  d ← 0
+        otherwise:      b ← b_i + room * QUANTUM,   sNew ← landed − room * QUANTUM,  d ← 0
 ```
 
-- Adding the eroded height to the water and removing the deposited height keeps the water surface continuous. JT11 introduces it against ripples in long runs.
-- Sediment leaves a texel with the water that leaves it. Both ends of a pipe compute the transferred amount from the same loads, so sediment is conserved exactly between texels. What flows over the border or into a sink leaves the simulation.
+- Sediment leaves a texel with the water that leaves it. Both ends of a pipe compute the transferred amount from the same loads, so sediment is conserved exactly between texels. What flows over the border leaves the simulation.
 - Rain for the next iteration is added at the end, so `d` at the start of an iteration already contains it.
-- A dry texel keeps its sediment in place; it settles over the following iterations at the rate `deposition`.
-- **Removal** (**design, to validate**). Of what a texel erodes, the share `removal` is not suspended: it has left the terrain, as the fine part of a real load leaves a catchment in the water. Without it everything a gully gives is laid down within the reach of the run, and the fills bury the valleys the gullies run into; with all of it removed the node only cuts. Sediment already suspended is laid down in full.
+- A dry texel keeps its sediment in place; it settles over the following iterations at the rate `deposition`, where the ground has room for it.
+- **The sea fills** (**design, to validate**). What the water brings into a sink settles there and fills the sea up to its level and no higher: a texel it lifts out of the sea, by one step of the terrain plane, is land from the next iteration on, and what did not fit stays in the water that will run over it. A mountain that stands on ground at the sea level, as the landforms of the generators do at the default sea level of 0, lays its fans on that ground; a stream that reaches a deeper sea builds a delta up to the waterline. (The sea took everything that reached it before, and at the default sea level `deposit` was empty.)
 
 **Pass 4, embedded thermal step.** `simulate/talus.step` (5.6) on `b` with the
-node's `talus`, `fan = tan(FAN_ANGLE)`, `keep = 1`, the node's `mask`, and
-`base` as its `rest`. JT11 runs thermal erosion inside the hydraulic loop; it
-removes the spikes and the checkerboard that erosion and deposition leave.
-Here it does two more things (**design, to validate**):
+node's `talus`, `fan = tan(FAN_ANGLE)`, `creep = CREEP`, `keep = 1`, the node's
+`mask`, and `base` as its `rest`. JT11 runs thermal erosion inside the
+hydraulic loop; it removes the spikes and the checkerboard that erosion and
+deposition leave. Here it does two more things (**design, to validate**):
 
-- *It turns a slot into a gully.* The water cuts a line one or two texels wide; its banks slump back to the talus angle, across the slope, and its head works up the slope to the divide. With `rest` the step leaves a slope of the input as it found it: without it the step relaxes every slope of the input above the talus angle, as `simulate/thermal-erosion` does, and that was most of what the node did (measured at 513 on `generate/mountain-range` with the first version: the standard deviation of `out − in` was 0.018 with the step and 0.003 with `talus` 90). On an input that is steeper than the talus angle everywhere, gullies closer together than twice their depth merge, and the slope between them comes down as a whole: `talus` 45 is the default because the terrains of the generators stand at 45 to 60 degrees.
-- *It spreads what was laid down.* Sediment above the rest height slides wherever the surface is steeper than `FAN_ANGLE`, and no more of it than there is: a deposit comes to rest as a fan or a level fill, not as a heap with a steep front where the water dropped it.
+- *It turns a slot into a gully.* The water cuts a line one or two texels wide; its banks slump back to the talus angle, across the slope, and its head works up the slope to the divide. With `rest` the step leaves a slope of the input as it found it, and a bank cut into a face may stand at the talus angle in its cross-section however steep the face is (5.6): a gully on a face of 55 degrees is a V as it is on one of 20.
+- *It spreads what was laid down.* Sediment above the rest height slides wherever the surface is steeper than `FAN_ANGLE`, and creeps on any slope by the share `CREEP` of a height difference, no more of it than there is: a bar or a levee a texel wide is evened out, and a fan is smooth.
 
-**Pass 5, settle.** `b ← b + s`; `flow ← flow / simulatedTime`, with
-`simulatedTime = dt_0 * equivalent` (2.5). **Pass 6:** `simulate/diff` (5.5)
-on the node's input and `b`.
+**Pass 5, the end of the run** (**design, to validate**).
+
+```
+room = max((min_{k, inGrid} b(q_k) − b_i) + tan(FAN_ANGLE) * dx / R, 0)
+laid = min(s_i, room) + (s_i − min(s_i, room)) * (1 − removal)^FLUSH_POWER        // all of s_i when removal = 0
+out  = b_i + laid
+flow ← flow / simulatedTime,     simulatedTime = dt_0 * equivalent (2.5)
+```
+
+The sediment still in the water comes to rest where the ground has room for
+it, as in pass 2. What is in water that runs too steeply to drop it leaves the
+terrain with that water. A run moves in a thousand iterations what a river
+moves in an age, so its water holds tens of metres of sediment in a texel
+while it runs, and by the time the water takes down a flank 1500 m long, a
+third to two thirds of the run, that share of what the gullies gave is still
+on its way when the run ends: laid down where it is, as it
+was before, it filled the gullies again and stood as rows of heaps along every
+stream (measured on `generate/mountain` at 1009: heaps of 100 m on a valley
+floor). With `removal` 0 nothing may leave, and all of it is laid down in
+place: the run conserves the terrain to the last step (4.9 item 3), and its
+gullies are the worse for it. **Pass 6:** `simulate/diff` (5.5) on the node's
+input and `out`.
 
 At a level start `d` is 0 on the base level; the fluxes are 0 on every level.
 
@@ -1063,10 +1095,11 @@ dt = PIPE_SAFETY * dx / sqrt(2 * G * H_REF)                 // 0.0252 * dx secon
 - The wave travels `WAVE_CELLS = PIPE_SAFETY / sqrt(2) = 0.354` texels per iteration. Water in a channel is slower; `NOMINAL_SPEED` is its assumed speed as a fraction of the wave speed.
 
 ```
-total = duration * F / (WAVE_CELLS * NOMINAL_SPEED)         F = size * (res_0 − 1)
+total = min(duration, TRAVEL_MAX / size) * F / (WAVE_CELLS * NOMINAL_SPEED)         F = size * (res_0 − 1)
 budget = levelBudget(total, level.count, DETAIL_ITERATIONS_HYDRAULIC, 0.5)
 ```
 
+- A run lasts no longer than water at the nominal speed takes to cross `TRAVEL_MAX` terrain widths (**design, to validate**): by then the runoff of every slope has left the terrain. At the default `size` every `duration` of the range is below that; at `size` 0.5 a `duration` above 2 runs as 2. Without the limit the two at their maxima asked for 11 600 iterations on a base level of 129 texels, which a software adapter (WARP on the Windows runner) did not finish in the 300 s a test has: the `params` check of the conformance suite ended there.
 - With the constants of section 13 `total = 11.3 * duration * F`: 724 to 1448 per unit of `duration` when the base level is selected by `size`.
 - `min(dt * rate, 1)` bounds the per-iteration fractions when `dx` is large.
 - The flux scaling `K` guarantees `d >= 0`; `Σ φ_k <= 1` follows from it, up to float rounding, which the `max(0, …)` absorbs.
@@ -1082,8 +1115,8 @@ Estimated cost of the default build at 8129, from 85 loads per texel per
 iteration and the measured 0.29 ms per 5-load pass at 2048²: 9 s, 7 s and
 27 s on the three levels, 43 s in all. The same work on the 8129 grid alone is
 9196 iterations, about 650 s. **To calibrate**. Measured at the defaults:
-1.1 s at 1025² (one level) and 23.0 s at 4033² (levels 2017 and 4033), with a
-longest slice of 111 ms.
+1.5 to 2.0 s at 1009² (one level) and 27 to 29 s at 4033² (levels 2017 and
+4033), with a longest slice of 143 ms.
 
 ### 4.9 Invariants
 
@@ -1091,7 +1124,7 @@ longest slice of 111 ms.
 2. `out = in − wear + deposit` within 1e-7.
 3. Conservation, with `removal = 0`, on a fixture whose border ring is higher than any water surface reached and with a single level: `|mean(out) − mean(in)| <= 2e-6 + 1e-4 * mean(wear)`. With `removal = 1` on the same fixture no texel rises and `deposit` is 0.
 4. With `detail = 0`: when `mask` is 0 everywhere, `out` is bit-identical to `in`; when `rain = 0` and `talus = 90`, `out` is bit-identical to `in`.
-5. On one level, with `talus = 90`, no texel at or below the sea level is lowered, and `flow` is 0 there. (It may rise: what was laid down beside the sea slides into it.)
+5. On one level, with `talus = 90`, no texel at or below the sea level is lowered, no texel above it is cut down to it, and `flow` is 0 at every texel of `out` at or below it. (A sea texel may rise, and be land with a flow from then on: what the water brings fills the sea up to its level, and what was laid down beside it slides into it.)
 
 "Monotone flow" is not an invariant of this model: water has inertia and can
 run uphill for a few iterations.
@@ -1100,30 +1133,33 @@ run uphill for a few iterations.
 
 | Artefact | Cause | Counter-measure |
 | --- | --- | --- |
-| Ripples on water and bed in long runs | terrain changes without the water column changing | water gains what the bed loses (pass 3) |
+| The valleys stand under water from wall to wall, and the wear is a sheet across every basin | the ground a texel erodes is added to its water (JT11 eq. 12c), and with loads of tens of metres that is most of the water there is | the ground the water takes does not become water (4.3) |
 | Pits and over-deep channel beds | capacity unbounded where water is fast | the capacity is full at `GATHER_MAX` channel heads; erosion limited to the height above the lowest neighbour |
 | Runaway incision of the channel that already has the flow | positive feedback: more water, a deeper cut, more water | the depth a gully is held to (4.6) |
 | The terrain stripped to smooth sheets | the film of water on every slope carries | no capacity below one channel head |
-| Only the deposits show; the slopes are untouched | a capacity that is full for a rill, so that no gully grows | the capacity grows with the water that has gathered; slow pick-up |
+| A long even slope wears as a sheet; gullies of one width | a capacity in proportion to the water, full at a few heads: water that runs together cuts no more than water spread out | the capacity grows with the power `CARRY_POWER` of the water gathered, and the depth of a gully with the power `CUT_POWER`, up to `GATHER_MAX` heads (4.6) |
+| An even slope cut into rills a few texels apart from one end to the other | what the counter-measure above does where nothing but the grid sets a width: seen on the `notch` fixture, a plane, at 1025 | accepted: a generator's slope has valleys that gather the water first. The spacing is that of the base level, a sixty-fourth of the feature size or less |
 | Ripples and concentric terraces in the deposits | the capacity answers to the slope of the bed it is changing | the slope of the input (4.6) |
+| Rows of heaps along the streams, gullies filled again | sediment on its way down when the run ends is laid down where it is: tens of metres to a texel | what cannot rest where it is leaves with the water (pass 5) |
+| A row of heaps along a stream during the run | a capacity that wavers along a channel, and a settling many times as fast as the pick-up | water lays down only what it holds beyond `SETTLE_BAND` times its capacity, and only where the ground has room |
 | The whole terrain slumps to the talus angle | the embedded thermal step meets an input steeper than its angle | the input is the step's `rest` |
-| Deposits bury the lower slopes as smooth sheets with a steep front | everything eroded is laid down within the reach of the run, where the water dropped it | `removal`; the slide above `FAN_ANGLE` |
-| A whole slope comes down between its gullies, as facets | on an input steeper than `talus` the banks of neighbouring gullies meet | `talus` 45 by default; raise it, or lower `size`, for narrower cuts |
-| A long even slope wears as a sheet below the first two feature sizes of its length | its sheet runoff is more than a channel head | accepted in v1; raise `size` or lower `rain` |
-| `deposit` is nearly empty | the valley floors are sea, which takes the sediment that reaches it (a sink, 1.3); or `removal` is high | on a terrain whose valleys end on land the deposits are aprons at the foot of the slopes. A delta where a stream meets the sea is not in v1 |
-| `deposition` changes little | where sediment comes to rest is set by the slide above `FAN_ANGLE` more than by where it settled | open: section 13, `SETTLE` |
-| No distinct fans: the deposits are aprons and level fills | the slide spreads what was laid down to `FAN_ANGLE` in every direction | open |
-| Level fills in closed hollows, with a sharp shore | sediment settles in standing water and slides level | accepted: it is what a filled lake is |
-| Lines like shorelines on the floor of a closed hollow | the water in it rises during the run and lays sediment down at each level it stands at | accepted in v1; seen in one hollow of `generate/canyon` at 513 |
+| A whole slope comes down between its gullies, as facets | on a face steeper than `talus` a bank could keep no slope across the face | a bank keeps the talus slope in its cross-section, on a face of any steepness (5.6) |
+| Deposits bury the lower slopes as smooth sheets | everything eroded is laid down within the reach of the run | `removal` |
+| `deposit` is empty at the default sea level | the level ground the generators' landforms stand on is at the sea level, and the sea took what reached it | the sea fills up to its level (pass 3) |
+| No distinct fans: the deposits are thin sheets over all level ground | a capacity that stays full on level ground wherever a few heads of water run, and a slow settling | the capacity falls with the water as it spreads; `SETTLE` 1; the deposit's room (4.6). The fans of neighbouring gullies run together into an apron along the foot of a range, as they do in nature |
+| `deposition` changes little | where sediment came to rest was set by the slide more than by where it settled | it sets how far a load runs out: seen on `generate/mountain` at 1009 and measured on the `cone` fixture (section 13, `SETTLE`) |
+| Level fills in closed hollows, with a sharp shore | sediment settles in standing water and fills from the bottom | accepted: it is what a filled lake is |
+| Little is laid down on a terrain that is steep everywhere (`generate/fractal-noise`: 4 % of the texels) | sediment has room only on ground gentler than `FAN_ANGLE` and in hollows, and what is on its way when the run ends leaves | accepted; a longer `duration` and a lower `removal` fill more of the hollows |
 | Speckle in the sediment | transport through texels with almost no water | no transport out of a texel with less than `D_MIN` of water |
-| No erosion on flat ground | `sinA` tends to 0 | `SIN_MIN` |
+| No erosion on flat ground | `sinA` tends to 0 | `SIN_MIN` | 0.005 | none | 4.6 | calibrated by eye on `generate/mountain` at 1009: at 0.02 the streams that leave a fan cut lines of up to three metres into the level ground beyond it. Mei07 requires a floor and gives no value |
+| Streams scratch thin lines into level ground beyond a fan | `SIN_MIN` lets a stream of many heads cut a little on the flat | `SIN_MIN` 0.005: such a cut is under a metre deep at the defaults |
 | Sediment mass drifts | semi-Lagrangian advection is not conservative | flux-form transport |
 | Channels aligned with the axes | N4 pipes on a symmetric input | erodibility jitter; central-difference slope; refinement jitter |
-| Checkerboard in the terrain | collocated grid, step too large | the `dt` bound, the water correction, the talus step |
-| One-texel spikes of deposit | sediment dropped at once where water vanishes | settling at a rate, never instantly; talus step |
+| Checkerboard in the terrain | collocated grid, step too large | the `dt` bound, the talus step |
+| One-texel spikes of deposit | sediment dropped at once where water vanishes | settling at a rate, into the room there is; the creep of what was laid down |
 | Only narrow channels | uniform rain | `precipitation` input |
 | Water drawn down near the border | open border | accepted; a closed border floods the map |
-| Terrain below sea level changes slightly | passes 1 to 3 leave sinks alone, but the refinement does not know the sea, and what was laid down beside it slides into it | accepted in v1 |
+| A coarse preview wears its slopes more evenly than the build | below the base level a texel is wider than a channel head's strip, and a slope's runoff through it counts as more of a channel (4.6) | the strip is a texel wide there; measured on `generate/mountain`, the mean wear is 0.0011 at 253, 0.0014 at 505, 0.0015 at 1009 and 0.0011 at 2017 |
 | Input roughness reappears on top of deposits after a refinement | the refinement adds back the input's fine detail everywhere | the talus step of the finer level; attenuation by deposit thickness is a later option |
 | Smeared sediment fronts | first-order upwind transport | accepted in v1; a MacCormack correction (Stava08) is a later option |
 
@@ -1157,7 +1193,7 @@ bed. Every mobile layer uses it: sediment (`simulate/sediment`), snow (section
 | Param | Kind, unit | Default | Range | Meaning |
 | --- | --- | --- | --- | --- |
 | `talus` | float, angle (`param.slope`) | 35 | 5..89 | slopes steeper than this collapse |
-| `size` | float, length (`param.size`, label Reach) | 0.02 | 0.001..0.25, log | width of the largest talus slope that forms completely. Sets the base level |
+| `size` | float, length (`param.size`, label Reach) | 0.005 | 0.001..0.25, log | width of the largest talus slope that forms completely. Sets the base level |
 | `strength` | float, ratio (`param.strength`) | 1 | 0..1 | fraction of the iteration budget that runs |
 | `removal` | float, ratio | 0 | 0..1 | fraction of the moved material that is removed instead of deposited |
 
@@ -1235,7 +1271,7 @@ const talusStep = defineKernel({
   name: 'simulate/talus.step',
   inputs: { h: 'field', mask: MASK_INPUT, rest: { kind: 'field', default: 0 } },
   outputs: { next: 'field' },
-  params: { talus: 'f32', fan: 'f32', keep: 'f32' },      // talus, fan: tangents of the two angles
+  params: { talus: 'f32', fan: 'f32', keep: 'f32', creep: 'f32' },      // talus, fan: tangents of the two angles
   cost: 27,
   code: /* wgsl */ `
 const TRANSFER = 0.1;
@@ -1246,8 +1282,14 @@ const TRANSFER = 0.1;
 fn give(over: f32, steep: f32, kept: f32, loose: f32, steps: f32, gate: f32) -> f32 {
   if (over <= 0.0 || steep <= 0.0) { return 0.0; }
   let slump = over * max(steep - kept, 0.0) / steep;
-  let slide = min(over * max(steep - P.fan, 0.0) / steep, loose);
+  let slide = min(over * max(max(steep - P.fan, 0.0) / steep, P.creep), loose);
   return TRANSFER * gate * max(slump, slide) / steps;
+}
+
+// The slope a pair may keep whose ground at rest has the slope rested: the talus slope across the slope it had.
+fn kept(rested: f32) -> f32 {
+  if (rested <= 0.0) { return P.talus; }
+  return sqrt(P.talus * P.talus + rested * rested);
 }
 
 fn compute(px: vec2i, uv: vec2f) -> f32 {
@@ -1264,8 +1306,8 @@ fn compute(px: vec2i, uv: vec2f) -> f32 {
     let rested = sqrt(/* the same of rest */) * perTexel;
     let theirs = max(h21 - r21, 0.0) * metres;
     let gate = min(m11, m21);
-    gain += give((h21 - h11) * metres, steep, max(P.talus, rested - theirs / (steps * frame.cellSize)), theirs, steps, gate);
-    loss += give((h11 - h21) * metres, steep, max(P.talus, rested - loose / (steps * frame.cellSize)), loose, steps, gate);
+    gain += give((h21 - h11) * metres, steep, kept(rested - theirs / (steps * frame.cellSize)), theirs, steps, gate);
+    loss += give((h11 - h21) * metres, steep, kept(rested - loose / (steps * frame.cellSize)), loose, steps, gate);
   }
   return h11 + (gain * P.keep - loss) / metres;
 }`,
@@ -1278,26 +1320,33 @@ larger of two amounts. The *slump*: the share of its height difference by
 which the slope at its middle is above
 
 ```
-max( tanTalus,  steep_ij(rest) − R * max(h_from − rest_from, 0) / run )
+sqrt( tanTalus² + r² ),      r = max( steep_ij(rest) − R * max(h_from − rest_from, 0) / run,  0 )
 ```
 
-the talus slope, or the slope the pair had at rest less the loose material on
-the giver, as a slope over the run of the pair. The *slide*: the share by
-which the slope is above `fan`, the slope the loose material rests at, and no
-more than the giver carries above its rest height. Three cases follow:
+the talus slope laid across the slope the pair had at rest, that slope less
+the loose material on the giver, as a slope over the run of the pair. A bank a
+simulation cuts into a face runs across the face: it may stand at the talus
+angle in its cross-section, however steep the face is. (With the larger of the
+two slopes, as the first version had it, a bank on a face steeper than the
+talus angle could keep no slope across the face at all: every gully on such a
+face widened until the face came down between two of them, and the
+generators' terrains stand at 45 to 60 degrees.) The *slide*: the share by
+which the slope is above `fan`, the slope the loose material rests at, or the
+share `creep` on any slope, and no more than the giver carries above its rest
+height. Three cases follow:
 
 | Ground | Slope it may keep | Effect |
 | --- | --- | --- |
-| a face of the input steeper than the talus angle, unchanged | the slope it has | stays as it is |
-| a bank a simulation cut steeper than both | the larger of the talus slope and its slope at rest | slumps back to it |
-| material laid on ground, level or steep | the slope `fan` | slides until it rests at that slope or the giver has none left |
+| a face of the input steeper than the talus angle, unchanged | the slope it has, and the talus slope across it | stays as it is |
+| a bank a simulation cut into it | the talus slope across the slope at rest | slumps back to it |
+| material laid on ground, level or steep | the slope `fan`; with `creep`, none for good | slides until it rests at that slope or the giver has none left, and creeps into the hollows beside it |
 
 Unbound, `rest` reads 0 everywhere: its slope is 0 and the loose material is
 the whole height, so the slump is the exchange of 5.3, when `fan` is given the
-talus tangent too (the slide is then never the larger).
+talus tangent too and `creep` 0 (the slide is then never the larger).
 `simulate/thermal-erosion` leaves `rest` unbound and passes its `talus` for
-both; `simulate/hydraulic-erosion` binds its input on the level and passes
-`tan(FAN_ANGLE)` (4.6 pass 4).
+both and no creep; `simulate/hydraulic-erosion` binds its input on the level
+and passes `tan(FAN_ANGLE)` and `CREEP` (4.6 pass 4).
 
 (The first version of the kernel also summed the lowering of each iteration
 in an in-place plane, for the gross wear of `simulate/hydraulic-erosion`.
@@ -1345,7 +1394,8 @@ passes (**design, to validate**; the limiter has the form of the flux scaling
 of Mei07):
 
 ```
-give(i → j)  as in 5.3, on the surface bed + s, slope at the middle of the pair included, with the layer's own repose tangent and gate = 1
+give(i → j)  = TRANSFER * (dx / run_ij) * R * max(h_i − h_j, 0) * max( max(steep_ij − tanRepose, 0) / steep_ij,  creep * saturate(s_i / full) )
+             on the surface h = bed + s, with the slope at the middle of the pair as in 5.3
 out_i   = Σ_{j in N8, inGrid} give(i → j)
 lim_i   = min(1, R * s_i / max(out_i, 1e-20))                                   // pass 1
 s_i ← max(0, s_i + ( Σ_j lim_j * give(j → i) − lim_i * out_i ) / R + source_i)  // pass 2
@@ -1357,8 +1407,11 @@ s_i ← max(0, s_i + ( Σ_j lim_j * give(j → i) − lim_i * out_i ) / R + sour
 | 2 | `simulate/layer.move` | `bed` own + N8, `layer` own + N8, `lim` own + N8, `source` own | `next` | 28 |
 | | swap `layer`/`next` | | | |
 
-- The exchange is the private library `simulateLayer` of `_layer.ts` (`simulateLayer_give`, `simulateLayer_gifts`, `simulateLayer_limit`, `simulateLayer_net`), which `simulate/snow.move` includes too. It is written over the pairs of the talus module (`TALUS_PAIRS`, 5.6). A texel's gift to a neighbour and the neighbour's gain from it are the same product `lim * give`, so the layer is conserved up to the rounding of each texel's own sum.
+Both kernels take the params `repose` (a tangent), `creep` and `full` (a height).
+
+- The exchange is the private library `simulateLayer` of `_layer.ts` (`simulateLayer_give`, `simulateLayer_creep`, `simulateLayer_gifts`, `simulateLayer_limit`, `simulateLayer_net`), which `simulate/snow.move` includes too. It is written over the pairs of the talus module (`TALUS_PAIRS`, 5.6). A texel's gift to a neighbour and the neighbour's gain from it are the same product `lim * give`, so the layer is conserved up to the rounding of each texel's own sum.
 - `source` is an optional input of `simulate/layer.move` with default 0: the layer gained or lost per iteration, in height units. `simulate/snow` uses it.
+- **Creep** (**design, to validate**). With `creep` above 0 a layer also evens out that share of a height difference on a slope it does not slide off: it drifts off the crests into the hollows. A layer thinner than `full` creeps by its share of that thickness: its flux is then in proportion to its thickness, a thin film moves no faster than the layer it left, and the edge of the layer is a front that stands, where a creep of one share for every thickness sent a film ahead at a texel per iteration (measured on the `rampX` fixture: 2 % of the snowfall lay 600 m below the snow line, from end to end). Both texels of a pair read the giver's thickness, so the exchange is still one number. `simulate/sediment` passes `creep` 0: its material rests where the slope lets it.
 - The `max(0, …)` absorbs float rounding; without it the layer goes slightly negative where a texel empties.
 - Budget and base level follow 5.7 with `strength = 1`. At a refinement the bed is `levelInput` of the fine level and the layer is refined with `refinePlane`, no jitter.
 - A `mask` input of a node that uses the solver is brought to the level that reads it with `levelInput` and released when that level is done (2.7); at `ctx.res` it is the input itself.
@@ -1444,6 +1497,7 @@ interface RouteArgs {
   readonly seed: number;                               // u32: mixSeed(ctx.seed, 0); used by 'single'
   readonly weight?: Float32Array;                      // contribution of each texel; default 1 everywhere
   readonly receivers?: boolean;                        // also return the receiver codes; with 'single' only
+  readonly sea?: 'all' | 'connected';                  // default 'all'
 }
 interface RouteResult {
   readonly filled: Float32Array;                       // the routing surface w
@@ -1457,7 +1511,7 @@ Algorithm. All height arithmetic is float32 (`Math.fround`), and `eps` and
 `seaLevel` are taken as the float32 nearest to them, the numbers a kernel
 receives as `f32` params.
 
-1. **Flood.** Every outlet gets `filled = height` and enters a min-heap ordered by (`filled`, texel index). Repeatedly pop the smallest texel `c`, append it to `order`, and for each N4 neighbour `q` not yet reached: `filled[q] = max(height[q], fround(filled[c] + eps))`, mark it reached, push it. With `eps = 0` a raised texel may go to a first-in-first-out queue that is drained before the heap (Barnes14's improved variant); the result is the same. With `eps > 0` it may not: the queue would give a valid but higher surface.
+1. **Flood.** With `sea: 'connected'` the outlets are the border ring and the texels at or below the sea level that the ring reaches through N4 neighbours at or below it; ground below the sea level that the sea does not reach is then no outlet, and fills to where it spills like any other hollow. `simulate/rivers` asks for it (8.5); every other caller takes the outlets of 1.3. Every outlet gets `filled = height` and enters a min-heap ordered by (`filled`, texel index). Repeatedly pop the smallest texel `c`, append it to `order`, and for each N4 neighbour `q` not yet reached: `filled[q] = max(height[q], fround(filled[c] + eps))`, mark it reached, push it. With `eps = 0` a raised texel may go to a first-in-first-out queue that is drained before the heap (Barnes14's improved variant); the result is the same. With `eps > 0` it may not: the queue would give a valid but higher surface.
 2. **Receivers** (`'single'`), for each texel `i` that is not an outlet:
 
 ```ts
@@ -1688,7 +1742,8 @@ channels: continuous rivers from the first texel that drains enough area down
 to the border, the sea or a lake; tributary junctions at the level of the
 river joined; courses that are lines and not stairs of texels; rivers that
 begin as trickles and widen downstream; water levels that never rise
-downstream; valley sides at a fixed angle; a level water surface in each cross
+downstream; valleys whose sides ease out from the bank slope at the water and
+keep the relief of the ground they lower; a level water surface in each cross
 section.
 
 ### 8.2 Interface
@@ -1708,17 +1763,18 @@ section.
 | Param | Kind, unit | Default | Range | Meaning |
 | --- | --- | --- | --- | --- |
 | `catchment` | float, ratio | 0.001 | 0.00001..0.5, log | share of the terrain that must drain through a texel for it to be a river |
-| `valleyDepth` | float, height | 0.1 | 0..0.5 | how deep a river that drains the whole terrain cuts its valley; 0 leaves only the channel |
+| `valleyDepth` | float, height | 0.2 | 0..0.5 | how deep a river that drains the whole terrain cuts its valley; 0 leaves only the channel |
 | `riverWidth` | float, length | 0.05 | 0..0.25 | width of a river that drains the whole terrain |
 | `riverDepth` | float, height | 0.03 | 0..0.25 | depth of the water in a river that drains the whole terrain |
-| `bank` | float, angle (`param.slope`) | 30 | 5..80 | slope of the banks and of the valley's sides |
+| `bank` | float, angle (`param.slope`) | 30 | 5..80 | slope of the banks at the water; a valley's sides ease out from it over `VALLEY_REACH` times the width a side at that slope would have |
 | `seed` | seed | 0 | | receiver choice |
 
 The defaults are calibrated by eye (section 13). No river drains the whole
 terrain: one that drains 1 % of it is a tenth as wide as `riverWidth` and 0.16
 times as deep as `riverDepth` and `valleyDepth`: 20 m wide and 5 m deep in a
-valley of 16 m, on a terrain of 4096 m with a height range of 1024 m. The
-valley is what a picture of 513 texels shows.
+valley of 32 m that reaches 130 m to either side, on a terrain of 4096 m with
+a height range of 1024 m. The valley is what a picture of the whole terrain
+shows.
 
 ### 8.3 State and memory
 
@@ -1738,12 +1794,14 @@ them as they come from the router.
 
 | # | Step | Reads | Writes | Loads |
 | --- | --- | --- | --- | --- |
-| 1 | router at `ctx.res`: `eps = ROUTE_EPS`, `routing: 'single'`, `weight` = `headwaters`, `receivers: true` | | `filled`, `area`, the receiver codes | CPU |
+| 1 | router at `ctx.res`: `eps = ROUTE_EPS`, `routing: 'single'`, `weight` = `headwaters`, `receivers: true`, `sea: 'connected'` | | `filled`, `area`, the receiver codes | CPU |
 | 2 | task `simulate/water-course` on those and on the terrain, read a second time | | `water`, `share`, `place`, the links (uploaded) | CPU |
 | 3 | `simulate/rivers.site` | `share`, `place` own | `site` | 2 |
-| 4 | `simulate/water-jump.rivers`, strides 1, then `2^(K−1)`, …, 2, 1 | `site` at 9 texels, `share` at their sites | the spare; swap | 18 |
+| 4 | `simulate/water-jump.rivers`, strides 1, then `2^(K−1)`, …, 2, 1 | `site` at 9 texels; `share` and the links at their sites | the spare; swap | 27 |
 | 5 | `simulate/rivers.along`, `COURSE_REFINE` times | `site` own; `share`, `place`, the links at the site and at the two beside it | the spare; swap | 9 |
 | 6 | `simulate/rivers.carve` | `in` own, `site` own; `water`, `share`, `place`, the links at the site and at the two beside it | `out`, `river`, `depth`, `surface` | 14 |
+
+The measures of a river (its width and depth from its share, the depth and the reach of its valley, the cross section) are one piece of WGSL text, `VALLEY_WGSL` of `_water-course.ts`, which steps 4 and 6 share.
 
 Step 6 has 4 writable textures. Unwanted outputs are bound to `null`.
 
@@ -1752,6 +1810,13 @@ Step 6 has 4 writable textures. Unwanted outputs are bound to `null`.
 **River texels.** A texel is a river texel when `area >= catchment`. Because
 `area` never decreases along receivers, everything downstream of a river texel
 is a river texel: the network has no gaps.
+
+**The sea a river ends in** is the sea the border reaches (`sea: 'connected'`
+of the router, 6.2), as `simulate/sea` takes it by default. Ground below the
+sea level that the sea does not reach is a hollow like any other: it fills to
+where it spills and its river runs on. With every texel at or below the sea
+level an outlet, a terrain with such ground inland had a river end in every
+basin of it: many, and short.
 
 **The course task** (`simulate/water-course`, in `_water-course.ts`) follows
 the rivers as lines, which no kernel can: every river texel with its receiver
@@ -1796,7 +1861,7 @@ share    = (W / (riverWidth * T))^2                    // the share a river of t
 ```
 cut   = max( valleyDepth * R * share^0.4,
              cut of the receiver − VALLEY_GRADE * tan(bank) * dx − R * max(filled − filled of the receiver, 0) )   // metres
-level = sea                                   at a mouth: a river texel at or below the sea level
+level = sea                                   at a mouth: a river texel that is an outlet at or below the sea level
       = level of the receiver                 inside another river
       = max( filled − cut / R, sea )          otherwise
 ```
@@ -1825,49 +1890,73 @@ level  = max( S − near, level − PROFILE_DEPTH * W / R, sea )           // no
 
    All four are whole numbers below 2^24 or plain floats: exact in a `field`. `COURSE_WGSL` reads them in a kernel.
 
-**Nearest river** by jump flooding (**published**: RT06) with the extra
-first pass of stride 1. `simulate/water-jump.step` with stride `s` looks at
-the nine texels `px + s * (i, j)`, `i, j` in −1..1, that are inside the grid,
-and keeps the site nearest to `px`; of two sites at equal distance it keeps the
-one with the smaller `y`, then the smaller `x`. `simulate/rivers` runs the
-variant `simulate/water-jump.rivers`, which keeps the site with the least
-`distance − W / (2 * dx)`, in texels, `W` being the width of that site's river:
-the river whose edge is nearest, or deepest inside whose channel the texel
-lies. The nearest site alone hands the texels of a wide river to every small
-tributary that joins it, which pinches the river at each confluence. A site
-lies in the texel that holds its `share`, so `round(site)` is that texel.
-`K = ceil(log2(reach))` with `reach` the largest distance in texels at which a
-river can still lower the terrain:
+   How far a river lies below the routing surface is the depth of its valley (below), and the routing surface along a river is a stair of texels and of pools: taken as each texel gives it, the valley was cut in ribs across the river. It is smoothed along the river as the width is, twice, over the same `n`, before it is written.
+
+**The river a texel belongs to** is found by jump flooding (**published**:
+RT06) with the extra first pass of stride 1. `simulate/water-jump.step` with
+stride `s` looks at the nine texels `px + s * (i, j)`, `i, j` in −1..1, that
+are inside the grid, and keeps the site nearest to `px`; of two sites at equal
+distance it keeps the one with the smaller `y`, then the smaller `x`.
+`simulate/rivers` runs the variant `simulate/water-jump.rivers`, which keeps
+the site with the largest claim (**design, to validate**):
 
 ```
-reach = (riverWidth * T / 2 + (riverDepth * R + BANK_RISE * deepest) / tan(bank)) / dx + 1
+W      = riverWidth * T * share^0.5                   D = riverDepth * R * share^0.4 * saturate(W / dx)
+beyond = distance * dx − W / 2                        // metres from the river's edge; below 0 inside the channel
+total  = D + BANK_RISE * rise                         // the depth of the valley and of the channel in it
+valley(beyond) = total * (1 − beyond * tan(bank) / (VALLEY_REACH * total))²      for beyond below the reach, else 0
+
+claim  = 2e9                      in the texel the site itself lies in
+       = 1e9 − beyond             inside the channel
+       = valley(beyond)           beside it
+```
+
+and of two sites with one claim, as beyond the reach of every valley, the one
+whose river's edge is nearer. A texel thus belongs to the river whose valley
+is deepest at it: where two valleys meet, both are equally deep, and ground
+that stands high above both rivers has no step between them. (Ground that
+stands lower than twice the depth is lowered by a share that its height above
+each river's water sets, and keeps a seam a texel wide where the two rivers
+lie at different levels: 8.6.) A texel inside a channel belongs to that
+river whatever valley it lies in, so a tributary is whole down to the river
+it joins. (By the nearest edge alone, as before, two valleys met in a seam
+wherever their rivers lay at different levels.) A site lies in the texel that
+holds its `share`, so `round(site)` is that texel. `K = ceil(log2(reach))`
+with `reach` the largest distance in texels at which a river can still lower
+the terrain:
+
+```
+reach = (riverWidth * T / 2 + VALLEY_REACH * (riverDepth * R + BANK_RISE * deepest) / tan(bank)) / dx + 1
 ```
 
 For `reach < 1`, the strides are just 1.
 
-A jump flood finds a site near the nearest one: beside a river the texels that
-share a nearest site form a strip a texel wide, which a wide stride steps
-over. `simulate/rivers.along` moves a texel's site one link down or up its
-river when the edge of the river is nearer there, `COURSE_REFINE` times.
+The flood gives a texel its river by a site that need not be that river's
+nearest: a site down the river has the deeper valley. `simulate/rivers.along`
+moves a texel's site one link down or up its river when the edge of the river
+is nearer there, `COURSE_REFINE` times; a texel that holds a site keeps it.
 
-**Cross section** (`simulate/rivers.carve`). The river is the line through its
-sites. The texel is measured to the stretches from its nearest site to the two
-sites linked to it, and to the site alone; of the three it takes the point
-whose river's edge is nearest. Along a stretch the level, the width and `rise`
-change evenly between the two sites, so the edge of the river is a line that
-leaves the middle line at an angle; the point lies where the way to the texel
-stands at that angle to the stretch. With `r` the distance in metres from the
-texel to the middle of the river at that point, and `W`, `level` and `rise`
-those of the point:
+**Cross section** (`simulate/rivers.carve`; **design, to validate**). The
+river is the line through its sites. The texel is measured to the stretches
+from its site to the two sites linked to it, and to the site alone; of the
+three it takes the point whose river's edge is nearest. Along a stretch the
+level, the width and `rise` change evenly between the two sites, so the edge
+of the river is a line that leaves the middle line at an angle; the point lies
+where the way to the texel stands at that angle to the stretch. With `r` the
+distance in metres from the texel to the middle of the river at that point,
+and `W`, `level` and `rise` those of the point:
 
 ```
-a     = (W / (riverWidth * T))^2
-D     = riverDepth * R * a^0.4 * saturate(W / dx)
-zc    = R * level − D * (1 − (2r / W)²)            if r < W / 2          // parabolic channel
-      = R * level + tan(bank) * (r − W / 2)        otherwise             // bank, and the valley's side
-keep  = 1                                          if r < W / 2
-      = 1 − smoothstep((1 − BANK_FADE) * B, B, r − W / 2)                otherwise, with B = (D + BANK_RISE * rise) / tan(bank); 0 from B on
-out   = in − keep * max(R * in − zc, 0) / R                              // cut only
+D      = riverDepth * R * (W / (riverWidth * T))^0.8 * saturate(W / dx)
+above  = R * (in − level)                              // metres of ground over the water
+inside the channel, r < W / 2:
+    cut = max(above − D * ((2r / W)² − 1), 0)          // down to the parabolic bed
+beside it, with beyond = r − W / 2, total = D + BANK_RISE * rise and over = max(above, 0):
+    high = min(over / total, 2)
+    wide = valley(beyond) * (high − high² / 4)         // the valley: the ground keeps its relief
+    near = max(1 − beyond * tan(bank) / total, 0)      // the bank: one side's width at the bank slope
+    cut  = wide + (over − wide) * near²
+out   = in − cut / R                                   // cut only
 
 river   = saturate(min((W / 2 − r) / dx + 0.5, W / dx))
 depth   = river > 0 ? max(level − out, 0) : 0
@@ -1875,8 +1964,9 @@ surface = river > 0 ? max(level, out) : out
 ```
 
 - The factor `saturate(W / dx)` thins a channel narrower than a texel instead of carving it one texel wide, so a preview does not show wider rivers than the build.
+- **The valley lowers the ground; it does not replace it.** Ground beside a river is lowered by the depth of the valley there, which falls from `total` at the bank to 0 at the reach, as a square: its slope at the water is the bank slope, on ground that stood `total` above the water, and it meets the terrain without a crease. Ground that stands lower than twice the valley's depth is lowered by less, down to a share of its own height (`high − high² / 4` is 1 from `high` = 2 on, never above `high`, and has no crease), so no ground beside a river goes under its water and low ground keeps its relief, smaller. Within one side's width at the bank slope the height of the ground above the water is scaled down as well, to nothing at the waterline: ground of any height meets the water without a step. (The first design cut the sides as planes at the bank slope, as high as the river lay deep: beside a valley of some depth every side was a plane without the terrain's relief, the planes of two rivers met in a seam, and a valley of the 6 to 16 m the planes could bear did not show against relief of hundreds.)
 - Taken from the nearest site alone, the level would change from one texel to the next abreast of a river: by more than the river is deep on a steep one, and its valley would be cut in rungs.
-- The side is cut as high above the water as the river lies below the routing surface there, and the river's depth more, over `B`; the cut fades out over the upper `BANK_FADE` of it. Without the fade a valley side steeper than `bank` ends in a step where the cut does. A texel without a site within `reach` is unchanged, exactly.
+- A texel without a site within `reach` is unchanged, exactly: a cut of 0 leaves its bits.
 - `river` is the share of the texel the water covers: a channel narrower than a texel marks its texel with `W / dx`, as its depth is thinned, and a river of no width marks nothing.
 
 ### 8.6 Invariants and artefacts
@@ -1895,18 +1985,20 @@ test compares the width and the depth of one river at the two levels.
 | --- | --- | --- |
 | Jagged, grid-following courses | routing on N4 | random receivers; the course is smoothed along the river (8.5 step 2), and the valley is measured to the line through its sites |
 | Straight runs along a row or a column across a lake or level ground | the routing surface is tilted there in N4 steps | the router resolves a flat as a whole (6.2 step 3) |
-| A wide river pinched where a tributary joins it | the nearest site is the tributary's | `simulate/water-jump.rivers` measures to the river's edge, and a tributary's places inside the river are no sites (8.5 step 3) |
+| A wide river pinched where a tributary joins it | the nearest site is the tributary's | a texel inside a channel belongs to the river it lies deeper in, and a tributary's places inside the river are no sites (8.5 step 3) |
 | A tributary that hangs above the river it joins | each river lies its own valley's depth below the ground | a valley shallows up a tributary no faster than `VALLEY_GRADE` allows (8.5 step 4) |
 | A valley's side cut in rungs or ripples beside a steep river | the level of the nearest site changes from texel to texel; a course or a width that keeps a trace of the grid turns the line at every site | the texel is measured to the line through the sites, whose course and width are smoothed twice (8.5) |
+| Ribs across a river, on both sides of its valley | the depth of the valley taken from the routing surface texel by texel, which is a stair along a river | that depth is smoothed along the river (8.5 step 6) |
 | A flight of pools along a river | every hollow on the way is filled to its rim | the long profile is smoothed from below (8.5 step 5) |
 | A river that begins with a blunt head as wide as its catchment makes it | the threshold on the drained share | `RIVER_TAPER` |
-| A step where the cut ends below a steep valley side | the side is cut only as high as the river lies deep | the cut fades out over the upper `BANK_FADE` of the side |
-| A thin step across a valley where two rivers meet | each texel takes the profile of one river, and a tributary's level differs from the river's a little off the junction | accepted; follow with `simulate/thermal-erosion` for softer sides |
-| A tributary on a raised bed beside a much deeper river it runs along | a texel between the two takes the tributary's profile, which lies above the side of the river's valley | accepted in v1; a smaller `valleyDepth`, or `simulate/fluvial-erosion` for valleys cut as a whole |
-| Rivers that are short and many on a terrain with ground below the sea level inland | every texel at or below the sea level is an outlet (1.3) | inherent; lower the sea level, or raise the ground |
+| Valley sides that are planes, without the relief of the terrain around them | the side cut down to a plane at the bank slope | the valley lowers the ground by its depth and leaves it its relief (8.5) |
+| A seam where the valleys of two rivers meet | each texel takes the profile of the river whose edge is nearest, and the two rivers lie at different levels | a texel belongs to the river whose valley is deepest at it: at the line between two valleys both are equally deep. Reduced, not removed: on low ground between two rivers at different levels, as on the plateau of `generate/canyon` beside its canyons, a seam a texel wide remains, seen at 2017 and 4033 one to one and not in a picture of the whole terrain. Taking the river that lowers a texel most instead was tried at 2017: fewer seams on the plateau, and pockets of a far, lower river in the terraces of the canyon walls. Open: a texel would have to know two rivers |
+| A tributary on a raised bed beside a much deeper river it runs along | its own channel is cut to its own level, and the ground beside it is lowered by the deeper river's valley | `VALLEY_GRADE` 0.2: a tributary keeps the depth of the valley it joins for two and a half times as far as before, and lies below that valley's side unless it runs within some twelve degrees of the river. Accepted beyond that; `simulate/fluvial-erosion` cuts valleys as a whole |
+| Rivers that are short and many on a terrain with ground below the sea level inland | every texel at or below the sea level an outlet (1.3) | the rivers end in the sea the border reaches (8.5) |
+| Rivers that end at the foot of a landform that stands on level ground at the sea level | that ground is sea: `generate/mountain` and `generate/mountain-range` at the default sea level of 0 | inherent; lower the sea level, or raise the landform |
 | Channels wider in the preview than in the build | one-texel minimum width | depth scaled by `saturate(width / dx)` |
 | Rivers end in pits | no depression handling | routing on the filled surface; a river that crosses a lake lies at the lake's level, lowered by its valley |
-| A wrong nearest site for a few texels | jump flooding is approximate | the extra stride-1 pass, and `simulate/rivers.along` |
+| A wrong site for a few texels | jump flooding is approximate, the more so for sites of unequal claim | the extra stride-1 pass, and `simulate/rivers.along` |
 
 ---
 
@@ -2068,7 +2160,8 @@ and `lim`, and `depth` is the layer plane:
 
 Per iteration two passes: `simulate/layer.limit`, then `simulate/snow.move`,
 which is `simulate/layer.move` with the source computed in the kernel instead
-of read from an input:
+of read from an input. Both run with `creep = SNOW_CREEP` and `full` = the
+snowfall (5.9):
 
 | # | Kernel | Reads | Writes | Loads |
 | --- | --- | --- | --- | --- |
@@ -2085,10 +2178,11 @@ L       = (cos(angle) * cos(SUN_ELEVATION), sin(angle) * cos(SUN_ELEVATION), sin
 sun     = mix(1, saturate(dot(n, L)), exposure)
 thaw    = melt * snowfall * share * sun * (2 − alt)
 source  = fall − thaw
-layer ← max(0, layer + exchange of 5.9 with tan(slipAngle) + source)
+layer ← max(0, layer + exchange of 5.9 with tan(slipAngle), SNOW_CREEP and full = snowfall + source)
 ```
 
 - Below the snow line nothing falls and snow that slid there melts at twice the rate.
+- **Snow drifts** (**design, to validate**). On a slope it does not slide off, snow still evens out a share of every height difference (the creep of 5.9): it leaves the crests and the convex ground within about a reach of them and gathers in the hollows and at the foot of a slope, an even slope keeps what fell on it, and the ground under the snow comes out rounded: at the default snowfall the gullies and the small relief of high ground are filled. Without it the snow was the same thickness wherever it did not slide, `out` was the input lifted by that thickness, and only the mask showed the node.
 - `mask` limits where snow falls, not where it slides. It is brought to each level with `levelInput` at the start of `simulate` and released at its end (2.7); at `ctx.res` it is the input itself.
 - Budget and base level: 5.7 with `strength = 1`, and at least one iteration when `snowfall > 0` (2.5 item 1): where the reach is below half a texel the snow falls and stays. Refinement: 5.9.
 - The cover is a share of the snowfall, not a depth in metres: a face the snow is sliding off carries a few percent of the snowfall in transit when the run ends, and with a threshold of 0.1 m every face above the snow line read as covered once the snowfall was more than a few metres.
@@ -2099,7 +2193,8 @@ layer ← max(0, layer + exchange of 5.9 with tan(slipAngle) + source)
 2. `mean(depth) <= snowfall`. With `melt = 0`, `mask` unconnected and `snowLine + band` below the whole terrain, on a single level: `mean(depth) = snowfall` within `1e-4 * snowfall`.
 3. With `snowfall = 0`, `out` is bit-identical to `in`.
 4. After the run on the cone fixture, with `size` at least the cone's radius and `slipAngle` 40, no N8 pair of the snow surface that carries snow at rest (more than 1/40 of the snowfall; less is in transit down a face) exceeds `tan(slipAngle)` by more than 5 %.
-5. A plane 6 % steeper than the slip slope sheds its snow alike whichever way it faces, as the layer of 5.9 does.
+5. A plane 6 % steeper than the slip slope sheds its snow alike whichever way it faces, as the layer of 5.9 does. One 6 % gentler keeps what fell on it away from its borders: the snow creeps, and on an even slope as much arrives as leaves.
+6. Below the snow line the snow ends: on the `rampX` fixture with `melt` 0, 28 texels (450 m) below the line less than `1e-9` lies, and from 68 texels below it none at all.
 
 | Artefact | Cause | Counter-measure |
 | --- | --- | --- |
@@ -2108,7 +2203,8 @@ layer ← max(0, layer + exchange of 5.9 with tan(slipAngle) + source)
 | Terraced snow line | abrupt altitude threshold | `band` |
 | Thin speckled snow near the line | fall and thaw nearly cancel | `SNOW_COVER` threshold in the `snow` mask |
 | Every face above the snow line reads as covered | snow in transit when the run ends | the cover is a share of the snowfall |
-| `out` hardly differs from `in` | snow is thin beside a mountain | the default `snowfall` is 0.02, which fills the gullies of high ground; the `snow` mask is the output to texture with |
+| `out` hardly differs from `in` | snow of one thickness wherever it does not slide | the snow drifts off the crests into the hollows (10.3); the default `snowfall` is 0.02, which fills the gullies of high ground |
+| A film of snow far below the snow line | a creep that moves a thin layer as fast as a thick one | a layer creeps in proportion to its thickness (5.9) |
 | Snow only in the gullies, every face bare | the terrain is steeper than the slip angle nearly everywhere above the snow line | the default `slipAngle` is 50: the generators' terrains stand at 45 to 60 degrees with the default proportions |
 
 ---
@@ -2191,7 +2287,7 @@ contains another tuning literal. A value marked
 
 | Constant | Value | Unit | Used in | Status and source |
 | --- | --- | --- | --- | --- |
-| `FEATURE_CELLS` | 64 | texels | 3.8, 4.8 | to calibrate. Was 32; raised with the first routing of 3.3. With 64 the default fluvial feature starts on 513 at 513 and on 1017 at 8129. Not compared with 32 under the routing that replaced it; the measurement of item 2 below is still to make |
+| `FEATURE_CELLS` | 64 | texels | 3.8, 4.6, 4.8 | to calibrate. Was 32; raised with the first routing of 3.3. With 64 the default fluvial feature starts on 513 at 513 and on 1017 at 8129. Not compared with 32 under the routing that replaced it; the measurement of item 2 below is still to make. Also the width of the strip a channel head of hydraulic erosion is counted over, the coarsest cell of a base level (4.6) |
 | `FEATURE_CELLS_RELAX` | 8 | texels | 5.7, 5.9, 10 | to calibrate; unchanged |
 | `DETAIL_SLOPE` | 0.1 | cell fraction | 2.4 | to calibrate |
 | `JITTER_HALF_WIDTH` | 0.25 | coarse texels | 2.4 | fixed; Tzathas24 |
@@ -2212,16 +2308,22 @@ contains another tuning literal. A value marked
 | `H_REF` | 20 | m | 4.3 | to calibrate; JT11's pipe area at unit cell size; unchanged |
 | `PIPE_SAFETY` | 0.5 | none | 4.7 | fixed; stability |
 | `NOMINAL_SPEED` | 0.25 | none | 4.7 | to calibrate |
-| `RAIN_MAX` | 0.05 | m/s | 4.6 | to calibrate; top of JT11's range |
+| `TRAVEL_MAX` | 1 | terrain widths | 4.7 | to calibrate; one value. Water runs two to four times the nominal speed, so at 1 it has crossed the terrain at least twice |
+| `RAIN_MAX` | 0.005 | m/s | 4.6 | calibrated with `HEAD_RAIN`, which it is counted against: what matters of the two is how deep the water stands. Was 0.05, the top of JT11's range: the runoff of a flank 1500 m long was then a sheet a metre deep at its foot and stood in the valleys from wall to wall. At a tenth the wear of `generate/mountain` at 1009 lies in the lines the water runs in, and the mask of `flow` is a stream network. One value tried beside 0.05 |
 | `KE` | 0.015 | 1/s | 4.6 | to calibrate; JT11 typical |
-| `HEAD_RAIN` | 0.024 | m/s | 4.6 | calibrated on `generate/eroded-noise` at 1025 by the median of `wear`, as a share of the deepest cut (0.04 of the height range): 0.27 at 0.012, where the middle of every slope wears as a sheet; 0.08 at 0.024, where `wear` is a mask of gully heads with unworn ground between; at 0.04 the gullies are fewer and shallower. Twice the default rain: at the defaults the sheet of water on an even slope cuts only from two feature sizes below its divide |
-| `GATHER_MAX` | 3 | channel heads | 4.6 | to calibrate. 8 was tried only together with a quarter of the channel head, where every slope wore |
-| `CARRY` | 40 | m | 4.6 | to calibrate. 30, 40 and 60 were tried with the other constants near their final values, on `generate/mountain` and `generate/eroded-noise` at 513 and 1025, and not compared side by side: the depth of a gully is held by `CUT_SHARE`, and `CARRY` sets how soon it is reached |
+| `HEAD_RAIN` | 0.0006 | m/s | 4.6 | calibrated on `generate/mountain` at 1009 by the wear mask, with `GATHER_MAX`: half the default rain, so a channel head is the runoff of a strip half a feature size long, or of a hollow some 20 m square. At twice the default rain (0.0024, with `GATHER_MAX` 16) the wear lay in the trunk valleys alone, a tenth of the terrain; at 0.0006 the slopes between them carry gullies, 17 to 22 % of the terrain is worn, and a divide stays unworn. Was 0.024 with a rain ten times as hard |
+| `GATHER_MAX` | 32 | channel heads | 4.6 | calibrated on `generate/mountain` at 1009 with `CARRY` and `CUT_SHARE`: 16, 24, 32 and 64 were drawn. A gully that drains a square half the feature size across under the default rain has 32 heads and the full depth. At 64 only the trunk gullies of a massif 3.6 km across reach it; at 3, the first calibration, every gully did, and they were of one depth and one width |
+| `CARRY` | 250 | m | 4.6 | calibrated on `generate/mountain` at 1009: the load at `GATHER_MAX` heads on a vertical face at `capacity` 1. 100, 250 and 400 were measured without the limit of the water's depth on the pick-up: the mean wear is 0.0009, 0.0018 and 0.0025 of the height range, and its 99th percentile 16, 26 and 33 m. At 250 the gullies show in the 3D picture of the whole massif and `capacity` and `downcutting` still change the result: `capacity` 0.3 and 3 give 0.34 and 2.3 times the wear at 100, and 0.43 and 1.7 times at 400, where the larger gullies are held by their depth. With the final constants the mean wear at the defaults is 0.0015 and its 99th percentile 24 m |
+| `CARRY_POWER` | 1.5 | none | 4.6 | to calibrate; above 1 so that water that runs together cuts more than the same water spread out. 1 and 1.5 were reasoned, 1.5 drawn: an even slope (the `notch` fixture at 1025) is cut into rills |
+| `CUT_POWER` | 0.5 | none | 4.6 | calibrated on `generate/mountain` at 1009 against 1, with `GATHER_MAX` 64: with 1 a gully of a quarter of the heads may cut a quarter of the full depth, and the slopes between the trunk valleys showed nothing; with 0.5 it may cut half |
 | `PICKUP` | 0.05 | none | 4.6 | to calibrate; one value tried beside 1. At 1 the load is the capacity within a texel |
-| `SETTLE` | 0.2 | none | 4.6 | to calibrate. Set so that `deposition` has an effect; it has little. On `generate/mountain` without a sea at 1025 the pictures at `deposition` 0.1 and 3 are hard to tell apart: the deposits are thinner and wider at 0.1 (the 99th percentile of `deposit` is 0.004 of the height range against 0.008), and in the `bowl` fixture they come to rest 0.004 lower. Where what was laid down comes to rest is set by the slide above `FAN_ANGLE` more than by where it settled |
-| `CUT_SHARE` | 0.2 | share of the feature size | 4.6 | calibrated by eye at 513 and 1025 among 0.1, 0.15, 0.2 and 0.25. The deepest cut is this share: 41 m at `size` 0.05 on a terrain 4096 m wide, measured as 0.0398 of a height range of 1024 m |
+| `SETTLE` | 1 | none | 4.6 | calibrated on `generate/mountain` at 1009 and on the `cone` fixture at 257. At 0.2 a load that had lost its capacity ran out over 200 m as a sheet a metre thick, whatever `deposition`. At 1, with `deposition` 3 the deposits are lobes at the mouths of the valleys and with 0.1 thin sheets over the plain: on the cone the deposit lies 76 texels from the tip on average with 1 and 3, and 86 with 0.1, where half of it covers twice as many texels (7243 against 3578) |
+| `SETTLE_BAND` | 2 | none | 4.6 | to calibrate; 1 and 2 were drawn on `generate/mountain` at 1009, where 2 removed the heaps along the upper gullies. With the room a deposit needs (4.6) the two pictures are alike; 2 is kept |
+| `CUT_SHARE` | 0.3 | share of the feature size | 4.6 | calibrated by eye on `generate/mountain` at 1009 between 0.2 and 0.3, with `CARRY`: the deepest cut is this share, 60 m at `size` 0.05 on a terrain 4032 m wide; measured 41 to 53 m over the study set at 1009. Was 0.2 |
 | `CUT_SLOPE` | 0.25 | sine | 4.6 | to calibrate; set so that gently sloping ground (a coastal plain of `generate/island`) is not cut as deep as a mountainside by the water that crosses it. At 0.5 the mean change there was 0.0038 against 0.0040 |
-| `FAN_ANGLE` | 8 | degrees | 4.6, 5.6 | to calibrate. 3 was tried on `generate/island` at 1025: the mean change and the largest deposit were the same within 1 % |
+| `FAN_ANGLE` | 6 | degrees | 4.6, 5.6 | calibrated by eye on `generate/mountain` at 1009 among 3, 6 and 8: the slope a deposit is built up to (its room) and slides back to. At 3 a fan is too low to show beside a massif; at 8 the heap at a valley's mouth is steep-sided. Was 8 |
+| `CREEP` | 0.5 | none | 4.6, 5.6 | to calibrate; 0.1, 0.5 and 1 were drawn on `generate/mountain` at 1009. It evens out bars and levees a texel wide. Not compared one to one at 4033 |
+| `FLUSH_POWER` | 8 | none | 4.6 | to calibrate; one value. At `removal` 0.4 the share of what cannot rest that is laid down in place is 0.017, at 0.1 it is 0.43, at 0 all of it |
 | `SIN_MIN` | 0.02 | none | 4.6 | to calibrate; Mei07 requires a floor and gives no value |
 | `D_MIN` | 1e-4 | m | 4.6 | to calibrate; unchanged |
 | `QUANTUM` | `2^-23` | height | 4.6 | fixed; one float32 step of a height between 1 and 2. A literal of the kernel `simulate/hydraulic-erosion.water` |
@@ -2238,41 +2340,53 @@ contains another tuning literal. A value marked
 | `COURSE_SLACK`, `COURSE_SLACK_MIN` | 0.5, 2 | river widths, texels | 8.5 | to calibrate |
 | `SITE_SPACING` | 0.75 | texels | 8.5 | fixed; below 1, so that the texels of two sites on a river touch |
 | `COURSE_REFINE` | 8 | iterations | 8.5 | to calibrate; measured on `generate/island` and `generate/canyon` at 1009 and `generate/eroded-noise` at 2017: without the step 0.2 to 0.4 % of the cut texels differ, by up to 73 m; after two steps one texel does; after eight none differs from 32 |
-| `VALLEY_GRADE` | 0.5 | of the bank slope | 8.5 | to calibrate; below 1, so that a tributary's valley lies below the side of the valley it joins on ground that rises by less than half the bank slope |
+| `VALLEY_GRADE` | 0.2 | of the bank slope | 8.5 | calibrated with the valley of 8.5, whose side falls away from the water at the bank slope and then more gently: a tributary lies below the side of the valley it joins unless it runs within some twelve degrees of the river. Was 0.5 |
 | `PROFILE_SMOOTHING` | 3 | river widths | 8.5 | to calibrate; of the river texels of `generate/island` at 2017, 411 fall by more than their length on the routing surface and 150 to 240 after smoothing over 4 and 1.5 widths |
 | `PROFILE_DEPTH` | 0.25 | river widths | 8.5 | to calibrate; by eye on `generate/canyon`, where streams fall over the rim |
-| `BANK_RISE` | 1 | none | 8.5 | to calibrate; by eye: at 2 a river in a canyon cuts the foot of the walls |
-| `BANK_FADE` | 0.5 | none | 8.5 | to calibrate; by eye |
+| `BANK_RISE` | 1 | none | 8.5 | to calibrate; the depth of a valley is that of its channel and this many times what the river lies below the routing surface |
+| `VALLEY_REACH` | 2 | none | 8.5 | calibrated by eye on `generate/canyon`, `generate/island` and `generate/fractal-noise` at 1009: the valley's depth falls to 0 as a square over twice the width a side at the bank slope would have, so that it has the bank slope at the water |
 | `COAST_FLAT` | 0.3 | of the band | 9.2 | to calibrate; by eye |
 | `COAST_SWEEPS` | 32 | iterations | 9.2 | to calibrate |
 | `COAST_TALUS` | 35 | degrees | 9.2 | to calibrate |
 | `COAST_TRANSFER` | 0.1 | none | 9.2 | fixed; `TRANSFER` of 5.3 |
 | `SUN_ELEVATION` | 45 | degrees | 10.3 | to calibrate |
 | `SNOW_COVER` | 0.25 | share of the snowfall | 10.2 | calibrated by eye: the faces snow slides off read as bare. Was 0.1 m (10.3) |
+| `SNOW_CREEP` | 0.5 | none | 10.3 | calibrated by eye on `generate/mountain` and `generate/fractal-noise` at 1009: the snow leaves the crests, fills the gullies and the small relief of high ground, and `out` is visibly rounded where it lies. One value drawn, with the creep in proportion to the thickness (5.9) |
 
 Parameter defaults and ranges were starting values of the same standing. Those
 of sections 6 to 9 are calibrated by eye on `generate/eroded-noise` and
 `generate/island` at 513 with the test settings and by the invariants; those
 of sections 3 to 5 and 10 on the generators and resolutions each row of this
-section names. What was looked at, in the final state: every output of the
-five nodes of sections 3 to 5 and 10 over `generate/eroded-noise` at 513 and
-at 1025, with the optional inputs unconnected and connected, as grey, as
-hillshade and in 3D; their 4033 crops of `out`; fluvial erosion also over
-`generate/mountain-range`, `generate/mountain`, `generate/island` and
-`generate/canyon` at 513, with two seeds, with `uplift`, and over
-`generate/mountain` at 2049 one to one; hydraulic erosion also over
-`generate/mountain`, `generate/mountain-range` and `generate/canyon`; and
-`out` of every node at 4033 with every parameter at its maximum. Not looked
-at in the final state: hydraulic erosion over `generate/island` and
-`generate/fractal-noise`, thermal erosion, sediment and snow over a landform
-other than the gallery terrain. Nothing was drawn at 8129:
+section names.
+
+**The study set.** What the rows of this section that name it were judged on,
+and what was looked at in the final state: `generate/mountain-range`,
+`generate/mountain`, `generate/island`, `generate/canyon` and
+`generate/fractal-noise` at their defaults, each through each of the ten
+nodes at its defaults, with the settings of a new project (a terrain 4032 m
+wide, a height range of 1008 m, the sea level 0) and the project seed 1, at
+505 and at 1009, every output drawn by `orogen render` as grey, as hillshade
+and in 3D from its one camera, beside the picture of the generator: 110
+runs. At 4033, one to one in a crop of 768: hydraulic erosion over
+`generate/mountain` and `generate/canyon`, rivers over `generate/canyon` and
+`generate/island`, snow over `generate/fractal-noise` and
+`generate/mountain`, fluvial erosion over `generate/mountain-range`, thermal
+erosion over `generate/mountain`. At 8129: one build of fluvial, then
+hydraulic, then thermal erosion over `generate/mountain-range` (below). With
+the level ground of three of the five at the sea level, as a new project has
+it. Not looked at in the final state: a connected `mask`, `precipitation`,
+`upliftMask` or `headwaters` over the study set; a sea level above 0 but for
+the coast of `generate/island` under fluvial erosion; `sediment`, `fill`,
+`flow`, `lakes` and `sea` at 4033; thermal erosion at 4033 with its reach of
+0.005 (the crop is that of 0.02, and still has faint streaks at two or three
+spots).
 
 | Node | Parameter | Was | Is | Why |
 | --- | --- | --- | --- | --- |
 | `simulate/rivers` | `catchment` | 0.002 | 0.001 | a network with its tributaries on a terrain whose rivers each drain a few percent |
 | `simulate/rivers` | `riverWidth` | 0.004, 0..0.05 | 0.05, 0..0.25 | at 0.004 a river that drains 1 % is 1.6 m wide, a fifth of a texel at 513: no picture showed a channel. At 0.08 the trunk of `generate/canyon` filled the canyon's floor |
 | `simulate/rivers` | `riverDepth` | 0.003, 0..0.05 | 0.03, 0..0.25 | at 0.003 the same river is half a metre deep |
-| `simulate/rivers` | `valleyDepth` | none | 0.1, 0..0.5 | a channel alone, 5 m deep in a river 20 m wide, shows in no picture of a terrain 4 km across: the valley is what reads as a river. At 0.15 the trunk of `generate/canyon` cut a gorge a third as deep as the canyon |
+| `simulate/rivers` | `valleyDepth` | none, then 0.1 | 0.2, 0..0.5 | a channel alone, 5 m deep in a river 20 m wide, shows in no picture of a terrain 4 km across: the valley is what reads as a river. At 0.1, with sides cut as planes, a river that drains 1 % lay in a valley of 16 m, which did not read against relief of hundreds; with the valley of 8.5, 0.1, 0.2 and 0.3 were drawn over the study set at 1009. At 0.2 the rivers of `generate/canyon`, `generate/island` and `generate/fractal-noise` lie in valleys the 3D picture of the whole terrain shows; at 0.3 the trunk valleys of `generate/fractal-noise` are a third as deep as its relief |
 | `simulate/lakes` | `minDepth` | 0.001 | 0.003 | at the old values the water mask of `generate/eroded-noise` was a speckle of ponds; now it shows some twenty lakes |
 | `simulate/lakes` | `minSize` | 0.005 | 0.02 | the same: a lake covers a square of 80 m at the least, 10 texels at 513 |
 | `simulate/sea` | `strength` | 0 | 1 | at 0 the node's first output is its input (`testing.md` 6.6 rule 1) |
@@ -2282,17 +2396,19 @@ other than the gallery terrain. Nothing was drawn at 8129:
 | `simulate/snow` | `slipAngle` | 40 | 50 | the generators' terrains stand at 45 to 60 degrees: at 50 the gentler high ground of `generate/eroded-noise` is covered and its steep faces are bare, at 513 and 1025. The mean cover there is 0.24 at 40 and 0.27 at 50, with `melt` 0.3 |
 | `simulate/snow` | `melt` | 0.3 | 0.2 | more of the high ground keeps its cover; not compared by eye with 0.3 |
 | `simulate/hydraulic-erosion` | `talus` | 35 | 45 | the generators' slopes stand at 45 to 60 degrees: at 35 and 40 the banks of neighbouring gullies meet and the slope between them comes down (4.6 pass 4); 35, 40, 45 and 55 were drawn at 1025 |
-| `simulate/hydraulic-erosion` | `removal` | new | 0.6 | 0.5, 0.6 and 0.7 were tried; at 1 nothing is laid down. With the test sea level of 0.25 the valley floors of the gallery terrain are sea, which takes what reaches it: there the mean `deposit` is 2 % of the mean `wear` at the default and 6 % at `removal` 0, and the mask is a few spots |
+| `simulate/hydraulic-erosion` | `removal` | new, then 0.6 | 0.4 | 0.4 and 0.6 were drawn on `generate/mountain` at 1009 with the constants of this section: at 0.4 the fans at the foot of the massif show in its 3D picture. Over the study set at 1009 the mean `deposit` is 19 to 28 % of the mean `wear`, and 8 % on `generate/fractal-noise`, which has little ground a deposit can rest on. What is on its way when the run ends leaves as well (4.6 pass 5) |
+| `simulate/thermal-erosion` | `size` | 0.02 | 0.005 | at 0.02 the node took every gully and spur off the study terrains and left a smooth massif, also of what fluvial and hydraulic erosion had cut before it; at 0.005, 20 m, the spurs and the valleys between them stand and their faces are scree. Drawn over the study set at 1009 and over hydraulic erosion on `generate/mountain` |
 
 Unchanged: `tilt` 0, `routing` `single`, `bank` 30, `mode` `connected`,
 `shoreHeight` 0.005; and every other default of
 sections 3 to 5 and 10: fluvial `size` 0.125, `duration` 1, `concavity` 0.4,
 `talus` 30, `lakeFill` 1; hydraulic `size` 0.05, `duration` 2, `rain` 0.24,
-`capacity` 1, `downcutting` 0.5, `deposition` 1; thermal `talus` 35, `size`
-0.02, `strength` 1, `removal` 0; `repose` 33; snow `snowLine` 0.5, `band`
-0.05, `exposure` 0.5. Thermal erosion at `talus` 35 collapses nearly all of a
+`capacity` 1, `downcutting` 0.5, `deposition` 1; thermal `talus` 35, `strength` 1,
+`removal` 0; `repose` 33; snow `snowLine` 0.5, `band`
+0.05, `exposure` 0.5. Thermal erosion at `talus` 35 collapses the faces of a
 generator's terrain, which stands steeper than that almost everywhere at the
-default proportions: that is what the angle means, and it is left.
+default proportions: that is what the angle means, and it is left; how much of
+a face comes down is the reach.
 
 **Resolution tolerances** (item 7 below), measured on the `terrain` fixture
 between 257 and 513 at the defaults, as the rms difference at shared vertices
@@ -2302,7 +2418,7 @@ over the standard deviation of the output:
 | --- | --- | --- |
 | `simulate/thermal-erosion` | `out` 0.0002, `wear` 0.019, `deposit` 0.014 | `resolutionTol` 0.04 |
 | `simulate/sediment` | `out` 0.0002, `depth` 0.004 (0.012 between 129 and 257) | `resolutionTol` 0.02 |
-| `simulate/snow` | `out` below 0.0001, `snow` 0.006, `depth` 0.004 (0.023 and 0.014 at `slipAngle` 40) | `resolutionTol` 0.03 |
+| `simulate/snow` | `out` 0.0004, `snow` 0.032, `depth` 0.034; 0.002 for both between 513 and 1025 | `resolutionTol` 0.05 |
 | `simulate/fluvial-erosion` | `out` 0.034, `wear` 0.24, `flow` 0.82 | `skip.resolution`: `flow` is stream lines one texel wide (2.8 item 5). The node's own test holds `out` to 0.08 and `wear` to 0.4 |
 | `simulate/hydraulic-erosion` | `out` 0.004, `wear` 0.32, `deposit` 0.19, `flow` 0.38 | `skip.resolution`: gullies, fans and stream lines a few texels wide. The node's own test holds `out` to 0.02 and the mean of the three others to a factor of 2 |
 
@@ -2316,9 +2432,10 @@ project's hardware; everything derived from them is an estimate.
 | Four-pass pipe-model iteration, 2048² | 3.03 ms with `field` and `aux` state; 2.49 ms with in-place flux and a compact velocity |
 | Priority flood in Node (N8, queue variant) | 192 ms at 1025², 777 ms at 2049², 3.9 s at 4097² |
 | Router task `simulate/route`, `routing: 'single'`, one thread, first call of a process | 0.68 to 0.87 s at 2033², 2.6 to 3.5 s at 4065² (156 to 214 ns per texel, by the share of texels on flats, 21 to 34 %); a quarter of it is the flats (6.2 step 3). 14 bytes per texel at the peak beside the array returned: 60 MB and 222 MB |
-| `simulate/rivers` at 4033, defaults, on `generate/eroded-noise` (`verify` step 7) | 2.3 s in all, of which the course task 0.2 s; longest slice 46 ms; 716 MB of fields at the peak |
-| The erosion nodes at their defaults, whole node, 513² | fluvial 0.7 s, hydraulic 0.2 s, thermal 0.04 s, sediment 0.1 s, snow 0.1 s |
-| The same at 4033² | fluvial 16.7 s, hydraulic 23.0 s, thermal 0.6 s, sediment 1.1 s, snow 1.1 s; peak state 0.46, 0.72, 0.20, 0.20 and 0.20 GB |
+| `simulate/rivers` at 4033, defaults, on `generate/canyon` and `generate/island` | 2.7 and 2.8 s in all; longest slice 32 ms; 716 MB of fields at the peak |
+| The ten nodes at their defaults over the study set, whole node, 1009², the preview of a new project | fluvial 1.7 to 3.4 s, hydraulic 1.5 to 2.0 s, thermal 0.04 s, sediment and snow 0.15 s; fill, flow, lakes and sea 0.3 to 1.2 s, rivers 0.6 to 1.5 s. Longest slice 81 ms (hydraulic) |
+| The same at 4033² | fluvial 13.4 s (`generate/mountain-range`), hydraulic 27.3 and 28.9 s (`generate/mountain`, `generate/canyon`), thermal 0.8 s, snow 1.1 and 1.2 s, rivers 2.7 and 2.8 s; longest slice 103, 143, 78, 80 and 32 ms; peak state 0.46, 0.72, 0.20, 0.20 and 0.72 GB |
+| One build of `generate/mountain-range`, then fluvial, hydraulic and thermal erosion at their defaults, 8129², with a pool budget of 5120 MiB on the 6 GB card | 156 s in all, status ok, no engine error: fluvial 71.2 s, of which 29.7 s on the GPU and the rest in the router of its four levels; hydraulic 73.8 s; thermal 4.0 s. Peak state 1850, 2643 (with `out` alone wanted; 2907 with every output) and 529 MB, each beside one input of 264 MB. Longest slice 138 ms (`simulate/talus.step`), of 2812 slices |
 | Readback of a `field` | 853 MB/s |
 
 **What calibration must settle before defaults are frozen:**
@@ -2327,7 +2444,7 @@ project's hardware; everything derived from them is an estimate.
 2. `FEATURE_CELLS`: the smallest value for which a run from the selected base level differs from a run started one level finer by less than 5 % rms of the same measure. Not made: 64 was set by eye.
 3. `FILL_SWEEPS`: whether lakes drain visibly late at 2, 4 and 8 sweeps per step.
 4. The hydraulic rates (`H_REF`, `RAIN_MAX`, `KE`, `HEAD_RAIN`, `GATHER_MAX`, `CARRY`, `PICKUP`, `SETTLE`, the three rate defaults) on terrains of 2 km and 16 km width, so that default parameters give gullies of the feature size and neither flood nor strip the terrain. Calibrated on a terrain 4 km wide and 1 km high only. The channel head and the depth of a gully follow the feature size in metres, so they keep their proportion to the terrain; `CARRY` is in metres, so how fast a gully reaches its depth on a terrain of another size is not known.
-5. The time of the router at 8129² in the engine's CPU thread. If it exceeds the GPU work of the level it serves, the routing surface and the area of `simulate/fluvial-erosion`'s finest level are instead refined from the coarser level and corrected by sweeps; that change is made in this document first. Measured up to 4065² (above): the rate gives 10 to 14 s at 8129², against the 10 s estimated for that level's 256 iterations (3.8). It is not measured at 8129² itself.
+5. The time of the router at 8129² in the engine's CPU thread. If it exceeds the GPU work of the level it serves, the routing surface and the area of `simulate/fluvial-erosion`'s finest level are instead refined from the coarser level and corrected by sweeps; that change is made in this document first. Measured up to 4065² (above): the rate gives 10 to 14 s at 8129², against the 10 s estimated for that level's 256 iterations (3.8). Measured in one build at 8129² (above): of the node's 71 s, 30 s are GPU work and 41 s the router's five calls, the readbacks and the uploads; the call of the finest level is not timed apart. The CPU side is the larger: the change is due.
 6. Whether float32 drainage area is adequate at 8129² (sums of 6.6e7 contributions; the router accumulates in float64, the per-step sweep in float32).
 7. The `resolutionTol` of each node: the measured rms difference between its output at 513 and at 257 on the `terrain` fixture, relative to the standard deviation of the output, plus a margin.
 

@@ -75,7 +75,7 @@ test('the parameters of every export node are those of 2.4: names, kinds, defaul
   ]);
   assert.deepEqual(shape(byType('io/export-layer')), [['layer', 'text', 'Layer', [63], null], ['weightBlended', 'bool', true, [], null]]);
   const dimension = ['dimension', 'enum', 'auto', ['auto', '1024', '2048', '4096', '8192'], null];
-  assert.deepEqual(shape(byType('io/export-color')), [['name', 'text', 'Color', [64], null], dimension]);
+  assert.deepEqual(shape(byType('io/export-color')), [['name', 'text', 'Color', [64], null], dimension, ['content', 'enum', 'color', ['color', 'data'], null]]);
   assert.deepEqual(shape(byType('io/export-normal')), [['name', 'text', 'Normal', [64], null], dimension]);
   assert.deepEqual(shape(byType('io/export-mask')), [['name', 'text', 'Mask', [64], null], dimension, ['bits', 'enum', '8', ['8', '16'], null]]);
   assert.deepEqual(shape(byType('io/export-field')), [
@@ -152,6 +152,8 @@ test('every option of every enum and both values of every bool set the item memb
       [type, 'dimension', '4096', 'size', 4096],
       [type, 'dimension', '8192', 'size', 8192],
     ] as const),
+    ['io/export-color', 'content', 'color', 'content', 'color'],
+    ['io/export-color', 'content', 'data', 'content', 'data'],
     ['io/export-mask', 'bits', '8', 'bits', 8],
     ['io/export-mask', 'bits', '16', 'bits', 16],
     ['io/export-field', 'name', 'Flow', 'name', 'Flow'],

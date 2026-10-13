@@ -31,7 +31,7 @@ export default defineNode({
       help: 'Slopes steeper than this collapse. A lower angle flattens more of the terrain.',
     }),
     param.size({
-      label: 'Reach', default: 0.02, min: 0.001, max: 0.25,
+      label: 'Reach', default: 0.005, min: 0.001, max: 0.25,
       help: 'Width of the largest scree slope that forms completely. A longer reach lets taller cliffs collapse all the way.',
     }),
     param.strength({ help: 'How far the collapse proceeds: lower values stop it early and leave cliffs partly standing.' }),
@@ -48,7 +48,7 @@ export default defineNode({
     const mask = ctx.input('mask');
     const tangent = Math.tan((talus * Math.PI) / 180);
     // Without a rest state all of the ground is loose and rests at the one angle.
-    const params = { talus: tangent, fan: tangent, keep: 1 - removal };
+    const params = { talus: tangent, fan: tangent, keep: 1 - removal, creep: 0 };
     let budget: readonly number[] = [];
 
     const state = await ops.coarseToFine<State>(ctx, {

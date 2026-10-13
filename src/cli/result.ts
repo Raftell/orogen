@@ -2,6 +2,8 @@
 // code, and a failed node in words. Pure.
 
 import { HARD_CEILING_MS, type EvaluateResult, type NodeError } from '../core/runtime.ts';
+import type { Given } from './document.ts';
+import type { Tone } from './preview.ts';
 
 /** runtime.md 3.5: no slice may be measured above this. */
 export { HARD_CEILING_MS };
@@ -30,11 +32,11 @@ export interface RenderResult {
   readonly inputs: readonly WrittenInput[];
 }
 
-/** A picture in the output folder: its path under that folder with `/`, and its size in pixels. */
-export interface WrittenPicture { readonly file: string; readonly width: number; readonly height: number }
+/** A picture in the output folder: its path under that folder with `/`, its size in pixels, and for a data output the scale it is drawn on. */
+export interface WrittenPicture { readonly file: string; readonly width: number; readonly height: number; readonly tone?: Tone }
 
-/** The picture of what one input was given: a terrain, the mask or a colouring. */
-export interface WrittenInput extends WrittenPicture { readonly port: string; readonly kind: 'terrain' | 'mask' | 'color' }
+/** The picture of what one input was given: a terrain, the mask, a colouring, or what the input is named for. */
+export interface WrittenInput extends WrittenPicture { readonly port: string; readonly kind: Given }
 
 /** Whether the run broke what keeps a GPU pre-emptible: a slice above the hard ceiling, or an error outside every scope. */
 export function overran(result: Pick<RenderResult, 'longestSliceMs' | 'engineErrors'>): boolean {

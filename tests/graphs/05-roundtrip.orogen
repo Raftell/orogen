@@ -1,0 +1,187 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4096,
+    "heightRange": 1024,
+    "seed": 1,
+    "buildResolution": 1009,
+    "previewLevel": 1,
+    "seaLevel": 0.25
+  },
+  "nodes": {
+    "image": {
+      "id": "image",
+      "type": "ref/image",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {
+        "file": "assets/heights-253.png"
+      }
+    },
+    "fbm": {
+      "id": "fbm",
+      "type": "ref/fbm",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 160
+      },
+      "params": {
+        "size": 0.1,
+        "octaves": 4
+      }
+    },
+    "land": {
+      "id": "land",
+      "type": "ref/combine",
+      "version": 2,
+      "position": {
+        "x": 280,
+        "y": 0
+      },
+      "params": {
+        "mode": "add",
+        "strength": 0.1
+      }
+    },
+    "rock": {
+      "id": "rock",
+      "type": "ref/slope-mask",
+      "version": 1,
+      "position": {
+        "x": 560,
+        "y": 160
+      },
+      "params": {}
+    },
+    "paint": {
+      "id": "paint",
+      "type": "ref/colorize",
+      "version": 1,
+      "position": {
+        "x": 560,
+        "y": 320
+      },
+      "params": {}
+    },
+    "outland": {
+      "id": "outland",
+      "type": "io/export-landscape",
+      "version": 1,
+      "position": {
+        "x": 840,
+        "y": 0
+      },
+      "params": {
+        "dither": false
+      }
+    },
+    "outrock": {
+      "id": "outrock",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 840,
+        "y": 160
+      },
+      "params": {
+        "layer": "Rock"
+      }
+    },
+    "outpaint": {
+      "id": "outpaint",
+      "type": "io/export-color",
+      "version": 1,
+      "position": {
+        "x": 840,
+        "y": 320
+      },
+      "params": {}
+    }
+  },
+  "edges": {
+    "image-out-land-a": {
+      "id": "image-out-land-a",
+      "from": {
+        "node": "image",
+        "port": "out"
+      },
+      "to": {
+        "node": "land",
+        "port": "a"
+      }
+    },
+    "fbm-out-land-b": {
+      "id": "fbm-out-land-b",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "land",
+        "port": "b"
+      }
+    },
+    "land-out-rock-in": {
+      "id": "land-out-rock-in",
+      "from": {
+        "node": "land",
+        "port": "out"
+      },
+      "to": {
+        "node": "rock",
+        "port": "in"
+      }
+    },
+    "land-out-paint-in": {
+      "id": "land-out-paint-in",
+      "from": {
+        "node": "land",
+        "port": "out"
+      },
+      "to": {
+        "node": "paint",
+        "port": "in"
+      }
+    },
+    "land-out-outland-in": {
+      "id": "land-out-outland-in",
+      "from": {
+        "node": "land",
+        "port": "out"
+      },
+      "to": {
+        "node": "outland",
+        "port": "in"
+      }
+    },
+    "rock-out-outrock-in": {
+      "id": "rock-out-outrock-in",
+      "from": {
+        "node": "rock",
+        "port": "out"
+      },
+      "to": {
+        "node": "outrock",
+        "port": "in"
+      }
+    },
+    "paint-out-outpaint-in": {
+      "id": "paint-out-outpaint-in",
+      "from": {
+        "node": "paint",
+        "port": "out"
+      },
+      "to": {
+        "node": "outpaint",
+        "port": "in"
+      }
+    }
+  },
+  "groups": {},
+  "ui": {}
+}

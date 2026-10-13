@@ -105,15 +105,20 @@ time limit of 30 minutes, which a long build can exceed: do not use it there.
 
 ## 5. Starting the application
 
-**Not yet built.** The desktop application, with its node graph, 3D viewport and inspector, has no sources in
-the repository yet, so there is nothing to start. What is fixed already:
+**Its frame is built; its panels are not.** `npm start`, run in the repository's folder, builds the application
+into the folder `dist` and starts it; `npm run build` followed by `npx electron .` does the same in two steps.
 
-- `npm run build` will build the application into the folder `dist`, and `electron .`, run from the
-  repository's folder, will start that build.
-- Today `npm run build` stops with `Cannot resolve entry module index.html` and writes nothing.
-- A packaged Windows version is planned; no packaging exists.
+- What opens is the window with its menus, the command palette, the status bar and five docked panels. It
+  computes the project and shows its terrain from above. The graph editor, the inspector, the node library and
+  the build panel are empty: you can open, save and build a project in the window, and you cannot edit it there
+  yet.
+- `npx electron . D:\Terrains\ridge.orogen` starts it with that project.
+- It has been tested on Linux only, and only in a window that is never shown. **Nobody has started it on
+  Windows.**
+- `npm run dist:win` packs it for Windows into the folder `release`, as a zip and a portable executable, both
+  unsigned. That package **has never been built or started**.
 
-[The desktop application](application.md) describes what the design fixes of it.
+[The desktop application](application.md) says what works today and what the design fixes of the rest.
 
 ## 6. Where to go next
 

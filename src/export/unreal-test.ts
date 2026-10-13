@@ -195,6 +195,7 @@ export async function writeMarkerBuild(sink: FileSink, res: number, requestId = 
       problems: [],
       targets: [],
       weightsMs: null,
+      commitMs: null,
       height: { measuredMin: 0, measuredMax: 1, valueMin: 0, valueMax: 1, clippedSamples: 0 },
       layers: manifest.landscape!.layers.map(({ name, base, blend, meanWeight }) => ({ name, base, blend, meanWeight })),
       files,

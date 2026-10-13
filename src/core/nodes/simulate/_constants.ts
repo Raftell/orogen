@@ -49,28 +49,40 @@ export const H_REF = 20;
 export const PIPE_SAFETY = 0.5;
 /** Speed of water in a channel as a share of the wave speed: how many iterations a `duration` takes (4.7). To calibrate. */
 export const NOMINAL_SPEED = 0.25;
+/** The longest run, as the terrain widths water at the nominal speed covers in it: `duration` times `size` counts up to this (4.7). To calibrate. */
+export const TRAVEL_MAX = 1;
 /** Rainfall at `rain` = 1, m/s (4.6). To calibrate. */
-export const RAIN_MAX = 0.05;
+export const RAIN_MAX = 0.005;
 /** Evaporation rate, 1/s (4.6). To calibrate. */
 export const KE = 0.015;
 /** Rainfall whose runoff down a slope one feature size long is the water of a channel head, m/s: less water carves nothing (4.6). Calibrated. */
-export const HEAD_RAIN = 0.024;
+export const HEAD_RAIN = 0.0006;
 /** The water, in channel heads beyond the first, from which the capacity and the depth of a gully are full (4.6). To calibrate. */
-export const GATHER_MAX = 3;
+export const GATHER_MAX = 32;
+/** The power of the gathered water by which the capacity grows: above 1, so that water that runs together cuts faster than the same water spread out (4.6). To calibrate. */
+export const CARRY_POWER = 1.5;
+/** The power of the gathered water, as a share of GATHER_MAX, by which the depth of a gully grows (4.6). To calibrate. */
+export const CUT_POWER = 0.5;
 /** Metres of sediment that fast water on a vertical face holds at `capacity` 1 for each channel head of water beyond the first (4.6). To calibrate. */
-export const CARRY = 40;
+export const CARRY = 250;
 /** The share of the pick-up rate that acts: a gully is cut over the whole run, not in its first moments (4.6). To calibrate. */
 export const PICKUP = 0.05;
 /** The share of the settling rate that acts: at `deposition` 1 sediment travels some hundred metres before most of it has settled (4.6). To calibrate. */
-export const SETTLE = 0.2;
+export const SETTLE = 1;
+/** Water lays down only what it holds beyond this many times its capacity: a capacity that wavers along a channel leaves no row of heaps (4.6). To calibrate. */
+export const SETTLE_BAND = 2;
+/** The power of the share that stays (1 - removal) by which sediment still in running water when the run ends is laid down where it is: at `removal` 0 all of it, at the default none to speak of (4.6). To calibrate. */
+export const FLUSH_POWER = 8;
 /** The depth of the deepest gully below the ground the run found, as a share of the feature size (4.6). Calibrated by eye. */
-export const CUT_SHARE = 0.2;
+export const CUT_SHARE = 0.3;
 /** The sine of the slope from which a gully may cut to its full depth; on gentler ground in proportion (4.6). To calibrate. */
 export const CUT_SLOPE = 0.25;
 /** The steepest slope what the water laid down rests on, in degrees: steeper, it slides (4.6). To calibrate. */
-export const FAN_ANGLE = 8;
+export const FAN_ANGLE = 6;
+/** The share of a height difference between neighbours that what the water laid down evens out per iteration on any slope: its bars and levees are no texel-sized heaps (4.6). To calibrate. */
+export const CREEP = 0.5;
 /** The least sine of the slope the capacity counts with: level ground still erodes (4.6). To calibrate. */
-export const SIN_MIN = 0.02;
+export const SIN_MIN = 0.005;
 /** Water shallower than this, in metres, neither moves sediment nor has a speed (4.6). To calibrate. */
 export const D_MIN = 1e-4;
 /** How far a texel's erodibility lies below 1 at the most (4.6). To calibrate. */
@@ -93,3 +105,5 @@ export const DETAIL_ITERATIONS_RELAX = 96;
 export const SUN_ELEVATION = 45;
 /** The share of the snowfall at which ground counts as covered: thinner snow, as on a face it is sliding off, covers in part (10.2). To calibrate. */
 export const SNOW_COVER = 0.25;
+/** The share of a height difference between neighbours that snow evens out per iteration on a slope it does not slide off: it drifts off the crests into the hollows and rounds the ground under it (10.3). To calibrate. */
+export const SNOW_CREEP = 0.5;

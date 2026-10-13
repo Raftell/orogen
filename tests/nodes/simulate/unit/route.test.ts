@@ -336,6 +336,40 @@ test('simulate/route: texels at or below the sea level are outlets, and the sea 
   assert.equal(atSea[centre + 1], Math.fround(0.31), 'its neighbour drains into it and is not raised');
 });
 
+test('simulate/route: with the connected sea, ground below the sea level that the border does not reach fills and drains like any hollow', () => {
+  // The basin fixture: a slope from 0.3 to 0.7 with a hollow down to -0.05 at its middle, far from the border.
+  // A sea level of 0.31 covers the hollow and a strip along the low border; the two do not touch.
+  const res = 65, sea = 0.31, height = terrains.basin!(res);
+  const all = run({ height, res, eps: EPS, seaLevel: sea, routing: 'single', seed: 1, receivers: true });
+  const connected = run({ height, res, eps: EPS, seaLevel: sea, routing: 'single', seed: 1, receivers: true, sea: 'connected' });
+  const centre = 32 * res + 32;
+  assert.ok(height[centre]! <= sea, `the middle of the hollow lies at ${height[centre]}`);
+  assert.equal(all.receivers![centre], 4, 'with every texel below the sea level an outlet, the hollow is one');
+  assert.equal(all.filled[centre], height[centre]);
+  assert.notEqual(connected.receivers![centre], 4, 'with the connected sea the hollow drains');
+  assert.ok(connected.filled[centre]! > Math.fround(sea), `it fills to ${connected.filled[centre]}, above the sea level`);
+  let inland = 0, lower = 0, strip = 0, sum = 0;
+  for (let y = 1; y < res - 1; y++) {
+    for (let x = 1; x < res - 1; x++) {
+      const i = y * res + x;
+      if (connected.receivers![i] === 4) {
+        // An outlet off the border ring: sea the border reaches, which lies on the low side of the slope.
+        strip++;
+        if (!(height[i]! <= Math.fround(sea)) || x > 8) inland++;
+        continue;
+      }
+      // Every other texel has a lower neighbour on the surface, by eps within a float32 step, or lies on a flat.
+      const lowest = Math.min(connected.filled[i + 1]!, connected.filled[i + res]!, connected.filled[i - 1]!, connected.filled[i - res]!);
+      if (!(lowest < connected.filled[i]!)) lower++;
+    }
+  }
+  for (let i = 0; i < res * res; i++) if (connected.receivers![i] === 4) sum += connected.area![i]!;
+  assert.ok(strip > 0, 'the sea reaches in from the low border');
+  assert.equal(inland, 0, 'outlets off the border that the sea does not reach');
+  assert.equal(lower, 0, 'texels that are no outlets and have no lower neighbour');
+  assert.ok(Math.abs(sum - 1) < 1e-4, `the outlets drain ${sum} of the terrain`);
+});
+
 test('simulate/route: equal arguments give bit-identical results (1.7 item 5)', () => {
   const res = 129, height = terrains.noise!(res);
   for (const routing of ['single', 'multiple'] as const) {

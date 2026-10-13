@@ -1,0 +1,108 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4096,
+    "heightRange": 1024,
+    "seed": 1,
+    "buildResolution": 513,
+    "previewLevel": 1,
+    "seaLevel": 0.25
+  },
+  "nodes": {
+    "fbm": {
+      "id": "fbm",
+      "type": "ref/fbm",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {
+        "octaves": 4
+      }
+    },
+    "paint": {
+      "id": "paint",
+      "type": "ref/colorize",
+      "version": 1,
+      "position": {
+        "x": 280,
+        "y": 0
+      },
+      "params": {}
+    },
+    "soft": {
+      "id": "soft",
+      "type": "ref/blur",
+      "version": 1,
+      "position": {
+        "x": 560,
+        "y": 0
+      },
+      "params": {
+        "radius": 0.02
+      }
+    },
+    "relief": {
+      "id": "relief",
+      "type": "ref/colorize",
+      "version": 1,
+      "position": {
+        "x": 840,
+        "y": 0
+      },
+      "params": {
+        "strength": 0.5
+      }
+    }
+  },
+  "edges": {
+    "fbm-out-paint-in": {
+      "id": "fbm-out-paint-in",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "paint",
+        "port": "in"
+      }
+    },
+    "paint-out-soft-in": {
+      "id": "paint-out-soft-in",
+      "from": {
+        "node": "paint",
+        "port": "out"
+      },
+      "to": {
+        "node": "soft",
+        "port": "in"
+      }
+    },
+    "soft-out-relief-in": {
+      "id": "soft-out-relief-in",
+      "from": {
+        "node": "soft",
+        "port": "out"
+      },
+      "to": {
+        "node": "relief",
+        "port": "in"
+      }
+    },
+    "fbm-out-relief-base": {
+      "id": "fbm-out-relief-base",
+      "from": {
+        "node": "fbm",
+        "port": "out"
+      },
+      "to": {
+        "node": "relief",
+        "port": "base"
+      }
+    }
+  },
+  "groups": {},
+  "ui": {}
+}

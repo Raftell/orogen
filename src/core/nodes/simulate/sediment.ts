@@ -63,7 +63,8 @@ export default defineNode({
     const size = Math.min(Math.max(ctx.params.size, SIZE_MIN), SIZE_MAX);
     const input = ctx.input('in');
     const mask = ctx.input('mask');
-    const params = { repose: Math.tan((ctx.params.repose * Math.PI) / 180) };
+    // The material only slides: it does not creep on a slope it can rest on.
+    const params = { repose: Math.tan((ctx.params.repose * Math.PI) / 180), creep: 0, full: 1 };
     let budget: readonly number[] = [];
 
     const state = await ops.coarseToFine<State>(ctx, {

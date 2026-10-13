@@ -146,9 +146,9 @@ interface LayerItem {
 /** A companion texture for materials: power-of-two size, texel-centred. */
 interface TextureItem {
   readonly kind: 'texture';
-  readonly source: ExportSource;                 // 'color' for content 'color', else 'field'
+  readonly source: ExportSource;                 // 'color' for content 'color' and 'data', else 'field'
   readonly name: string;
-  readonly content: 'color' | 'mask' | 'normal';
+  readonly content: 'color' | 'data' | 'mask' | 'normal';
   readonly size: 'auto' | 1024 | 2048 | 4096 | 8192;
   readonly bits: 8 | 16;
 }
@@ -180,7 +180,7 @@ type ExportItem = LandscapeItem | LayerItem | TextureItem | ImageItem;
 | layer | `layer` | matches `/^[A-Za-z][A-Za-z0-9_]{0,62}$/`; unique in the build ignoring case, `baseLayer` included | The target layer's name; it must equal the layer name used in the landscape material |
 | | `weightBlended` | | `true`: member of the weight-blended group, blend method `layerBlend`. `false`: an independent mask, blend method `none` |
 | texture | `name` | `alnumOnly(name)` has 1 to 64 characters | Part of the file name |
-| | `content` | | 5.9 |
+| | `content` | | What the texture holds, and with it how it is stored: `'color'` sRGB-encoded, the three others as data (5.9) |
 | | `size` | | Side in texels. `'auto'` is the smallest power of two that is at least `resolution − 1`, limited to 1024..8192 |
 | | `bits` | 16 only with content `'mask'` | Bits per channel |
 | image | `name` | `alnumOnly(name)` has 1 to 64 characters | File name without extension |
@@ -211,7 +211,7 @@ bypassed. A build asks the evaluator for the outputs connected to its inputs
 | --- | --- | --- | --- |
 | `io/export-landscape` | Unreal Landscape | `field`, role `height` | one `landscape` item |
 | `io/export-layer` | Landscape Layer | `field`, role `mask` | one `layer` item |
-| `io/export-color` | Color Texture | `color` | one `texture` item, content `'color'`, bits 8 |
+| `io/export-color` | Color Texture | `color` | one `texture` item, content `'color'` or `'data'`, bits 8 |
 | `io/export-mask` | Mask Texture | `field`, role `mask` | one `texture` item, content `'mask'` |
 | `io/export-normal` | Normal Texture | `field`, role `height` | one `texture` item, content `'normal'`, bits 8 |
 | `io/export-field` | Image File | `field` | one `image` item |
@@ -263,6 +263,14 @@ choice, not an Epic recommendation.
 | `name` | text | `'Color'`, `'Mask'`, `'Normal'` | at most 64 characters | `name` |
 | `dimension` | enum | `'auto'` | `'auto'`, `'1024'`, `'2048'`, `'4096'`, `'8192'` | `size`: `'auto'`, or the option as a number |
 | `bits` | enum | `'8'` | `'8'`, `'16'`; `io/export-mask` only | `bits`, as a number |
+| `content` | enum | `'color'` | `'color'`, `'data'`; `io/export-color` only | `content` |
+
+`content` is what the colour field holds. A colouring is a colour, and its file
+is sRGB-encoded as a base colour texture is. A normal map made in the graph
+(`color/normal-map`) and masks packed into channels (`color/pack-channels`)
+are data: stored sRGB-encoded, a level normal's 0.5 would be written as 188
+instead of 128 and read back by a linear sampler as 0.74. `'data'` writes the
+three channels as they are (5.9), and the manifest says `"srgb": false`.
 
 **`io/export-field`**
 
@@ -558,7 +566,7 @@ encoders and drops the planes.
 
 Rules for every stage and for phase 3:
 
-- `onTarget` delivers an `AnyFieldHandle` (`runtime.md` 2.2). A stage whose item needs a `field` (landscape, layer, image, and a texture of content `'mask'` or `'normal'`) begins with `if (handle.kind !== 'field') throw …`, and a colour texture's stage with the opposite test. The throw is `E_INTERNAL`: the target was requested with the kind of the input port (3.2), so it cannot happen in a correct build. After the test `engine.stats(handle)` type-checks.
+- `onTarget` delivers an `AnyFieldHandle` (`runtime.md` 2.2). A stage whose item needs a `field` (landscape, layer, image, and a texture of content `'mask'` or `'normal'`) begins with `if (handle.kind !== 'field') throw …`, and the stage of a texture of content `'color'` or `'data'` with the opposite test. The throw is `E_INTERNAL`: the target was requested with the kind of the input port (3.2), so it cannot happen in a correct build. After the test `engine.stats(handle)` type-checks.
 - A non-finite sample found while converting is `E_NON_FINITE` for that node.
 - A file is created only when its first band is ready to be written.
 - **No writer is closed before phase 4.** Until then every data file exists only under its temporary name (`runtime.md` 6.2). On any status other than `'ok'` the pipeline calls `sink.abortAll()`, so a build that did not succeed changes no file under a final name; only the report is then written.
@@ -732,6 +740,7 @@ interface BuildReport {
     max: number | null;
   }[];
   weightsMs: number | null;                      // duration of phase 3
+  commitMs: number | null;                       // duration of phase 4; null when the build did not reach it
   height: null | {
     measuredMin: number; measuredMax: number;    // normalised heights
     valueMin: number; valueMax: number;          // normalised heights mapped to codes 0 and 65535
@@ -744,6 +753,12 @@ interface BuildReport {
 
 `meanWeight` is the mean of the layer's bytes divided by 255. Per-node timings
 are not in the report; they are in the `node-done` events (`runtime.md` 5.10).
+`commitMs` is the time of phase 4, from its start to the manifest written or
+to the failure that ended it: closing a writer is what flushes its compressor
+and puts the file in place, and of a build of 12 s at 8129 that was 2.6 s,
+which no other figure of the report holds. With the `evaluateMs` and
+`exportMs` of the targets and `weightsMs` it accounts for `durationMs`, up to
+the plan and the bookkeeping between the phases.
 `layers` lists the layers whose bytes were written: all of them in a build that
 succeeded.
 
@@ -1527,6 +1542,7 @@ texels).
 | `content` | Source | Resampled | Per output texel | PNG |
 | --- | --- | --- | --- | --- |
 | `'color'` | `color`, linear RGB | R, G, B; alpha is dropped | each channel: `SRGB8[floor(saturate(c) · 65535 + 0.5)]` | 8-bit RGB |
+| `'data'` | `color`, three channels of data | R, G, B; alpha is dropped | each channel: `floor(saturate(c) · 255 + 0.5)` | 8-bit RGB |
 | `'mask'` | `field` | the value | `floor(saturate(v) · M + 0.5)`, `M` = 255 or 65535 | 8- or 16-bit grey |
 | `'normal'` | `field` of heights | the three components of the vertex normal | normalise; a vector shorter than 1e-6 becomes (0, 0, 1); each component `floor((c · 0.5 + 0.5) · 255 + 0.5)` | 8-bit RGB |
 
@@ -1557,8 +1573,8 @@ n  = normalize(−sx, −sy, 1)
 - The normals come from physical slopes, not from normalised heights, and do not depend on where bands begin.
 - A normal texture stores `(n.x, n.y, n.z)` in the landscape's axes: red is the normal's +X component, green its +Y component, blue its +Z component, each mapped from −1..1 to 0..255. With the texture mapped as above, green grows along +V. That this is what Unreal's default normal-map handling expects is `[U]`; if lighting from the texture is inverted along Y, the texture's green channel is flipped in Unreal.
 - Unreal needs no normal map to shade a landscape `[E]`. The normal texture is a macro normal for materials.
-- A colour texture's file holds sRGB-encoded values; a mask or normal texture holds data. The manifest states which (`srgb`).
-- Any other data texture (a flow direction, for instance) is a mask texture, or a colour texture whose colour the graph composes.
+- A colour texture's file holds sRGB-encoded values; a data, mask or normal texture holds data. The manifest states which (`srgb`): true for content `'color'` alone.
+- Any other data texture is a mask texture, or a texture of content `'data'` whose three channels the graph composes: a tangent-space normal map from `color/normal-map`, masks packed with `color/pack-channels`, a flow direction. A data texture has three channels: the alpha of the colour field is dropped, as a colour's is.
 
 ### 5.10 World Partition
 
@@ -1744,12 +1760,12 @@ copies its numbers.
       "items": {
         "type": "object", "required": ["content", "file", "size", "channels", "bits", "srgb", "covers", "sampling"],
         "properties": {
-          "content": { "enum": ["color", "mask", "normal"] },
+          "content": { "enum": ["color", "data", "mask", "normal"] },
           "file": { "type": "string" },
           "size": { "enum": [1024, 2048, 4096, 8192] },
           "channels": { "enum": [1, 3] },
           "bits": { "enum": [8, 16] },
-          "srgb": { "type": "boolean", "description": "True when the file holds sRGB-encoded colour." },
+          "srgb": { "type": "boolean", "description": "True when the file holds sRGB-encoded colour: content color. False for data, which is stored as it is." },
           "covers": { "const": "landscapeExtent" },
           "sampling": { "const": "texel-center" },
           "normalEncoding": { "const": "xyz-landscape-axes", "description": "Present for content normal." }
@@ -1923,7 +1939,7 @@ test (section 9) once on your engine version before you trust an import.
 13. Select the Landscape actor. Its Transform must show Location = `landscape.transform.actorLocationCm` and Scale = `scaleCm`. If the Location shows `uiLocationCm` instead, the panel did not centre the landscape: type `actorLocationCm` into the actor's Location (derived).
 14. Look at the terrain. Seen from above with +X pointing to the right of the screen, +Y points down the screen and the terrain looks like `<Name>Height.png` as an image viewer shows it (unconfirmed; the acceptance test checks it). Unreal's Top viewport shows it turned a quarter turn counter-clockwise; that is how the viewport is drawn, not an error (unconfirmed). If the terrain is mirrored or turned in any other way, stop and run the acceptance test.
 15. Nanite, if you want it: on the Landscape actor's Details panel, Nanite, tick Enable Nanite and press Build Data, or use Build, Build Landscape (confirmed). Nanite and non-Nanite data are both kept, and about twice the data is streamed (confirmed).
-16. Textures: import the `T_*.png` files as ordinary textures. Switch sRGB off for every texture whose manifest entry says `"srgb": false`. Sample them in the landscape material with `U = (WorldX − actorLocationCm.x) / extent`, `V = (WorldY − actorLocationCm.y) / extent`, where `extent` is `terrain.sizeM × 100` (derived). Unreal shades a landscape from the heightmap without any normal map (confirmed); `T_Normal` is an optional macro normal, and whether its green channel needs flipping is unconfirmed.
+16. Textures: import the `T_*.png` files as ordinary textures. Switch sRGB off for every texture whose manifest entry says `"srgb": false`: a mask, a normal texture, and a Color Texture whose Content is Data. Sample them in the landscape material with `U = (WorldX − actorLocationCm.x) / extent`, `V = (WorldY − actorLocationCm.y) / extent`, where `extent` is `terrain.sizeM × 100` (derived). Unreal shades a landscape from the heightmap without any normal map (confirmed); `T_Normal` is an optional macro normal, and whether its green channel needs flipping is unconfirmed.
 17. Save the level and the layer info assets.
 
 Sculpt in a new edit layer above the imported one, not in the imported one. All

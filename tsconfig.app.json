@@ -1,0 +1,11 @@
+{
+  // runtime.md 8.4: src/app/ is the page. DOM types and no Node types. "vite/client" declares what the build
+  // gives a module of the page: CSS modules and asset imports.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["@webgpu/types", "vite/client"],
+    "jsx": "react-jsx"
+  },
+  "include": ["src/app"]
+}

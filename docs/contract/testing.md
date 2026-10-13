@@ -40,9 +40,9 @@ src/core/nodes/<category>/_<name>.ts     private modules of the category: librar
 src/cli/                                 the command-line program (8.6): main.ts probe.ts render.ts gallery.ts preview.ts, and the modules they share
 
 tests/helpers/                           the harness (section 2)
-tests/tools/                             verify.ts expect.ts ownership.ts (5.3, 10.3, 7.1)
+tests/tools/                             verify.ts and its reporter unit-report.ts, expect.ts, ownership.ts (5.3, 10.3, 7.1)
 tests/env/                               max.env lavapipe.env warp.env (8.2)
-tests/unit/                              GPU-free tests of core code and of the command line (cli/); registry lint; import boundaries
+tests/unit/                              GPU-free tests of core code and of the command line (cli/); registry lint; import boundaries; the user documentation against the registry
 tests/engine/                            GPU tests of the kernel system, evaluator, pool, shared ops and the session (session/); the command line as child processes (cli/)
 tests/nodes/<category>/<name>.test.ts    GPU tests of one node (section 5)
 tests/nodes/<category>/unit/*.test.ts    GPU-free tests of the category's CPU code
@@ -368,14 +368,25 @@ declare function buildGraph(graph: GraphDoc | GraphSpec | string, opts?: {
 
 - Node and source ids in a `GraphSpec` match `/^[a-z][a-z0-9]*$/`. The commands generate the document's own node ids; the harness remembers which belongs to which spec id, and targets, `setParam` and reports use the spec's ids. For a project file they use the ids in the file.
 - A maskable node's mask is connected like any input, under the name `mask`.
-- `registryDoc` creates, for every given node that has outputs, one instance at default parameters, with every input connected by the wiring rule below, the optional inputs and the masks included. A chain of `ref/combine` nodes then takes `outputs[0]` of every instance, nodes with a `file` parameter last, and `ui.view` shows the end of the chain: evaluating the view evaluates every node. The instance of the first terrain's type (`generate/eroded-noise` where it is among the nodes, else `ref/fbm`) is the first terrain. A wiring type the registry lacks is left out: its inputs take the terrain itself, and without `ref/combine` the document has no chain and no view, so a test names every node as a target.
-- **The wiring rule.** `registryDoc`, `orogen render <type>` and `orogen gallery` (8.6) connect the inputs of a node by port, in declaration order. It is one function, `inputFeeds` of `src/cli/document.ts`:
+- `registryDoc` creates, for every given node that has outputs, one instance at default parameters, with every input connected by the wiring rule below, the optional inputs and the masks included. A chain of `ref/combine` nodes then takes `outputs[0]` of every instance, nodes with a `file` parameter last, and `ui.view` shows the end of the chain: evaluating the view evaluates every node. The instance of the first terrain's type (`generate/eroded-noise` where it is among the nodes, else `ref/fbm`) is the first terrain, and the instance of `generate/volcano` the stamp. A wiring type the registry lacks is left out: its inputs take the terrain itself, and without `ref/combine` the document has no chain and no view, so a test names every node as a target.
+- **The wiring rule.** `registryDoc`, `orogen render <type>` and `orogen gallery` (8.6) connect the inputs of a node by port, in declaration order. It is two functions of `src/cli/document.ts`: `inputFeeds`, which says what feeds each input, and `feedSource`, which says of which nodes a feed is made in a registry:
 
   | Input | Fed from |
   | --- | --- |
-  | type `field` of role `height` or `data`, and type `any`: the k-th of these, counted together from 0 | terrain k. Terrain 0 is `generate/eroded-noise` at its defaults where the registry holds it, else `ref/fbm` at its defaults; terrain k ≥ 1 is `ref/fbm` with `seed` k and `size` 0.1, 0.5, 0.05, 0.25, … in turn. A node with two inputs is never shown one field twice |
-  | type `field` of role `mask`: the primary input of `select/distance` and `select/edge` among them, and the `mask` the evaluator adds to a `maskable` node | the mask: `ref/slope-mask` of the broad shape of terrain 0. For `generate/eroded-noise` that is its first two octaves, selected with `slopeMin` 40 and `slopeMax` 55; for `ref/fbm` its first three, with 35 and 50. Either way it selects about half the terrain, in regions; the slopes of all eight octaves are speckle at the scale of a texel, and a mask of speckle shows nothing |
+  | type `field` of role `height` or `data`, and type `any`: the k-th of these, counted together from 0 | terrain k. Terrain 0 is the first terrain of the node's category, from the table below; terrain k ≥ 1 is `ref/fbm` with `seed` k and `size` 0.1, 0.5, 0.05, 0.25, … in turn. A node with two inputs is never shown one field twice |
+  | type `field` of role `mask`: the primary input of `select/distance` and `select/edge` among them, and the `mask` the evaluator adds to a `maskable` node | the mask: `ref/slope-mask` of the broad shape of terrain 0, between the two angles the table below gives. It selects about half the terrain, in regions; the slopes of a whole terrain are speckle at the scale of a texel, and a mask of speckle shows nothing |
   | type `color`: the k-th of these | `ref/colorize` of terrain k |
+  | a `field` input named `stamp` (role `height`), `flow` (role `data`) or `snow` (role `mask`): names of 6.3 | what it is named for, where the registry holds the node that makes it. `stamp`: `generate/volcano` at its defaults, a landform on level ground, which is what is stamped; a terrain that fills its field has no outline. `flow`: output `out` of `simulate/flow` of terrain 0, the drainage of the terrain the node reads; a second terrain read as a drainage area puts rivers where no water runs. `snow`: output `snow` of `simulate/snow` of terrain 0, and not the steep slopes of the mask, where snow does not lie. The optional inputs of these nodes stay unconnected. Such an input still counts in the rows above, and takes the feed its type gives it where the registry lacks the node |
+
+  **The first terrain, by category.** One table says what a node is shown on. A category is shown on the terrain that shows what it is for:
+
+  | Category | Terrain 0 | The mask is a slope mask of | Why |
+  | --- | --- | --- | --- |
+  | `generate`, `adjust`, `filter`, `select`, `io`, `ref` | `generate/eroded-noise` at its defaults | its first two octaves, between 40° and 55° | smooth valley floors under rough crests, and relief everywhere. `ref/fbm` is rough everywhere: a node that tells smooth ground from rough (`select/roughness`), keeps or flattens detail (`filter/high-pass`, `filter/smart-blur`), or works on the middle heights has nothing to show on it |
+  | `surface` | `generate/mountain-range` at its defaults on gentle ground: a `ref/combine` adds a `ref/fbm` of two octaves (`seed` 9, `size` 0.5) to it, three tenths of its height, so the ground lies a seventh of the height range up and rolls by a few degrees | `ref/fbm` of three octaves, between 35° and 50° | detail that lies on gentle ground (stones, ripples, cracks) and detail that shows on steep ground (strata, outcrops) both have somewhere to be, and the ground between the spurs shows what a node adds by itself. The eroded noise is steep and rough everywhere. The range by itself stands on the floor of the height range: what a node cuts into ground at height 0 lies below the range, and `grey` draws it as out of it. The range has slopes only where it stands, and a mask of them would hide what a node does on the ground around it: its mask is that of the reference noise, whose regions lie across the range and the ground alike |
+  | `simulate`, `color` | `generate/island` with `size` 1: a landmass that fills the terrain, in a sea that covers the borders | the island without its gullies (`erosion` 0), between 10° and 25° | a landform that drains to its coast on every side, with the sea below its valley floors. At the sea level of the pictures a fifth of the eroded noise is drowned valleys: no river reaches a coast there, and every water node is shown on a flooded basin. A colouring reads the sea level too, and has a sea, a shore and high ground to colour |
+
+  Where the registry lacks the terrain of a category, terrain 0 is `generate/eroded-noise`, and where it lacks that too `ref/fbm` at its defaults, whose mask is of its first three octaves between 35° and 50°. `registryDoc` holds nodes of every category in one document: its terrain 0 is that of the first row for all of them. The fixtures of the conformance suite (3.1) are not affected.
 
   Inputs are counted whether or not they are connected, so that an input has the same feed in both of these:
 
@@ -386,7 +397,6 @@ declare function buildGraph(graph: GraphDoc | GraphSpec | string, opts?: {
 
   The plain variant shows a node as a user sees it on dropping it into a graph, with its own defaults: `generate/crater` on level ground, `filter/warp` moved by its noise, `filter/slope-blur` steered by its own input. The connected variant shows what the optional inputs and a mask do to that. `registryDoc` builds the connected variant of every node.
 
-  Terrain 0 is the product's eroded noise because `ref/fbm` is rough everywhere: a node that tells smooth ground from rough (`select/roughness`), keeps or flattens detail (`filter/high-pass`, `filter/smart-blur`), or works on the middle heights has nothing to show on it. The eroded noise has smooth valley floors under rough crests. The fixtures of the conformance suite (3.1) are not affected.
 - Every harness evaluation passes `thumbnails: false`.
 - `renderGraph` is one evaluation on an emptied cache (`Engine.trim()` first). It resolves when the evaluation ends, whatever its status: a failed or skipped target is absent from `fields` and described in `report`. It rejects only for a malformed call.
 - `openGraph` keeps the cache between `evaluate()` calls, for tests of cache hits and of what an edit re-evaluates. `close()` calls `Engine.trim()` and `expectNoLeaks()`.
@@ -467,8 +477,9 @@ type PreviewStyle = 'grey' | 'hillshade' | '3d' | 'color' | 'sheet';
 
 interface PreviewOptions {
   readonly style?: PreviewStyle;                              // default: 'sheet' for a field, 'color' for a colour
-  readonly range?: readonly [number, number] | 'auto';        // 'grey': the values drawn black and white. Default [0, 1]; 'auto' is [min, max]
+  readonly range?: readonly [number, number] | 'auto' | 'data';   // the values drawn black and white. Default [0, 1]; 'auto' is [min, max]; 'data': below
   readonly height?: FieldData;                                // the terrain to shade when `f` is a mask or a colour, which is drawn over it
+  readonly lit?: boolean;                                     // '3d' of a colour over a terrain: false draws the colour as it is. Default true
   readonly terrainSize?: number;                              // metres; default 4096
   readonly heightRange?: number;                              // metres; default 1024
   readonly crop?: readonly [x: number, y: number, size: number];
@@ -488,12 +499,14 @@ and from the command line. Files are written with the 8-bit PNG encoder of
 | --- | --- | --- |
 | `grey` | field size, RGB 8-bit | `range` mapped linearly to black..white. Below the range: blue. Above: red. Non-finite: magenta |
 | `hillshade` | field size | Wrapped Lambert shading of the physical surface: gradients from central differences with `terrainSize` and `heightRange`, light direction (towards the light) `normalize(−1, −1, √2)`, intensity `0.10 + 0.80·((1 + n·L) / 2)²`: 0.68 on level ground, within 0.10..0.90 everywhere. The term is wrapped because `max(n·L, 0)` is 0 on every slope above 45° that faces away from the light, and a terrain of physical steepness is then drawn in two tones (`ref/fbm` at 513 has a mean slope of 44° with the test settings). With `height`, the shaded terrain is tinted by `f` |
-| `3d` | 768 × 512 | orthographic view of the surface in true proportions, from 30° above the horizon, looking towards −Y and turned 25° about Z, so that row 0 is at the back. +X runs to the right: the view is never a mirror image of `grey` (`engine.md` 1.8). Same light; the terrain's sides are drawn down to height 0; background `#1a1a1a` |
+| `3d` | 768 × 512 | orthographic view of the surface in true proportions, from 30° above the horizon, looking towards −Y and turned 25° about Z, so that row 0 is at the back. +X runs to the right: the view is never a mirror image of `grey` (`engine.md` 1.8). Same light for a field and for a mask or a data field drawn over a terrain, so that the view is the top view tilted. A colour drawn over a terrain is lit from the viewer's side: light direction `normalize(−1, 1, √2)`, intensity `0.30 + 0.70·((1 + n·L) / 2)²`, which is 0.81 on level ground and 1 on a face turned to the light; with `lit: false` it is drawn as it is. The terrain's sides are drawn down to height 0; background `#1a1a1a` |
 | `color` | field size | linear RGB encoded as sRGB, clamped; alpha ignored |
 | `sheet` | 1808 × 512 | `grey` and `hillshade` scaled to 512 × 512 (nearest neighbour) and `3d`, side by side |
 
 - Pixel `(x, y)` of `grey`, `hillshade` and `color` is texel `(x, y)`. Nothing is flipped: row 0 is the top row.
 - `crop` selects a square window of texels before drawing, for one-to-one views of large fields.
+- **`range: 'data'`** is the scale of a data output. It is `'auto'`, unless the field holds no negative value and its largest value is more than a hundred times its mean. Such a field spans orders of magnitude between what is typical of it and what is largest: a drainage area, a discharge, the depth of rivers, which are lines on a terrain where there is none. On a linear scale its picture is black but for a few texels, its mean under a hundredth of white (of `simulate/flow` on the island at 513 the largest value is 400 times the mean, of the depth of `simulate/rivers` 200 times; of what a thermal erosion wore away 70 times, of a distance 13 times), so it is drawn by the logarithm of its values: the largest is white, and black is the first percentile of the positive values or a ten-thousandth of the largest, whichever is larger. Zero, and whatever lies below the foot of that scale, is black and not the blue of a value out of range. Where a field has more than 2²⁰ values the percentile is that of every n-th.
+- **The light of a colour.** The `3d` view looks at the slopes that face +Y, and the light of the map comes from −Y, behind them: under it every face a viewer sees is in the shade, and a colouring looks dark whatever it is. A colour is therefore lit from the viewer's side in that view, and keeps more of itself: four fifths on level ground. A colour that is itself a lit rendering of the terrain (`color/hillshade`) would show two lights on top of each other: `render` draws it with `lit: false` (8.6).
 - The PNG bytes are not part of the contract and are never compared. A person looks at them.
 
 ### 2.8 Leaked textures
@@ -546,14 +559,30 @@ it (`runtime.md` 8.2):
 
 | The launcher sets | The application then |
 | --- | --- |
-| `OROGEN_TEST=1` | creates its window with `show: false`, opens no dialog, keeps its preferences in a temporary folder, and assigns `window.orogenTest = { ctx }` in the main window, where `ctx` is the `CommandContext` of `runtime.md` 8.8 |
+| `OROGEN_TEST=1` | creates its window with `show: false`, opens no dialog and no file manager, keeps its preferences in a temporary folder of the run (`orogen-test-…` in the system's temporary folder, set as Electron's user-data folder), and assigns `window.orogenTest = { ctx }` in the main window, where `ctx` is the `CommandContext` of `runtime.md` 8.8. The page does the last, when `PlatformApi.testMode` says so (`runtime.md` 8.6) |
 | a project file as the first argument (`open`) | opens that project |
-| `OROGEN_TEST_DRIVER=<absolute path>` | `require`s that module in the main process once the main window has loaded and calls its default export with `{ app, win }`. The module is `tests/electron/driver.cjs`; it carries the `AppDriver` calls |
+| `OROGEN_TEST_DRIVER=<absolute path>` | `require`s that module in the main process once the main window has loaded and calls its default export with `{ app, win, errors }`. `errors` is the list the main process has kept since launch, and keeps: what `AppDriver.errors()` returns. The module is `tests/electron/driver.cjs`; it carries the `AppDriver` calls |
 | `OROGEN_GPU_PROFILE` | creates its device with that profile (`runtime.md` 1.1) |
 | `OROGEN_ELECTRON_GPU=software` | starts on the software adapter (9.3): on Linux it does not append the switch `enable-features=Vulkan` (`runtime.md` 1.6) |
 
+- **The channel.** `launchApp` starts the application with a channel to the test process, and each `AppDriver` call is one request on it. The channel carries JSON, since Electron's V8 and the test's do not read each other's structured clones: a result of `eval` is structured-cloned from the page to the main process, and what JSON has no word for (`undefined`, numbers that are not finite, typed arrays, maps, sets, dates) is tagged there and restored in the test. An expression that throws in the page rejects its `eval` or `waitFor` with the error's name and message, and is no error of the application.
+- **Errors.** `errors()` holds every console message of level error and every uncaught exception and rejection of the page, the engine worker and the CPU worker, which all reach the `console-message` event of the window (measured), and those of the main process; a renderer process that is gone and a page that did not load are errors too. A GPU process that is gone is not one: the session recovers from it (`runtime.md` 7.8).
+- **The end.** `close()` ends the application, and so does the loss of the channel, from inside. An application that a test forgot is killed when the tests of its file are over, and it never holds the test process open. `launchApp` removes the temporary folder of the run once the application has exited: the application removes it as it exits, and Chromium writes its last state there again afterwards.
+- A relative `open` is taken from the repository root. `launchApp` fails with a message that names `npm run build` when a file of `dist/` is missing.
+
 Through `orogenTest.ctx` a test reaches everything a command can: the three
 stores, the engine client, the registry and `run(commandId)`.
+
+Beside `ctx` the shell assigns `orogenTest.shell`, for what a test cannot
+reach through a command:
+
+| Member | Is |
+| --- | --- |
+| `state` | the shell's own vanilla store: the preferences as the shell holds them, `paused`, the palette, the dialog that is open, the notices |
+| `answers` | `{ openProjectDialog, saveProjectDialog, openFileDialog, chooseFolder }`, each a list of paths. Test mode opens no dialog, so `ctx.platform` answers each of these four calls with the next entry of its list, and as the bridge does (`null`) when the list is empty. A panel that asks for a file or a folder calls `ctx.platform`, so that its test can answer |
+| `layout()`, `restoreLayout()` | the dock's layout as it would be saved; applying `Preferences.layout` as start-up does, which resolves `'restored'` or `'default'` |
+| `gallery` | the values of the control gallery, the dialog of the command `view.controlGallery`, which exists in test mode only and holds one of every shared control of `src/app/ui/` |
+| `engineWorker()` | the engine worker of the moment, a `Worker`. A test ends it with `terminate()`, which nothing in the application does unasked, to see the application without one (`runtime.md` 8.5) |
 
 ```ts
 await app.eval(`orogenTest.ctx.run('graph.toggleBypass')`);
@@ -778,7 +807,7 @@ id and the node type or file.
 | `test-location` | Every `*.test.ts` file under `tests/` is matched by exactly one layer pattern of 8.1. `node --test` reports no error for a pattern that matches nothing, so a misplaced file would otherwise never run |
 | `title-unique` | No two nodes have the same `title` |
 | `kernel-name` | The name of every kernel and every CPU task a node lists begins with the node's category and a slash, except those exported by `api.ts`. One used by a single node carries that node's name (`filter/blur.pass`); one shared by several nodes of the category carries the name of the private module that defines it (`simulate/talus.step` in `_talus.ts`) |
-| `catalog` | `tests/unit/catalog.test.ts` reads the tables of `nodes.md`. For every category that has registered nodes: each node a table lists is registered, with the title, the ports (names, types, roles, optional inputs, order) and the flags `maskable` and `resolutionDependent` of its row, and has every parameter the row names and every option it names for an `enum`; and no node is registered that no table lists. A node an owner adds is listed in its category's section under `### Added by owners`. A category with no registered node is not compared |
+| `catalog` | `tests/unit/catalog.test.ts` reads the tables of `nodes.md`. For every category that has registered nodes: each node a table lists is registered, with the title, the ports (names, types, roles, optional inputs, order) and the flags `maskable` and `resolutionDependent` of its row, and has every parameter the row names and every option it names for an `enum`; and no node is registered that no table lists. A node an owner adds is listed in its category's section under `### Added by owners`. A category with no registered node is not compared. A node another document specifies has a row with its parameters and no ports, held to the same rule for them; no node is listed by its id alone. Where two owners share a category, each private index lists the nodes the owners' table gives its owner, and every other private module of the folder is named by exactly one owner there. A parameter a node has and its row does not name fails nothing, because owners add the parameters a node needs: the case says it as a diagnostic, for the integrator to name it |
 | `lib-name` | The name of a library defined in a category folder begins with the category id (`filterKernel`). No category library is named `hash`, `noise`, `convert` or like any other library in `src/core/wgsl/` |
 
 **Imports** (found by scanning import specifiers)
@@ -893,8 +922,8 @@ failure:
 
 | Step | What it runs | Passes when |
 | --- | --- | --- |
-| 1 | `npm run check` | no type error |
-| 2 | `npm run test:unit` | lint and unit tests pass |
+| 1 | `npm run check`, each of its programs by itself | no type error in the category's folders (7.1) |
+| 2 | `npm run test:unit`, with a second reporter that says of every case which file it is in (`tests/tools/unit-report.ts`) | the category's own cases pass: its case of the registry lint and its case of the catalog (section 4), every case in `tests/nodes/<category>/unit/`, and a case of the lint files that covers the whole product (`title-unique`, `test-location`, the import rules) when its message names a file or a node of the category. The category's lint case, and its catalog case where the catalog lists the category, must have run |
 | 3 | the node's test files on the default adapter, profile `core` | every case passes |
 | 4 | the same, profile `max` | every case passes, `budget` included |
 | 5 | the same on the machine's software adapter (`tests/env/lavapipe.env` on Linux, `tests/env/warp.env` on Windows), profile `core` | every case passes |
@@ -902,14 +931,26 @@ failure:
 | 7 | `orogen render <type> --res 4033 --crop 768` | `render` exits with 0 (8.6): a one-to-one crop of every output is written, `longestSliceMs` is at most the hard ceiling of `runtime.md` 3.5 (500 ms), and the run emitted no `engine-error` event |
 | 8 | `orogen render <type> --res 4033 --max-params --out <output folder>/max-params` | the same condition, with every `float`, `int` and `vec2` parameter at its `max` (the last run of 3.3). Its pictures have the file names of step 7 and go to a folder of their own, so that those at the defaults stay |
 
+Steps 1 and 2 cover the whole repository, in which several owners work at
+once. A type error or a failed unit case outside the category's folders is
+another owner's: `verify` lists it in the summary under a heading of its own
+and does not fail for it, so that one unfinished category does not stop every
+other owner's nodes from being verified. (`npm run check` joins its programs
+with `&&`, so an error in the first would hide the second, which holds the
+tests: `verify` runs each by itself and reads every error.) What is listed
+there is fixed before integration, by its owner.
+
 Steps 6 to 8 pass the `params` of the node's conformance call as `--param`,
 read from the report of 3.6 rule 2 with a file as an absolute path: a node
 whose defaults cannot run, an import node without a file, is rendered the way
-the suite ran it.
+the suite ran it. For an export node (3.1) the three steps are reported as
+`skipped`: it has no outputs, `render` refuses a node without them, and what
+it writes is tested through builds (`tests/export/`).
 
 It ends by printing a summary: the adapter of each step, the number of cases
 and skips, every opt-out with its reason, the `budget` estimate, the paths of
-the pictures, and the time, longest slice and peak memory of steps 7 and 8.
+the pictures, the time, longest slice and peak memory of steps 7 and 8, and
+what fails outside the category.
 
 - A step whose adapter is not present on the machine is reported as `missing`. The node is not done until someone has run that step.
 - Step 4 is what exercises the compact formats (`half`, `half2`, `mask8`) and asserts `budget`: the default adapter of the development machine has `texture-formats-tier1`, lavapipe does not.
@@ -920,8 +961,10 @@ the pictures, and the time, longest slice and peak memory of steps 7 and 8.
 
 `orogen render` and `orogen gallery` are defined in 8.6. `render` draws one
 node with realistic input, because the band-limited `terrain` fixture of the
-tests is too smooth to show texel-level defects: an eroded noise with smooth
-valleys and rough crests as its first terrain, fractal noise for every other.
+tests is too smooth to show texel-level defects: as its first terrain the one
+that shows what the node's category is for (2.4: an eroded noise with smooth
+valleys and rough crests, a mountain range on level ground for surface detail,
+an island for water and colour), fractal noise for every other.
 Each input has a source of its own (2.4): the second terrain of a two-input
 node has another seed and finer features than the first, so the picture shows
 what the node does with two fields and not one field met with itself. A node
@@ -1025,6 +1068,8 @@ same name on every node; another name is used only for content not listed.
 | `deposit` | field, data | material laid down |
 | `moved` | field, data | material displaced, without sign |
 | `water` | field, mask | where standing water is: a lake, the sea |
+| `snow` | field, mask | where snow lies |
+| `stamp` | field, height | a landform that is set on another terrain, in copies |
 | `sediment` | field, data | simulation state offered as output |
 | `depth` | field, data | depth of water, snow or sand |
 | `color` | color | a colour output of a node whose `out` is a field |
@@ -1122,6 +1167,7 @@ Every path has exactly one owner. Only the owner changes it.
 | --- | --- |
 | `src/core/nodes/<category>/**` and `tests/nodes/<category>/**`, for `generate`, `adjust`, `filter`, `simulate`, `select`, `color`, `surface` | the owner of that category |
 | `src/core/nodes/io/**`, `tests/nodes/io/**`, `src/export/**`, `tests/export/**`, `unreal/**`, `docs/user/**` | the export owner: import and export nodes belong together |
+| `docs/user/nodes.md` | nobody by hand: `tools/node-reference.ts` writes it from the registry, and the unit layer fails while it is behind (`tests/unit/docs.test.ts`). Whoever changes a node's title, description, ports, parameters or help runs the tool and hands in the page with the change; the ownership check lets every category owner change this one file |
 | `src/app/**`, `src/platform/**`, `src/viewport/**` | as `runtime.md` 8.10 assigns them: the five panel owners, shell, state, platform |
 | `tests/ui/<owner>/**` | the application owner of that name: `graph`, `viewport`, `inspector`, `library`, `build`, `shell`, `state`, `platform` |
 | `docs/changes/<prefix>-*.md` | whoever owns `<prefix>` (7.4) |
@@ -1243,7 +1289,8 @@ same way.
 | Pictures | none | a WebGPU adapter | `orogen render`, `orogen gallery` (8.6) |
 
 `npm test` is `test:unit` followed by `test:gpu`. `npm run check` is the type
-check: `tsc -p tsconfig.core.json && tsc -p tsconfig.json`. The core
+check: one `tsc -p` for every `tsconfig*.json` of the repository root, the
+programs of `runtime.md` 8.4 (the script is in 8.2). The core
 configuration has neither DOM nor Node types (`runtime.md` 8.4), so core code
 that uses `Buffer`, `process` or `document` fails there even though it would
 run in Node.
@@ -1252,7 +1299,7 @@ What each layer contains:
 
 | Layer | Contains |
 | --- | --- |
-| Unit | uniform packing against the WGSL layout rules; the TypeScript hashes and `mixSeed` against fixed vectors; curves and bakers; `defineKernel`, `defineLib`, `defineNode` validation and their messages; `parseDoc`, `serializeDoc`, `normalizeParams` and migration; the document commands; the stores (`docStore` through transactions, `engineStore` as a reduction of recorded `EngineEvent`s); `planBuild`, encoders and decoders (round trips), the manifest; the registry lint, the node catalog against the registered nodes, and import boundaries; CPU task functions; the arguments of the command line and its usage errors, the document `render` evaluates, the gallery page |
+| Unit | uniform packing against the WGSL layout rules; the TypeScript hashes and `mixSeed` against fixed vectors; curves and bakers; `defineKernel`, `defineLib`, `defineNode` validation and their messages; `parseDoc`, `serializeDoc`, `normalizeParams` and migration; the document commands; the stores (`docStore` through transactions, `engineStore` as a reduction of recorded `EngineEvent`s); `planBuild`, encoders and decoders (round trips), the manifest; the registry lint, the node catalog against the registered nodes, and import boundaries; CPU task functions; the arguments of the command line and its usage errors, the document `render` evaluates, the gallery page; the node reference of the user documentation against the registry (what `tools/node-reference.ts --check` checks) and its example projects, parsed and planned (`docs.test.ts`); whose a failure of `verify`'s first two steps is |
 | GPU `tests/engine/` | every rule of `engine.md` and `runtime.md` that a node cannot break by itself: generated WGSL and accessors, the standard library (vertex-centred bilinear, clamping, `slopeAt`), TypeScript and WGSL hashes agreeing on 1000 inputs, per-run uniforms within one slice, call order, binding validation, tiles, the pool (states, reuse, budget, eviction), the out-of-memory retry with `failAllocAfter`, device loss, cache hits, keys and transient entries, `wants` re-runs, the maskable blend, bypass, conversion, progressive previews, thumbnails, CPU tasks, file identity, and every shared op including the coarse-to-fine driver; in `tests/engine/session/` the session (`runtime.md` section 7) on the real engine, with a recording renderer and a build function of the tests' own: latest-wins scheduling and what stays on screen, gestures and draft levels, the view and its loans, idle thumbnails, `inspect`, builds, watched files, device recovery, the event order, both ends of the protocol over a real `MessageChannel`, and the ledger at `dispose`; every subcommand of `orogen` as a child process, with its exit code and the pictures it writes decoded again |
 | GPU `tests/nodes/` | conformance and behaviour of each node |
 | GPU `tests/export/` | builds: the stages, the files, cancellation, the output folder |
@@ -1264,10 +1311,13 @@ What each layer contains:
 
 ```json
 {
+  "main": "dist/main.cjs",
   "bin": { "orogen": "src/cli/main.ts" },
   "scripts": {
     "build": "vite build",
-    "check": "tsc -p tsconfig.core.json && tsc -p tsconfig.json",
+    "start": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --win --x64 --publish never",
+    "check": "tsc -p tsconfig.core.json && tsc -p tsconfig.json && tsc -p tsconfig.worker.json && tsc -p tsconfig.viewport.json && tsc -p tsconfig.app.json",
     "test": "npm run test:unit && npm run test:gpu",
     "test:unit": "node tools/guard.mjs --timeout=600 node --test \"tests/unit/**/*.test.ts\" \"tests/nodes/*/unit/*.test.ts\" \"tests/export/unit/*.test.ts\" \"tests/ui/*/unit/*.test.ts\"",
     "test:gpu": "node tools/guard.mjs --timeout=3600 --lock node --test --test-concurrency=1 --test-timeout=300000 \"tests/engine/**/*.test.ts\" \"tests/nodes/*/*.test.ts\" \"tests/export/*.test.ts\" \"tests/graphs/*.test.ts\"",
@@ -1297,7 +1347,7 @@ What each layer contains:
 - One file under another configuration: `node --env-file=tests/env/max.env --test tests/nodes/filter/blur.test.ts`.
 - On the development machine the adapter name `llvmpipe` selects lavapipe while the NVIDIA driver is installed beside it; no other variable is needed. Lavapipe comes from the package `mesa-vulkan-drivers`.
 - `npm run expect -- <graph>` prints the statistics of an acceptance graph's targets in the format of its expectation file (10.3).
-- `npm run build` builds the application into `dist/`: the main-process script, which `package.json` names in `main`, the preload script, the page, the engine worker and the CPU worker. `launchApp` (2.9), `npm run test:electron` and `npm run test:ui` start that build with `electron .` from the repository root and fail with a message that names `npm run build` when `dist/` is missing. The build configuration is the integrator's (`runtime.md` 8.10).
+- `npm run build` builds the application into `dist/` from one configuration, `vite.config.ts`, every file with a source map: the main-process script `main.cjs`, which `package.json` names in `main`, the preload script `preload.cjs`, the page `index.html` with its `assets/`, the engine worker `engine-worker.js` and the CPU worker `cpu-worker.js`. The two workers are classic scripts beside the page, which is how each is created (`runtime.md` 8.3, 6.3). `npm start` builds and runs the application. `npm run dist:win` builds it and packs it for Windows with `electron-builder` (`electron-builder.yml`) into `release/`: a zip and a portable executable, unsigned, holding `dist/` and no module of `node_modules`. `launchApp` (2.9), `npm run test:electron` and `npm run test:ui` start that build with `electron .` from the repository root and fail with a message that names `npm run build` when `dist/` is missing. The build configuration is the integrator's (`runtime.md` 8.10).
 
 ### 8.3 Concurrency
 
@@ -1305,7 +1355,7 @@ What each layer contains:
 | --- | --- | --- |
 | Unit | Node's default (parallel files) | no device; nothing shared |
 | GPU | `--test-concurrency=1`: one test file at a time; one device per file | (1) In Node, waiting for the GPU busy-polls: a process uses 108 to 119 % of one core for as long as it awaits GPU work, so parallel files compete for cores. (2) All processes share one GPU and its memory: 6 GB on the development machine. (3) A software adapter computes on all CPU cores by itself. (4) The runtime sizes slices from measured time, which other processes disturb. The price is small: eight files take 3.0 s serially against 1.4 s in parallel |
-| Electron, UI | `--test-concurrency=1`; one application instance at a time | every window of every instance shares one GPU process and one display |
+| Electron, UI | `--test-concurrency=1`; one application instance at a time | every instance has a GPU process of its own (measured), and all of them share the one GPU, its memory and one display |
 
 - Test cases inside a file run one after another: no test uses `{ concurrency: true }`.
 - `--test-timeout=300000` is a backstop for a hung device, not a performance requirement. No test asserts a duration.
@@ -1319,18 +1369,22 @@ What each layer contains:
 
 The Dawn inside the `webgpu` package is about five Chromium milestones newer
 than the one inside Electron 44, and Electron's Node is older than the Node the
-tests run on. WGSL that compiles in Node can fail in the application:
-`buffer_view`, `swizzle_assignment` and `fragment_depth` exist in Node's Dawn
-and not in Electron 44. The GPU layer cannot see this.
+tests run on. WGSL that compiles in Node can fail in the application. Measured
+with Electron 44.7.0 and `webgpu` 0.6.2: of the WGSL language features Node's
+Dawn reports, the application's lacks `fragment_depth` and
+`texture_formats_tier1`, and has every other, the four that `engine.md` 3.12
+allows among them. The compilers differ beyond what that list says. The GPU
+layer cannot see this.
 
 `tests/electron/kernels.test.ts` runs the following once per profile, through
 `launchApp` and `orogenTest.ctx`:
 
-1. It waits for `engineState.device.state === 'ready'` and asserts that `device.caps.wgslLanguageFeatures` contains the four language features `engine.md` 3.12 allows. Reaching `ready` proves that every kernel of the engine itself compiled (`createEngine` compiles them).
+1. It detaches the viewport (`ctx.engine.viewport.detach()`), waits for `engineState.device.state === 'ready'` and asserts that `device.caps.wgslLanguageFeatures` contains the four language features `engine.md` 3.12 allows. Reaching `ready` proves that every kernel of the engine itself compiled (`createEngine` compiles them).
 2. It loads `registryDoc(nodes)`, with build resolution 513 and preview level 2, through `docStore.load`, and waits until no evaluation runs and every node of the view's plan has a final state.
 3. It asserts that every node is `done`, except nodes with a `file` parameter and the `ref/combine` links after them. No node may report an error of kind `shader-compile`, `binding`, `validation` or `internal`. A failure prints the `NodeError`, which for a compile error names the kernel and carries the diagnostic and source lines.
 4. It asserts that the node types the application's registry lists are those the Node process running the test sees. A node missing from the application bundle fails the test.
-5. In a second launch that opens `tests/graphs/05-roundtrip.orogen`, it builds the project into a temporary folder with `ctx.engine.build` and requires `BuildResult.status === 'ok'`: the build's evaluation and encoders run, and the engine worker's file and compression modules work in Electron's Node.
+5. In a second launch it opens a project file that it has written to `<OROGEN_TEST_OUTPUT>/electron/<profile>/`: acceptance graph 05 (10.2), and beside it what step 2 cannot run, which is `io/import-field` and `io/import-color` with a file each and every export node. Its `file` parameters are absolute. It builds the project into a folder beside the project file with `ctx.engine.build` and requires `BuildResult.status === 'ok'` and every file of the result on disk at its size: the kernels of the nodes with a file compile, the build's evaluation and encoders run, an image is decoded in the CPU worker, and the engine worker's file and compression modules work in Electron's Node.
+6. On a hardware adapter, and under the profile the device of the test process has, it compares twelve nodes of step 2 with this process's Dawn: the `min`, `max` and `mean` that `ctx.engine.inspect` gives for `outputs[0]` against the statistics of the same document evaluated through the harness, within `1e-5` (3.4). The sample is one or two nodes of each category that has field outputs, and no simulation: over its iterations the last bit of two compilers grows into another terrain.
 
 The evaluator compiles every kernel a node lists before it runs the node
 (`runtime.md` 5.3), so step 2 compiles all variants, not only those the default
@@ -1342,7 +1396,13 @@ compact kinds (`engine.md` 1.2).
 
 The test needs the built application and a display. Locally it runs on the real
 display and the hardware adapter. It looks at no pixel, so on CI it runs under
-a virtual display on the software adapter (9.3).
+a virtual display on the software adapter (9.3). There the first frame drawn to
+a WebGPU canvas costs the device (`runtime.md` 7.5 rule 9), which is why step 1
+detaches the viewport: a frame drawn before that may still cost the device
+once, the session replaces it (`runtime.md` 7.8), and every wait of the test
+is for a result the GPU delivered after the detach, which the lost device of
+that frame cannot deliver. A wait that does not end says what the engine was
+doing instead: the device's state and message, and how many nodes had ended.
 
 ### 8.5 UI tests
 
@@ -1353,10 +1413,13 @@ Facts that shape them:
 
 | Fact | Consequence |
 | --- | --- |
-| A hidden window on a real display can be captured with `capturePage()`, WebGPU canvases included. Under Xvfb a WebGPU canvas does not present | UI tests need a real display. They are local only; they are not part of CI |
+| A hidden window on a real display can be captured with `capturePage()`, WebGPU canvases included. Under Xvfb a WebGPU canvas does not present, and its first frame costs the device (`runtime.md` 7.5 rule 9) | UI tests need a real display. They are local only; they are not part of CI |
 | In a window that was never shown the page's `requestAnimationFrame` fires once per second, even with `backgroundThrottling: false` and `disable-renderer-backgrounding`. In the engine worker it fires every 16.7 ms | The viewport is driven from the engine worker (`runtime.md` 7.5) and is not slowed down. A test never waits for a page animation frame; it waits for a state with `AppDriver.waitFor` |
 | After `win.showInactive()` the page's frames run at 16.7 ms | A test that needs page frames (an animation, a drag) calls `AppDriver.show()` first |
 | Timers in the main process are never throttled | `waitFor` polls from the main process |
+| A window that was never shown does not have the system's focus: `document.hasFocus()` is false, `element.focus()` moves `document.activeElement`, and Chromium dispatches no `focus`, `blur`, `focusin` or `focusout` event (measured) | A control does not leave to a focus event what Enter or Escape must do as well. A test that needs one dispatches it |
+| What `capturePage()` copies in such a window can be older than the page: measured, a picture taken 1.3 s after a change showed parts of the page as they were before it, in the first seconds of the application above all | A capture waits for two page frames and a second more (`tests/ui/shell/rig.ts`); it is still a picture for a person (rule 1) |
+| Input is synthesised in the page (`dispatchEvent`): the desktop sends none to a window that is not shown. A press is `pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click`; a submenu and a tooltip of `@base-ui/react` open on the pointer events of a hover, not on a press (measured) | `tests/ui/shell/rig.ts` installs these as `shellTest` in the page; the tests of a panel may import it |
 
 Rules:
 
@@ -1370,6 +1433,35 @@ The shell owner keeps `tests/ui/shell/smoke.test.ts`: the application starts,
 the device becomes `ready`, acceptance graph 01 opens, `engineState.view`
 reports its revision, a capture is not empty, and the application closes
 without an error.
+
+`tests/ui/shell/journey.test.ts` is the foundation in one run, as a person
+uses it: the engine worker has the hardware adapter; the default project is
+computed and shown; a node is added, connected and changed with the commands
+of `runtime.md` 4.6, each in one transaction, and the changes are undone and
+redone by their keys; the project is saved, and a second application, started
+beside the first, opens the file and computes the same terrain; a node whose
+file is missing is reported in the status bar and in the list of errors, the
+application goes on, and the report ends with the node; the GPU process is
+killed and the terrain comes back (`runtime.md` 7.8; Linux); the engine worker
+is ended and `engine.restart` brings the terrain back on a new canvas
+(`runtime.md` 8.5). It writes twelve captures, `journey-01` to `journey-12`.
+It is the one test that has two applications running at once (8.3), from the
+start of the second until it has shown the file; each has a GPU process of its
+own.
+Its window-free counterpart is `tests/ui/shell/unit/foundation.test.ts`: the
+members of the stores, the engine client, the bridge and a `PanelDef` against
+the declarations this contract prints, the five panel folders, the exports of
+`src/app/ui/`, and a throwaway panel that brings a command, a key and a menu
+entry in its `PanelDef` to the real shell (`runtime.md` 8.10).
+
+The state owner keeps `tests/ui/state/client.test.ts`, the one file of this
+layer without a window: the three stores and `EngineClient` on one port of a
+`MessageChannel`, and on the other `serveSession` over a real session on the
+harness's engine, with a build function that calls `buildProject` with a memory
+sink (`runtime.md` 7.1). It needs a WebGPU adapter and neither the built
+application nor a display. `tests/ui/state/record.ts` makes the recordings of
+`tests/ui/state/assets/` from such a session:
+`tools/guard node tests/ui/state/record.ts`.
 
 ### 8.6 The command-line program
 
@@ -1444,7 +1536,7 @@ orogen render <project.orogen> --node <id> [--res <n>] [--crop <size>]
 
 | | First form | Second form |
 | --- | --- | --- |
-| Document | one instance of the node type, its inputs connected by the wiring rule of 2.4: each height, data and `any` input from a terrain of its own, masks from the slope mask, colours from a `ref/colorize` of their terrain. The plain variant, in which optional inputs are unconnected; with `--connected` the connected variant, a usage error for a node that has none. Settings: `terrainSize` 4096, `heightRange` 1024, `seed` 1, `seaLevel` 0.25, those of the tests (2.1), so that a node that reads the sea level has a sea to show | the project file |
+| Document | one instance of the node type, its inputs connected by the wiring rule of 2.4: each height, data and `any` input from a terrain of its own, the first that of the node's category, masks from the slope mask, colours from a `ref/colorize` of their terrain, and an input named `stamp`, `flow` or `snow` from what it is named for. The plain variant, in which optional inputs are unconnected; with `--connected` the connected variant, a usage error for a node that has none. Settings: `terrainSize` 4096, `heightRange` 1024, `seed` 1, `seaLevel` 0.25, those of the tests (2.1), so that a node that reads the sea level has a sea to show | the project file |
 | Parameters | defaults; with `--max-params`, every `float`, `int` and `vec2` parameter at its `max`; then each `--param`, whose value is one the parameter holds as given: a value `normalizeParams` would change (`runtime.md` 4.4) is a usage error; `--seed` sets the node's `seed` | as stored |
 | Resolution | `--res`, default 513 | `--res`, default the project's preview resolution |
 
@@ -1452,8 +1544,11 @@ Both evaluate in `mode: 'build'` with every output of the node as a target, so
 they show what a build would do. For every output they write
 `nodes/<category>/<name>/<output>-<res>.png` under `--out`: a `sheet` for a
 field, where a mask or a data output is drawn over a terrain, and a data output
-with `range: 'auto'`; for a colour, `color` and, when there is a terrain, a
-`3d` view of it with the colour drawn over it, as `<output>-<res>-3d.png`.
+with `range: 'data'` (2.7), the scale found on the whole field and shared by
+its crop; for a colour, `color` and, when there is a terrain, a `3d` view of
+it with the colour drawn over it and lit from the viewer's side, as
+`<output>-<res>-3d.png`. The outputs of `color/hillshade`, a lit rendering
+already, are drawn there as they are (`lit: false`).
 That terrain is the node's own `outputs[0]` where that is a height: the
 `water` of `generate/island` is drawn over the island, the `weight` of
 `adjust/height-blend` over the blend and what a simulation moved over the
@@ -1485,20 +1580,31 @@ the first form of `render` does, at resolution 513 unless `--res` is given,
 and a node that has a connected variant (2.4) a second time with
 `--connected`. For a variant in which two or more inputs of the node are
 connected it also draws what each was given, at one pixel per texel, as
-`nodes/<category>/<name>/input-<port>-<res>[-connected].png`: a terrain as a
-`hillshade`, the mask as `grey`, a colouring as `color`. (No output has such a
+`nodes/<category>/<name>/input-<port>-<res>[-connected].png`: a terrain and a
+landform as a `hillshade`, the mask and the snow as `grey`, the drainage as
+`grey` with `range: 'data'`, a colouring as `color`. (No output has such a
 name: a port name holds no hyphen.)
+
+A node with a `file` parameter is drawn with the `params` of its conformance
+call, read from the report of 3.6 rule 2 in the output folder as `verify`
+reads them (5.3), and its page names them: the import nodes are shown with the
+file their tests give them. Without that report, or when the node no longer
+takes the parameters it holds, the node is drawn at its defaults.
 
 It writes one page per category drawn, `gallery/<category>.html`, with, per
 node: the picture of `outputs[0]`, with the inputs beside it where they were
-drawn; below it that of the connected variant, with its inputs and the names
-of what was connected; the title, description and keywords, the ports, every
+drawn, and the pictures of its other outputs beside it, each with its name and
+type and a colour with its `3d` view; of a data output what black and white
+stand for, and that the scale is logarithmic where it is; below it the same
+for the connected variant, with its inputs and the names of what was
+connected; the title, description and keywords, the ports, every
 parameter (label, unit, default, range, help), the flags `maskable` and
 `resolutionDependent`, the time and peak memory, and the content of the node's
 `conformance/…json` when the output folder holds one (3.6). A node that fails,
 in either variant, is listed with its error, and `gallery` then exits with 1,
-unless the node has a `file` parameter: its defaults select no file, the
-exception 8.1 makes for the registry test.
+unless the node has a `file` parameter and was drawn at its defaults: they
+select no file, the exception 8.1 makes for the registry test. Drawn with the
+file of its conformance call, such a node is held to rendering like any other.
 
 It then writes `gallery/index.html`, which links the page of every category
 that has been drawn into the output folder, by this run or by an earlier one,
@@ -1525,7 +1631,7 @@ CI runs on GitHub Actions, on hosted runners without a GPU.
 | `gpu-linux` | `ubuntu-latest` | installs `mesa-vulkan-drivers libvulkan1`; `orogen probe`; `npm run test:gpu` with `OROGEN_GPU_ADAPTER=llvmpipe` | yes |
 | `gpu-windows` | `windows-latest` | `orogen probe`; `npm run test:gpu` with `OROGEN_GPU_ADAPTER=Microsoft` | yes |
 | `electron-kernels` | `ubuntu-latest` | builds the application; `xvfb-run -a npm run test:electron` with `OROGEN_ELECTRON_GPU=software` | no, until the integrator promotes it (9.3) |
-| `package-windows` | `windows-latest` | builds and packages the application | yes, on the main branch |
+| `package-windows` | `windows-latest` | builds the application and packages it unsigned, as a zip and a portable executable (`npm run dist:win`); uploads both as the artifact `orogen-windows` | yes, on the main branch |
 
 ```yaml
 name: ci
@@ -1582,10 +1688,36 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 26, cache: npm }
       - run: sudo apt-get update && sudo apt-get install -y xvfb
+      # Ubuntu 24.04 restricts unprivileged user namespaces, which Chromium's sandbox uses.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run build            # the application build
       - run: xvfb-run -a npm run test:electron
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: test-output-electron-kernels, path: test-output }
+
+  package-windows:
+    runs-on: windows-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'      # unsigned: no certificate is looked for
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 26, cache: npm }
+      - run: npm ci
+      - run: npm run dist:win         # the build, then electron-builder (8.2)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orogen-windows
+          path: |
+            release/*.zip
+            release/*.exe
+          if-no-files-found: error
 ```
+
+The artifact `orogen-windows` of a run is the Windows build to download: the
+zip, and the portable executable.
 
 The uploaded `test-output` holds the conformance previews and reports of every
 node, drawn from data computed on the software adapter. A reviewer can look at
@@ -1611,7 +1743,7 @@ cover those on real machines.
 | --- | --- | --- | --- |
 | Node on `ubuntu-latest` | lavapipe (Mesa `llvmpipe`, a Vulkan implementation) | `OROGEN_GPU_ADAPTER=llvmpipe` after installing `mesa-vulkan-drivers` | works; also on the development machine |
 | Node on `windows-latest` | WARP, `Microsoft Basic Render Driver`, a D3D12 adapter that is part of Windows | `OROGEN_GPU_ADAPTER=Microsoft` | works on hosted runners. It does not report `isFallbackAdapter`; `caps.software` knows it by its name (`runtime.md` 1.3) |
-| Electron | SwiftShader, shipped with Electron | `OROGEN_ELECTRON_GPU=software`: on Linux the application then appends `enable-unsafe-webgpu` and not `enable-features=Vulkan`, which leaves Chromium on SwiftShader (`runtime.md` 1.6). `use-webgpu-adapter=swiftshader` is Chromium's explicit switch for the same thing and is the next thing to try if that fails on a runner | the first recipe is measured on the development machine with a display; both are unproven under Xvfb on a hosted runner |
+| Electron | SwiftShader, shipped with Electron | `OROGEN_ELECTRON_GPU=software`: on Linux the application then appends `enable-unsafe-webgpu` and not `enable-features=Vulkan`, which leaves Chromium on SwiftShader (`runtime.md` 1.6). `use-webgpu-adapter=swiftshader` is Chromium's explicit switch for the same thing and is the next thing to try if that fails on a runner | the first recipe is measured on the development machine, with a display and under `xvfb-run`: the kernel test passes in both, in 35 to 50 s. On a hosted runner both recipes are unproven |
 
 - `forceFallbackAdapter` is never used to obtain a software adapter (`runtime.md` 1.5).
 - Software adapters are several times slower than a GPU (lavapipe: 119 ms against 16 ms for the first 257² render, compilation included). Tests keep to 257 and below where they can; the suite has no time assertions.
@@ -1636,7 +1768,7 @@ use them.
 | --- | --- | --- | --- | --- | --- |
 | `ref/fbm` | generator: `uv` only, seed, canonical helpers, fixed normalisation | none | `out` | `seed`, `size`, `octaves`, `gain` | |
 | `ref/blur` | separable filter with temporaries: two passes, a temporary released early, a length converted to texels, a bounded tap count, `ops.blur` for what one pass cannot hold, one kernel variant per kind | `in` (any) | `out` (same as `in`) | `radius` | `maskable` |
-| `ref/talus` | iterative simulation: `ctx.loop`, ping-pong, in-place accumulator, `ctx.wants`, progressive preview | `in` | `out`, `moved` (data) | `talus`, `reach` | `maskable` |
+| `ref/talus` | iterative simulation: `ctx.loop`, ping-pong, in-place accumulator, a pairwise exchange by the slope at the middle of each pair, `ctx.wants`, progressive preview | `in` | `out`, `moved` (data) | `talus`, `reach` | `maskable` |
 | `ref/distance` | CPU-assisted node: `ctx.read`, a CPU task with a transferred buffer, `ctx.write` | `in` (mask) | `out` (data) | none | |
 | `ref/colorize` | colour node with a LUT: `bakeGradient`, a `vec4f` LUT, a colour output, an optional colour input | `in`, `base` (color, optional) | `out` (color) | `gradient`, `strength` | |
 | `ref/slope-mask` | mask producer: physical slope, angle parameters compared as tangents and graded by the angle, saturated output | `in` | `out` (mask) | `slopeMin` (20), `slopeMax` (45) | |
@@ -1827,7 +1959,7 @@ The targets are `fbm.out`, `good.out`, `old.out` and every other node as a node 
 
 ```ts
 interface GraphExpectation {
-  readonly res: number;                                                       // 257
+  readonly res: number;                                                       // the preview resolution of the graph: 257, and 505 for graph 05
   readonly targets: Readonly<Record<string, Partial<Record<StatName, readonly [lo: number, hi: number]>>>>;   // by '<node>.<port>'
 }
 ```
@@ -1835,6 +1967,8 @@ interface GraphExpectation {
 - The integrator creates a file from `npm run expect -- <name>` run on the hardware adapter under `core`, widening each printed value to a range at least `2e-4` wide.
 - The same file must hold on every adapter and under both profiles. A range is widened only with a stated reason in the commit; it is never widened to make one adapter pass without understanding the difference.
 - For a colour target the statistics are those of channel 0.
+- A file names every output its graph delivers: all of them for graphs 01 to 04, the outputs of the five nodes that are no export node for graph 05, and for graph 06 the three that can be made. The test of a graph holds one evaluation at `res` to it (`expectTargets` of `tests/graphs/_graphs.ts`, which also refuses a range narrower than `2e-4`).
+- `npm run expect` loads the categories whose nodes the graph names, and no other: a category somebody is working on does not stop the graphs that do not use it.
 
 ### 10.4 What the acceptance graphs do not cover
 

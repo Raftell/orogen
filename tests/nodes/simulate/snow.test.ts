@@ -8,8 +8,8 @@ import { combine, count, meanOf, planeFacing, steepestPair, tanDeg } from './_er
 
 conformance(def, {
   resolutionTol: {
-    value: 0.03,
-    reason: 'Snow slides over the slopes each level resolves, and the edge of the cover lies within a texel of that level (simulation.md 2.8). Measured between 257 and 513 on the terrain fixture: below 0.0001 of the standard deviation for out, 0.006 for snow and 0.004 for depth; 0.023 and 0.014 at a slip angle of 40 degrees.',
+    value: 0.05,
+    reason: 'Snow slides and creeps over the slopes each level resolves, and the edge of the cover lies within a texel of that level (simulation.md 2.8). Measured between 257 and 513 on the terrain fixture: 0.0004 of the standard deviation for out, 0.032 for snow and 0.034 for depth; 0.002 for both between 513 and 1025.',
   },
 });
 
@@ -57,8 +57,10 @@ test('simulate/snow: no snowfall leaves the terrain as it is', async () => {
 test('simulate/snow: snow lies above the snow line and not below it', async () => {
   // A ramp from 0 to 1 at 14 degrees, on which nothing slides: the snow line at 0.5 lies at its middle column.
   const { depth, snow } = await renderNode(def, { inputs: { in: 'rampX', ...alone }, params: { band: 0.02, melt: 0 } });
-  assert.equal(at(depth, 100, 128), 0, 'below the snow line there is no snow');
-  assert.equal(at(snow, 100, 128), 0);
+  // Snow creeps a little way down from the line and no further: 28 texels below it there is none to speak of.
+  assert.ok(at(depth, 100, 128) < 1e-9, `below the snow line there is no snow: ${at(depth, 100, 128)}`);
+  assert.ok(at(snow, 100, 128) < 1e-6, `below the snow line nothing is covered: ${at(snow, 100, 128)}`);
+  assert.equal(at(depth, 60, 128), 0, 'far below the snow line there is no snow at all');
   assert.ok(Math.abs(at(depth, 200, 128) - 0.02) < 1e-4, `above it lies the snowfall: ${at(depth, 200, 128)}`);
   assert.equal(at(snow, 200, 128), 1);
   // A higher snow line leaves less of the ramp covered.
@@ -84,7 +86,7 @@ test('simulate/snow: on the cone no snow that came to rest lies steeper than the
   const steepest = steepestPair(out, (i) => depth.data[i]! > RESTING);
   assert.ok(steepest <= 1.05 * tanDeg(40), `snow rests at ${steepest}; the tangent of the slip angle is ${tanDeg(40)}`);
   assert.ok(at(depth, 128 + 30, 128) < 0.25 * FALL, `on the flank lies ${at(depth, 128 + 30, 128)}`);
-  assert.ok(at(depth, 128 + 66, 128) > 1.5 * FALL, `at the foot lies ${at(depth, 128 + 66, 128)}, more than fell there`);
+  assert.ok(at(depth, 128 + 66, 128) > 1.25 * FALL, `at the foot lies ${at(depth, 128 + 66, 128)}, more than fell there`);
 });
 
 test('simulate/snow: a slope steeper than the slip angle sheds its snow whichever way it faces', async () => {
@@ -97,8 +99,11 @@ test('simulate/snow: a slope steeper than the slip angle sheds its snow whicheve
     const shed = await renderNode(def, { inputs: { in: fieldOf(257, planeFacing(steepAt(1.06), facing)), ...alone }, params, wants: ['depth'] });
     thinnest.push(stats(shed.depth).min / FALL);
     assert.ok(stats(shed.depth).min < 0.85 * FALL, `facing ${facing}: where the steeper plane is barest lies ${stats(shed.depth).min}`);
+    // A gentler plane it does not slide off: it creeps, which leaves an even slope as it was but for the borders
+    // the snow leaves and gathers at. In the middle of the plane lies what fell.
     const kept = await renderNode(def, { inputs: { in: fieldOf(257, planeFacing(steepAt(0.94), facing)), ...alone }, params, wants: ['depth'] });
-    assert.ok(Math.abs(stats(kept.depth).min - FALL) < 1e-5 && Math.abs(stats(kept.depth).max - FALL) < 1e-5, `facing ${facing}: on the gentler plane lies ${stats(kept.depth).min} to ${stats(kept.depth).max}`);
+    assert.ok(Math.abs(at(kept.depth, 128, 128) - FALL) < 0.02 * FALL, `facing ${facing}: in the middle of the gentler plane lies ${at(kept.depth, 128, 128)}`);
+    assert.ok(at(shed.depth, 128, 128) < 0.9 * at(kept.depth, 128, 128) || stats(shed.depth).min < 0.5 * stats(kept.depth).min + 0.25 * FALL, `facing ${facing}: the steeper plane sheds more than the gentler one`);
   }
   assert.ok(Math.max(...thinnest) - Math.min(...thinnest) < 0.03, `the share left where each plane is barest: ${thinnest.join(', ')}`);
 });

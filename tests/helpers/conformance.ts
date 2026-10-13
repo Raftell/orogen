@@ -311,7 +311,7 @@ export function conformance(def: NodeDef, opts: ConformanceOptions = {}): void {
           const scale = { terrainSize: settings.terrainSize, heightRange: settings.heightRange };
           if (field.kind === 'color') await savePicture(name, field, { style: 'color' });
           else if (output.role === 'mask' || output.role === 'data') {
-            await savePicture(name, field, { style: 'sheet', ...scale, ...(output.role === 'data' ? { range: 'auto' as const } : {}), ...(terrain ? { height: terrain } : {}) });
+            await savePicture(name, field, { style: 'sheet', ...scale, ...(output.role === 'data' ? { range: 'data' as const } : {}), ...(terrain ? { height: terrain } : {}) });
           } else await savePicture(name, field, { style: 'sheet', ...scale });
         }
       }

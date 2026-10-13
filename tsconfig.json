@@ -2,7 +2,8 @@
   // The Node-typed folders of runtime.md 8.4. src/core/ has its own program, tsconfig.core.json;
   // the files of core that these folders import are checked a second time here, under Node's types.
   // src/viewport/, src/platform/electron/worker/ and src/app/ need other libraries (WebWorker, DOM)
-  // and must not be added to "include": each of them is a program of its own.
+  // and must not be added to "include": each of them is a program of its own (tsconfig.viewport.json,
+  // tsconfig.worker.json, tsconfig.app.json). "npm run check" runs every tsconfig*.json of this folder.
   "compilerOptions": {
     "target": "ES2024",
     "module": "ESNext",
@@ -23,10 +24,13 @@
   },
   "include": [
     "src/platform/node",
+    "src/platform/electron/ipc.ts",
     "src/platform/electron/main",
     "src/platform/electron/preload",
     "src/export",
     "src/cli",
-    "tests"
+    "tests",
+    "tools",
+    "vite.config.ts"
   ]
 }

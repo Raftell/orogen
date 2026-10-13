@@ -13,6 +13,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const GRAPHS = path.join(ROOT, 'tests', 'graphs');
@@ -36,6 +37,19 @@ function rangeAround(value: number): readonly [number, number] {
   return [Math.floor((value - HALF_WIDTH) * 1e6) / 1e6, Math.ceil((value + HALF_WIDTH) * 1e6) / 1e6];
 }
 
+/** The categories of the node types a project file names; none for a text that is no project. */
+function categoriesOf(text: string): string[] {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const nodes = typeof doc === 'object' && doc !== null && 'nodes' in doc && typeof doc.nodes === 'object' && doc.nodes !== null ? Object.values(doc.nodes) : [];
+  const types = nodes.map((node) => (typeof node === 'object' && node !== null && 'type' in node && typeof node.type === 'string' ? node.type : ''));
+  return [...new Set(types.map((type) => type.split('/')[0]!).filter((category) => /^[a-z]+$/.test(category)))];
+}
+
 async function main(args: readonly string[]): Promise<number> {
   const positional: string[] = [];
   let res: number | undefined;
@@ -53,15 +67,21 @@ async function main(args: readonly string[]): Promise<number> {
   if (file === undefined) usage(`no project file "${graph}" in tests/graphs/ or at that path`);
 
   const expectationFile = file.replace(/\.orogen$/, '') + '.expect.json';
-  const existing: GraphExpectation | null = fs.existsSync(expectationFile) ? JSON.parse(fs.readFileSync(expectationFile, 'utf8')) as GraphExpectation : null;
+  // An empty file is one the shell has just truncated for this run's own output (`npm run expect -- x > x.expect.json`): no file yet.
+  const held = fs.existsSync(expectationFile) ? fs.readFileSync(expectationFile, 'utf8') : '';
+  const existing: GraphExpectation | null = held.trim() === '' ? null : JSON.parse(held) as GraphExpectation;
   const resolution = res ?? existing?.res ?? 257;
 
   // The harness is loaded only now: importing it loads the GPU binding.
   const { getEngine, renderGraph, stats, useNodes } = await import('../helpers/index.ts');
-  const { nodes } = await import('../../src/core/nodes/index.ts');
   const { GpuUnavailableError, parseDoc } = await import('../../src/core/runtime.ts');
-  // An acceptance graph may name any node of the product: graph 05 holds export nodes.
-  useNodes(nodes);
+  // An acceptance graph may name any node of the product: graph 05 holds export nodes. The categories its nodes
+  // are of are loaded, and no other: a category somebody is working on does not stop the graphs that do not use it.
+  for (const category of categoriesOf(fs.readFileSync(file, 'utf8'))) {
+    const index = path.join(ROOT, 'src', 'core', 'nodes', category, 'index.ts');
+    if (!fs.existsSync(index)) continue;
+    useNodes((await import(pathToFileURL(index).href) as { readonly nodes: Parameters<typeof useNodes>[0] }).nodes);
+  }
 
   let engine: Awaited<ReturnType<typeof getEngine>>;
   try {

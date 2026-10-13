@@ -8,10 +8,10 @@ import path from 'node:path';
 import { nodes } from '../core/nodes/index.ts';
 import { createRegistry } from '../core/runtime.ts';
 import { NodeFileSink, NodeFileSource } from '../platform/node/files.ts';
-import { CATEGORIES, type GalleryCommand } from './args.ts';
-import { hasConnectedVariant, typeDocument } from './document.ts';
+import { CATEGORIES, UsageError, type GalleryCommand, type ParamArg } from './args.ts';
+import { hasConnectedVariant, typeDocument, type RenderPlan } from './document.ts';
 import {
-  countsAsFailure, galleryIndex, galleryPage, gallerySummary, mib, ms, readGallerySummary,
+  countsAsFailure, galleryIndex, galleryPage, gallerySummary, mib, ms, needsFile, readGallerySummary,
   type GalleryEntry, type GalleryInfo, type GallerySummary,
 } from './gallery-page.ts';
 import { renderPlan } from './render.ts';
@@ -44,6 +44,31 @@ function readConformance(out: string, type: string): string | null {
   }
 }
 
+/**
+ * The `params` of a node's conformance call, from its report (testing.md 3.6 rule 2); none when the report is
+ * absent, is no such report or names none. A file is an absolute path there.
+ */
+export function conformanceParams(report: string | null): ParamArg[] {
+  if (report === null) return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(report);
+  } catch {
+    return [];
+  }
+  const params = typeof value === 'object' && value !== null && 'params' in value ? value.params : null;
+  if (typeof params !== 'object' || params === null || Array.isArray(params)) return [];
+  return Object.entries(params).map(([name, held]) => ({ name, value: held as ParamArg['value'] }));
+}
+
+/** A parameter value as the page says it: a path under the working directory from there, anything else as JSON. */
+function shown(value: unknown): string {
+  if (typeof value !== 'string') return JSON.stringify(value);
+  if (!path.isAbsolute(value)) return value;
+  const relative = path.relative(process.cwd(), value);
+  return relative.startsWith('..') ? value : relative.split(path.sep).join('/');
+}
+
 /** `orogen gallery`. Resolves with the exit code. */
 export async function gallery(command: GalleryCommand, signal: AbortSignal): Promise<number> {
   const registry = createRegistry(nodes);
@@ -65,18 +90,32 @@ export async function gallery(command: GalleryCommand, signal: AbortSignal): Pro
           break;
         }
         const drawn = { res: command.res, crop: null, signal, inputs: true };
-        const result = await renderPlan(cli, sink, typeDocument(registry, def.type), drawn);
+        const conformance = readConformance(command.out, def.type);
+        // A node that reads a file is drawn the way the suite ran it: at its defaults it selects no file. Parameters
+        // the node no longer takes as the report holds them are left out, and the node is drawn at its defaults.
+        let given = needsFile(def) ? conformanceParams(conformance) : [];
+        const planned = (connected: boolean): RenderPlan => typeDocument(registry, def.type, { params: given, connected });
+        let plan: RenderPlan;
+        try {
+          plan = planned(false);
+        } catch (thrown) {
+          if (!(thrown instanceof UsageError) || given.length === 0) throw thrown;
+          process.stderr.write(`orogen gallery: ${def.type}: the parameters of its conformance report are not its own any more (${thrown.message}); it is drawn at its defaults\n`);
+          given = [];
+          plan = planned(false);
+        }
+        const result = await renderPlan(cli, sink, plan, drawn);
         // The second variant, with the optional inputs and the mask connected: what they do to the node.
         let connected: RenderResult | null = null;
         if (result.status === 'ok' && hasConnectedVariant(def) && !signal.aborted) {
-          connected = await renderPlan(cli, sink, typeDocument(registry, def.type, { connected: true }), drawn);
+          connected = await renderPlan(cli, sink, planned(true), drawn);
         }
         const ended = connected?.status === 'aborted' || connected?.status === 'device-lost' ? connected.status : result.status;
         if (ended === 'aborted' || ended === 'device-lost') {
           stopped = ended;
           break;
         }
-        entries.push({ def, result, connected, conformance: readConformance(command.out, def.type) });
+        entries.push({ def, result, connected, conformance, given: given.map((param) => ({ name: param.name, value: shown(param.value) })) });
         const failed = result.status !== 'ok' ? result : connected && connected.status !== 'ok' ? connected : null;
         const outcome = failed ? `failed${failed === connected ? ' with its optional inputs connected' : ''}: ${failed.errors[0]?.message ?? failed.status}` : `${ms(result.wallMs)}, peak ${mib(result.peakBytes)}`;
         process.stderr.write(`orogen gallery: ${i + 1}/${defs.length} ${def.type}: ${outcome}\n`);

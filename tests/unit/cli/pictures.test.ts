@@ -11,8 +11,8 @@ import { after, test } from 'node:test';
 
 import { decode } from 'fast-png';
 
-import { inputPicture, picturesOf, writePicture } from '../../../src/cli/pictures.ts';
-import type { Picture, Raster } from '../../../src/cli/preview.ts';
+import { inputPicture, picturesOf, viewIsLit, writePicture } from '../../../src/cli/pictures.ts';
+import { drawPreview, toneOf, type Picture, type Raster } from '../../../src/cli/preview.ts';
 import { describeError, exitCodeOf, HARD_CEILING_MS, overran, type RenderResult } from '../../../src/cli/result.ts';
 import { NodeFileSink } from '../../../src/platform/node/files.ts';
 
@@ -66,7 +66,7 @@ test('a colour is a color picture, a 3d view over its terrain when there is one,
   assert.ok(red > 20_000, `${red} of ${view.width * view.height} pixels show the colour`);
 });
 
-test('a data output is drawn with the range of its own values, a mask with 0..1, and both over the terrain they are given', () => {
+test('a data output is drawn on the scale of its own values, a mask with 0..1, and both over the terrain they are given', () => {
   // What a simulation reports per texel: small numbers, far from 1.
   const moved = field((u) => 0.002 * u);
   const brightest = (picture: Picture): number => {
@@ -91,7 +91,76 @@ test('a data output is drawn with the range of its own values, a mask with 0..1,
   assert.deepEqual([pixel(alone, 512 + 8 + 500, 256)[0]! - pixel(alone, 512 + 8 + 500, 256)[2]!], [0]);
 });
 
-test('what an input was given is drawn at one pixel per texel: a terrain shaded, the mask black to white, a colouring as its colours', () => {
+test('a data output that spans orders of magnitude is drawn by the logarithm of its values, and its crop on the scale of its sheet', () => {
+  // A drainage area: one cell's worth on the slopes, and a stream across the middle that gathers three decades
+  // from left to right. The largest value is 150 times the mean: drawn linearly the picture is black.
+  const flow = field((u, v) => (Math.abs(v - 0.5) < 0.03 ? 1e-5 * 1000 ** u : 1e-6));
+  const tone = toneOf(flow, 'data');
+  // White is the largest value. Black is the first percentile of the positive values, the slopes, which is a ten-thousandth of it here.
+  assert.deepEqual(tone, { lo: Math.fround(1e-6), hi: Math.fround(1e-2), log: true });
+  const [sheet, crop] = picturesOf({ role: 'data' }, flow, null, SCALE, 5);
+  assert.deepEqual([sheet!.tone, crop!.tone], [tone, tone], 'the page is told the scale, and the crop has that of the sheet');
+  // The grey panel of the sheet, along the stream: every decade has its share of the greys. Drawn linearly the
+  // middle of the stream, a thirtieth of the largest value, would be 8 of 255.
+  const grey = (picture: Picture, x: number): number => pixel(picture, x, 256)[0]!;
+  const drawn = sheet!.draw();
+  assert.ok(Math.abs(grey(drawn, 2) - 64) <= 3 && Math.abs(grey(drawn, 256) - 159) <= 6 && grey(drawn, 509) === 255, `the stream is drawn ${grey(drawn, 2)}, ${grey(drawn, 256)} and ${grey(drawn, 509)}`);
+  assert.deepEqual(pixel(drawn, 256, 100), [0, 0, 0], 'the slopes are the foot of the scale');
+  // The centre window, five texels of the stream of nearly one value: on the scale of the whole field they are one grey, not black to white.
+  const window = drawPreview(flow, { style: 'grey', range: crop!.tone!, crop: [30, 30, 5] });
+  assert.ok(Math.abs(pixel(window, 0, 2)[0]! - pixel(window, 4, 2)[0]!) < 20 && pixel(window, 2, 2)[0]! > 140, `the window runs from ${pixel(window, 0, 2)[0]} to ${pixel(window, 4, 2)[0]}`);
+
+  // Zero, and whatever lies below the foot of the scale, is nothing: black, and not the blue of a value out of range.
+  const rivers = field((u, v) => (Math.abs(v - 0.5) < 0.03 ? 1e-5 * 1000 ** u : 0));
+  assert.deepEqual(toneOf(rivers, 'data'), { lo: Math.fround(1e-5), hi: Math.fround(1e-2), log: true });
+  const lines = drawPreview(rivers, { style: 'grey', range: 'data' });
+  assert.deepEqual([pixel(lines, 32, 4), pixel(lines, 64, 32)], [[0, 0, 0], [255, 255, 255]]);
+  assert.ok(pixel(lines, 32, 32)[0]! > 90, `a river a thirtieth as deep as the deepest is drawn ${pixel(lines, 32, 32)[0]}`);
+  // A logarithmic scale reaches four decades below the largest value and no further.
+  assert.deepEqual(toneOf(field((u, v) => (v < 0.05 ? 10 ** (-9 + 9 * u) : 0)), 'data'), { lo: 1e-4, hi: 1, log: true });
+});
+
+test('a data output whose largest value is within a hundred times its mean, or that holds negative values, keeps the range of its own values', () => {
+  // What a relaxation moved: the largest value twice the mean.
+  assert.deepEqual(toneOf(field((u) => 0.002 * u), 'data'), { lo: 0, hi: Math.fround(0.002), log: false });
+  // A field that spans three decades evenly: its mean is a seventh of its largest value, and the picture is not black.
+  assert.equal(toneOf(field((u) => 1e-5 * 1000 ** u), 'data').log, false);
+  // A sparse field whose values are of one size: the depth of a lake that takes a thirtieth of the terrain.
+  assert.equal(toneOf(field((u, v) => (Math.hypot(u - 0.5, v - 0.5) < 0.1 ? 0.03 + 0.02 * u : 0)), 'data').log, false);
+  // An index that goes below zero has no logarithm.
+  assert.deepEqual(toneOf(field((u, v) => (v < 0.05 ? -2 + 1001 ** u : -1)), 'data'), { lo: -1, hi: 999, log: false });
+  // Nothing above zero, a constant, and nothing finite at all.
+  assert.deepEqual(toneOf(field(() => 0), 'data'), { lo: 0, hi: 0, log: false });
+  assert.deepEqual(toneOf(field(() => 0.25), 'data'), { lo: 0.25, hi: 0.25, log: false });
+  assert.deepEqual(toneOf(field(() => Number.NaN), 'data'), { lo: 0, hi: 1, log: false });
+  // The other ranges are what they were: 0..1 unless given, and 'auto' the smallest and largest value whatever the spread.
+  const flow = field((u, v) => (Math.abs(v - 0.5) < 0.03 ? 1e-5 * 1000 ** u : 1e-6));
+  assert.deepEqual([toneOf(flow, undefined), toneOf(flow, [0, 2]), toneOf(flow, 'auto')], [{ lo: 0, hi: 1, log: false }, { lo: 0, hi: 2, log: false }, { lo: Math.fround(1e-6), hi: Math.fround(1e-2), log: false }]);
+  assert.throws(() => toneOf(flow, { lo: 0, hi: 1, log: true }), /above 0 for a logarithmic one/);
+  assert.throws(() => toneOf(flow, [2, 1]), /not a pair of numbers in order/);
+});
+
+test('a colour over its terrain is lit from the viewer\'s side: the slopes the view faces are the bright ones', () => {
+  const paint = color(() => [0.5, 0.5, 0.5]);
+  /** The centre of the 3d view of the colour over a plane that falls by `fall` heights per terrain width towards the viewer. */
+  const centre = (fall: number, lit = true): number => pixel(picturesOf({}, paint, field((_, v) => 0.5 - fall * (v - 0.5)), SCALE, null, lit)[1]!.draw(), 384, 256)[0]!;
+  // With the scale of these pictures a fall of one height across the terrain is a slope of 14 degrees.
+  const level = centre(0), facing = centre(1), away = centre(-1);
+  // Level ground keeps four fifths of the colour, which is 188 of 255 as it is.
+  assert.ok(Math.abs(level - 0.81 * 188) <= 2, `level ground is drawn ${level}`);
+  assert.ok(facing > level + 8 && facing <= 188, `a slope that faces the viewer is drawn ${facing}, level ground ${level}`);
+  assert.ok(away < level - 8, `a slope that faces away is drawn ${away}, level ground ${level}`);
+  // The light of a shaded field comes from the far side: there the slope that faces the viewer is the dark one.
+  // The view of a field keeps that light, so that it is its top view tilted.
+  const shaded = (fall: number): number => pixel(drawPreview(field((_, v) => 0.5 - fall * (v - 0.5)), { style: '3d', ...SCALE }), 384, 256)[0]!;
+  assert.ok(shaded(1) < shaded(0) - 15 && shaded(-1) > shaded(0), `as a shaded field the facing slope is drawn ${shaded(1)}, level ground ${shaded(0)}, the slope that faces away ${shaded(-1)}`);
+
+  // A colour that is itself a lit rendering is drawn as it is: its own light and no other.
+  assert.deepEqual([viewIsLit('color/hillshade'), viewIsLit('color/natural'), viewIsLit('ref/colorize')], [false, true, true]);
+  assert.deepEqual([centre(0, false), centre(1, false), centre(-1, false)], [188, 188, 188]);
+});
+
+test('what an input was given is drawn at one pixel per texel: a terrain shaded, the mask black to white, a colouring as its colours, a named feed as what it is', () => {
   const terrain = inputPicture('terrain', hills, SCALE);
   assert.deepEqual([terrain.width, terrain.height], [RES, RES]);
   // Shaded: the slope that faces the light is brighter than the one that faces away, and no pixel is tinted.
@@ -109,6 +178,16 @@ test('what an input was given is drawn at one pixel per texel: a terrain shaded,
   const paint = inputPicture('color', color(() => [1, 0, 0]), SCALE);
   assert.deepEqual(pixel(paint, 10, 10), [255, 0, 0]);
   assert.deepEqual(pixel(inputPicture('terrain', color(() => [0, 0, 1]), SCALE), 10, 10), [0, 0, 255], 'a colour that feeds an input of either kind');
+
+  // What an input is given by its name: a landform shaded as a terrain is, the snow black to white as the mask is,
+  // the drainage on the scale of a data field.
+  const stamp = inputPicture('stamp', hills, SCALE);
+  let different = 0;
+  for (let i = 0; i < stamp.rgb.length; i++) if (stamp.rgb[i] !== terrain.rgb[i]) different++;
+  assert.equal(different, 0, 'a landform is drawn as a terrain');
+  assert.deepEqual([pixel(inputPicture('snow', field((u) => (u < 0.5 ? 0 : 1)), SCALE), 4, 30), pixel(inputPicture('snow', field((u) => (u < 0.5 ? 0 : 1)), SCALE), 60, 30)], [[0, 0, 0], [255, 255, 255]]);
+  const drainage = inputPicture('flow', field((u, v) => (Math.abs(v - 0.5) < 0.03 ? 1e-5 * 1000 ** u : 1e-6)), SCALE);
+  assert.ok(Math.abs(pixel(drainage, 32, 32)[0]! - 159) <= 6 && pixel(drainage, 32, 4)[0] === 0, `the middle of the stream is drawn ${pixel(drainage, 32, 32)[0]}`);
 });
 
 const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'orogen-cli-pictures-'));

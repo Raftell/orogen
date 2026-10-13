@@ -1,0 +1,11 @@
+{
+  // runtime.md 8.4: src/platform/electron/worker/ runs in a worker that has Node's modules. Worker globals and
+  // Node types; no DOM. What it imports of src/core/, src/export/, src/viewport/ and src/platform/node/files.ts
+  // is checked a second time here, under these libraries.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "WebWorker"],
+    "types": ["@webgpu/types", "node"]
+  },
+  "include": ["src/platform/electron/worker"]
+}

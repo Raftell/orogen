@@ -29,11 +29,11 @@ export const PROFILE_SMOOTHING = 3;
 /** How far that smoothing lowers a river at the most, in widths of the river (8.5). To calibrate. */
 export const PROFILE_DEPTH = 0.25;
 /** How fast a valley deepens or shallows along its river at the most, as a part of the bank's slope (8.5). To calibrate. */
-export const VALLEY_GRADE = 0.5;
+export const VALLEY_GRADE = 0.2;
 /** How high above the water a valley's side is cut, beside the river's own depth: this many times as far as the river lies below the routing surface (8.5). To calibrate. */
 export const BANK_RISE = 1;
-/** The part of a bank's reach, from its top down, over which the cut fades out into the terrain (8.5). To calibrate. */
-export const BANK_FADE = 0.5;
+/** How far a valley reaches beyond the bank of its river, in the widths a side at the bank's slope would have: its sides ease out over twice that width (8.5). To calibrate. */
+export const VALLEY_REACH = 2;
 
 /** The part of a shore band, from the waterline out, over which the ground is drawn to the beach and the shelf in full (9.2). To calibrate. */
 export const COAST_FLAT = 0.3;

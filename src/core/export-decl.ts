@@ -65,9 +65,9 @@ export interface LayerItem {
 /** A companion texture for materials: power-of-two size, texel-centred. */
 export interface TextureItem {
   readonly kind: 'texture';
-  readonly source: ExportSource;                 // 'color' for content 'color', else 'field'
+  readonly source: ExportSource;                 // 'color' for content 'color' and 'data', else 'field'
   readonly name: string;
-  readonly content: 'color' | 'mask' | 'normal';
+  readonly content: 'color' | 'data' | 'mask' | 'normal';
   readonly size: 'auto' | 1024 | 2048 | 4096 | 8192;
   readonly bits: 8 | 16;
 }

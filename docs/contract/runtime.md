@@ -79,7 +79,7 @@ declare function createNodeGpu(opts?: { profile?: GpuProfile; adapter?: string }
 2. `openGpu` calls `gpu.requestAdapter({ powerPreference: 'high-performance' })`, then `adapter.requestDevice()` with the profile's features and limits (1.2). It requests a new adapter for every device: an adapter is consumed by `requestDevice`, and a reused one returns a device that is already lost.
 3. `openGpu` rejects with `GpuUnavailableError` when `requestAdapter` returns `null` or when a check of 1.4 fails. The message names the missing item.
 4. `openGpu` installs the `device.lost` handler that sets `lost` and `lostInfo` and calls the listeners, and an `uncapturederror` listener (5.8).
-5. In the application the engine worker calls `openGpu(navigator.gpu, { profile: 'max' })`. The environment variable `OROGEN_GPU_PROFILE=core`, read by the main process and passed to the worker, forces `core` for debugging; `OROGEN_GPU_LOG=1`, passed the same way, sets `log`.
+5. In the application the engine worker calls `openGpu(navigator.gpu, { profile: 'max' })`. The environment variable `OROGEN_GPU_PROFILE=core` forces `core` for debugging, and `OROGEN_GPU_LOG=1` sets `log`. The main process reads the first, refuses to start on any value but `core` and `max`, and gives it to the page as `PlatformApi.gpuProfile` (8.6). It passes both to the worker by its environment: the renderer process inherits it, and a worker with Node integration reads `process.env` (measured in Electron 44.7.0).
 6. `createNodeGpu` defaults: `profile` from `OROGEN_GPU_PROFILE`, else `'max'`; `adapter` from `OROGEN_GPU_ADAPTER`, else none. It passes `log: true` when `OROGEN_GPU_LOG` is `1`.
 
 ### 1.2 Profiles
@@ -1607,7 +1607,7 @@ which makes `[data.buffer]` a transfer list without a cast.
 | Platform | Worker | Entry file | Runner |
 | --- | --- | --- | --- |
 | Node: command line, tests | a `node:worker_threads` worker | `src/platform/node/cpu-worker.ts` | `createNodeCpuRunner()` in `src/platform/node/cpu.ts` |
-| Application | a dedicated Web Worker created by the engine worker; it needs and has no Node integration | `src/platform/electron/worker/cpu-worker.ts` | `createWebCpuRunner()` in `src/platform/electron/worker/cpu.ts` |
+| Application | a dedicated Web Worker created by the engine worker; it needs no Node integration and uses none | `src/platform/electron/worker/cpu-worker.ts` | `createWebCpuRunner()` in `src/platform/electron/worker/cpu.ts`, over the queue of `cpu-queue.ts` beside it, which holds the rules below and no worker API |
 
 1. Both entry files import `src/core/nodes/index.ts`, which runs every `defineCpuTask` of the product in that thread, and call `serveCpuTasks`. `serve.ts` itself imports the core's own tasks (`decodeImage`, `decodeRaw`), so they are defined in every thread that serves. A task is found by name in the table `defineCpuTask` fills (`engine.md`, Module scope); an unknown name rejects. A task that is defined only in the calling thread, for instance in a test file, therefore cannot run. `createNodeCpuRunner(entry?: URL)` takes another entry file than the product's; only a test of the runner itself passes one.
 2. One CPU worker exists per engine. It is started at the first `ctx.cpu` call. Tasks run one at a time, in call order.
@@ -1618,10 +1618,12 @@ which makes `[data.buffer]` a transfer list without a cast.
 7. In the application a single `ArrayBuffer` is limited to 2 145 386 496 bytes (measured). A full read of an 8129² four-channel field is 1 057 290 256 bytes and fits.
 8. The Node runner starts its worker with `workerData: {}`, which the TIFF decoder's library needs in a worker thread (`export-unreal.md` 4.7), and keeps the process alive only while a task is in progress: an idle worker does not hold a command-line program or a test open. `dispose()` rejects what is pending and resolves when every worker thread has stopped.
 
-A Web Worker created from inside a worker is standard in Chromium but is not
-yet verified in this project's Electron build. Should it fail, the page creates
-the CPU worker and hands the engine worker one end of a `MessageChannel`;
-`serveCpuTasks` and `CpuRunner` are unchanged by that.
+Measured in Electron 44.7.0: the engine worker creates the CPU worker with
+`new Worker(…)` from the script beside its own, and that worker runs. It has
+Node integration as well, as every worker of the window does (`require` and
+`process` exist in it); nothing in it uses either, and its entry file is
+type-checked without Node's types (8.4). It ends with the engine worker that
+created it.
 
 ---
 
@@ -1753,7 +1755,7 @@ declare function serveSession(session: EngineSession, port: SessionPort): () => 
 ```
 
 `EngineClient` wraps `createSessionClient(worker)`; the engine worker calls
-`serveSession(session, self)` in the task that creates the session (8.3). The
+`serveSession` in the task that creates the session (8.3). The
 server moves the pixels of a thumbnail, so nothing else on the engine thread
 keeps a `thumbnail` event's `rgba`.
 
@@ -1914,6 +1916,7 @@ Unreal, whose frame is +X forward, +Y right, +Z up.
 6. **On demand.** A frame is drawn when the camera, the display options, the size, the content or a loan changed, or when the renderer's own progressive work advanced. There is no free-running loop. Frames are scheduled with the worker's `requestAnimationFrame` and submitted from that callback, which runs while the evaluator awaits the GPU; frames and slices therefore alternate on the queue. Measured with 8 ms slices, two in flight: viewport frames completed in a median of 13 ms (Linux; *to calibrate* on the target).
 7. **Hidden windows.** In a window that was never shown, the page's `requestAnimationFrame` fires once per second; the worker's fires at the display rate. Nothing in the viewport path waits for a page frame.
 8. **Size.** The canvas's backing size is `round(width × dpr)` by `round(height × dpr)`, clamped to `caps.limits.maxTextureDimension2D`. The canvas element is transferred once; when the interface creates a new element it calls `attach` again.
+9. **A window that cannot present.** Measured under a virtual display (Xvfb, where Chromium composites without a GPU): the first frame drawn to a WebGPU canvas costs the device. No shared image can back the swap chain, the GPU process destroys the device (`Device was destroyed.`), and every device recovery opens goes the same way with its first frame, until recovery gives up (7.8 rule 3). A renderer therefore confirms the first frame it draws: mapping a buffer is the one call a lost device refuses (5.9), and the GPU process answers in the order asked, so a mapping asked for after the frame and granted says that the frame did no harm. A renderer whose device is lost before any frame of its was confirmed draws nothing for the rest of its life, on any canvas, and says so once with `console.warn`: everything else of the application works, and the viewport stays empty.
 
 ### 7.6 Builds
 
@@ -1980,6 +1983,7 @@ increase, so one comparison settles it.
 3. Three failures in a row, or a third device loss within 120 s, end automatic recovery: the session emits `engine-error` with `fatal: true` and waits for `retryDevice()`. The limit is deliberate. Windows stops with a system error after five GPU resets within 60 s, and Chromium refuses a page a new adapter after repeated GPU process crashes; a loop that kept retrying would reach both.
 4. A node that was running at two losses in a row, without completing between them, is not run again (5.9 rule 6).
 5. Imported files are read again from disk by their nodes. Nothing the user made is held only on the GPU.
+6. **What the window needs after a loss.** Measured in Electron 44.7.0 on Linux, in a window that was never shown, with the GPU process killed: the session's recovery completes in under a second, and two things of the window do not come back with the device. A canvas whose control was transferred before the loss presents nothing that is drawn on the new device; a canvas element created afterwards does. The interface therefore attaches a new canvas element (7.5 rule 8) at every `device-ready` that follows a `device-lost`. And the worker's `requestAnimationFrame` fires for the first frames after the loss and then never again, with the old canvas or a new one. A renderer therefore backs every frame it requests with a timer and draws when either fires, 250 ms after the request at the latest. Neither is verified in a visible window or on Windows.
 
 ---
 
@@ -2028,6 +2032,8 @@ new BrowserWindow({
 3. The page loads only files packaged with the application. Navigation and `window.open` are denied.
 4. The engine worker is created by the top-level frame, never by an iframe: a worker has Node integration only when the frame that creates it has it.
 5. While a build runs the main process holds `powerSaveBlocker.start('prevent-app-suspension')`.
+6. The window is created with `show: false` and shown when its page is ready to be; in test mode never. Closing it asks the page first (`onCloseRequested`, 8.6) and closes on `confirmClose`; a page that has no listener, or is gone, is not asked.
+7. The native menu offers commands of the interface (8.8) and sends the chosen command's id to the page (`onMenuCommand`). It shows their keys and registers none: the page's one key listener dispatches keys (8.8 rule 3), and a registered accelerator would run the command a second time. On Windows and Linux the application menu would be a bar inside every window, above the menu bar the page draws (8.7 rule 3): the window does not show it (`setMenuBarVisibility(false)`), and the menu remains the application's. macOS shows it outside the window. Measured on Linux in a window that was never shown: with the bar the page is 26 pixels lower. Not verified in a visible window or on Windows.
 
 **Test mode.** `src/platform/electron/main/` implements the test mode that
 `testing.md` 2.9 defines: the table there is a requirement on the main process.
@@ -2040,13 +2046,30 @@ switch that `OROGEN_ELECTRON_GPU=software` leaves out on Linux (1.6).
 
 `src/platform/electron/worker/engine-worker.ts` is the worker's entry. It:
 
-1. calls `openGpu(navigator.gpu, { profile })`; on `GpuUnavailableError` it posts `engine-error` with `fatal: true` and stops;
+1. calls `openGpu(navigator.gpu, { profile })`; on `GpuUnavailableError`, and when step 2 rejects, it posts `engine-error` with `fatal: true` and stops;
 2. calls `createEngine` with `createRegistry(nodes)` (5.1), `NodeFileSource(null)`, `createWebCpuRunner()` and the default budget of 2.4;
 3. creates the viewport renderer and calls `createSession`, passing as `build` a function that calls `buildToFolder` of `src/export/folder.ts` with `NodeFileSink` (7.1);
-4. serves `ClientMessage`s by calling the session, and posts every `EngineEvent`: `serveSession(session, self)` (7.2), in the same task as step 3.
+4. serves `ClientMessage`s by calling the session, and posts every `EngineEvent`: `serveSession(session, port)` (7.2), in the same task as step 3. `port` is the worker's own scope behind a queue, below.
 
 The interface sends `setPreferences` and `setProject` before its first
 `setDocument`.
+
+The build puts the worker beside the page as `engine-worker.js`
+(`testing.md` 8.2), and the page creates it with
+`new Worker('./engine-worker.js')`. The page talks from that moment; the session
+exists only after steps 1 to 3. The worker therefore listens from its first
+task and keeps what arrives, the canvas of an `attach` included; of documents
+sent in a row it keeps the last, as the session would (7.3). When the server
+begins to listen the kept messages are handed to it in order, in a microtask,
+so that `device-ready` comes before the first answer to them (7.7). When the
+worker stopped in step 1, every call is answered with
+`The engine did not start: <message>` (7.2, `ok: false`) and `dispose` with
+success, so that no promise of the client waits for ever. Such a worker has no
+session, so `retryDevice` reaches nobody: only another worker tries again
+(`engine.retryDevice`, 8.8 rule 8). A worker whose
+script does not load at all says nothing: the page hears of it through the
+`error` event of its `Worker` (8.5). When the session is disposed the worker
+destroys its device; ending the worker is the page's `terminate()`.
 
 The worker is built as a classic script, not a module, and obtains Node's
 built-in modules with `require('node:…')`. That combination is the one
@@ -2054,7 +2077,10 @@ measured to work in Electron 44; a module worker with `import 'node:fs'` is not
 verified and is not used. Code shared with the command line (`src/export/`,
 `src/platform/node/files.ts`) is written with `import … from 'node:…'` and the
 worker's bundle leaves those imports external as `require` calls. Only
-`node:fs`, `node:path` and `node:zlib` are used in the worker.
+`node:fs`, `node:path` and `node:zlib` are used in the worker, and none in
+the CPU worker: the build of either fails when a file of this repository
+imports another Node module, which the bundler would otherwise replace with
+an empty object.
 
 ### 8.4 Module boundaries
 
@@ -2076,6 +2102,16 @@ from `src/export/`, `src/viewport/` or `src/platform/`, except the types of
 `src/platform/electron/ipc.ts`. The types of a build that the interface shows
 (`BuildResult`, `BuildEvent`, `BuildPlan`) reach it through `runtime.ts`.
 
+One program has one set of libraries, so each row with libraries of its own is
+a `tsconfig` of the repository root, and `npm run check` runs them all
+(`testing.md` 8.1): `tsconfig.core.json` (`src/core/`), `tsconfig.json` (the
+rows with Node types, `ipc.ts`, `tests/`, `tools/` and the build
+configuration), `tsconfig.worker.json` (`src/platform/electron/worker/`),
+`tsconfig.viewport.json` (`src/viewport/`, and the entry of the CPU worker,
+which runs without Node and is therefore checked without Node's types as
+well) and `tsconfig.app.json` (`src/app/`). The files of `src/core/` that a
+program imports are checked again under that program's libraries.
+
 ### 8.5 Stores and history
 
 There are three stores, each a zustand vanilla store (`createStore` from
@@ -2092,8 +2128,17 @@ Engine state changes many times per second (10 progress events per second per
 running node). It is kept out of the document store so that no undo snapshot,
 no document subscriber and no save ever sees it. Components subscribe to
 `engineStore` per node id. Thumbnail pixels are in no store: `src/app/engine/thumbnails.ts`
-keeps the last `ImageData` per node id and node components draw it into a plain
-2D canvas through a ref.
+keeps the last `ImageData` per node id, with the content key and the resolution
+it was made from, and node components draw it into a plain 2D canvas through a
+ref. A component subscribes to the cache by node id and draws when the cache
+tells it: a thumbnail of the same key from a finer field changes no store.
+
+Each store file exports its store (`docStore`, `engineStore`, `uiStore`) and
+the function that makes another one, for tests (`createDocStore`,
+`createEngineStore`, `createUiStore`). `ui-store.ts` also exports `PanelId`
+(8.7), `setSelection`, and what ties the selection to the view (7.4), each a
+transaction that is not undoable: `viewOutput` and `selectNodes`, which set
+the view by `viewAfterSelect`, and `setViewLocked`, the pin.
 
 ```ts
 import type { Patch } from 'immer';
@@ -2124,7 +2169,7 @@ interface DocState {
   undo(): void;
   redo(): void;
   load(doc: GraphDoc, path: string | null): void;  // replaces the document, clears the history
-  markSaved(path: string): void;
+  markSaved(path: string, revision?: number): void;   // the file holds that revision; default: the document as it is now
 }
 
 interface NodeRuntime {
@@ -2146,6 +2191,7 @@ interface EngineState {
   readonly keys: Readonly<Record<string, string>>;             // node id → contentKey of the latest document sent
   readonly thumbnailKeys: Readonly<Record<string, string>>;    // node id → contentKey of the thumbnail last received
   readonly view: { readonly revision: number; readonly resolution: number; readonly draft: boolean } | null;
+  readonly viewRequestId: number | null;                       // the newest request made for the view, a draft or a build
   readonly evaluation: { readonly requestId: number; readonly purpose: 'view' | 'draft' | 'thumbnails' | 'build';
                          readonly fraction: number; readonly etaMs: number | null } | null;
   readonly build: {
@@ -2170,9 +2216,34 @@ interface UiState {
 }
 ```
 
-`engineStore` is a pure reduction of the event stream by the rule of 7.7. A
+`engineStore` is a pure reduction of the event stream,
+`reduceEngineEvent(state, event)`, by the rule of 7.7 and one more: an event of
+a request made for thumbnails is ignored for a node whose record is from
+`viewRequestId`. That is the `requestId` of the newest `request-start` whose
+purpose is not `'thumbnails'`, or of a newer `view-updated`: a view that names
+nothing is shown under a request id of its own (7.4 rule 5), and from then on
+the thumbnails requests speak for every node. An idle thumbnail evaluation runs
+at another resolution, and the session aborts it before its first node when one
+of its nodes is too slow (7.3 rule 9). Measured in a session, by the rule of 7.7
+alone such an abort left the nodes of a terrain that was evaluated and on
+screen `'idle'`, and an evaluation that ran replaced their times by those of
+the thumbnail resolution.
+
+`eval-start` sets the nodes its plan calls `run` or `blocked` to `'idle'` under
+its request; the others keep their record until their `node-done`. A
 `node-skipped` event with reason `'aborted'` or `'device-lost'` sets the node to
-`'idle'`. A node's thumbnail is stale when `keys[id] !== thumbnailKeys[id]`.
+`'idle'`. A `node-done` with `cached: true` leaves `wallMs` and `peakBytes` as
+the node's last run gave them. `evaluation` is set by `request-start` and
+cleared by the `eval-end` of its request, for a build by its `build-end`: while
+a build converts and writes, `evaluation` is still the build's, so
+`evaluation === null` never reads "nothing is running" in the middle of one.
+`device-lost` clears `view`. An `engine-error` that is not fatal changes no
+state: whoever shows it subscribes to the client.
+A node's thumbnail is stale when `keys[id] !== thumbnailKeys[id]`.
+`nodes` keeps the last record of every node an event named, a node that was
+deleted since included: the undo that brings the node back finds it. Whoever
+shows the state or the error of nodes reads the records of the nodes the
+document holds; the status bar and the list of errors do.
 `build-start` resets every member of `build` and sets `running` and
 `requestId`; the events named in the comments fill the others; `build-end`
 clears `running` and sets `lastStatus`. What the last build wrote and reported
@@ -2182,10 +2253,10 @@ stays readable in `plan`, `problems` and `result` until the next one starts.
 **Transactions.**
 
 1. `transact` runs the recipe with immer's `produceWithPatches`. The recipe calls the commands of 4.6 and nothing else touches the draft. A recipe that changes nothing has no effect at all.
-2. A transaction with patches adds a history entry, clears `future`, increments `revision` and sets `unsaved`.
+2. A transaction with patches adds a history entry, clears `future`, increments `revision` and sets `unsaved`. The entry's `selectionBefore` is the selection when the transaction begins, its `selectionAfter` the selection when the recipe returns, without the ids of nodes the document no longer holds: a command that selects what it made sets the selection inside its recipe. A recipe that throws changes nothing, and the error reaches the caller. `unsaved` is `false` again when undo or redo arrives at the state that was loaded or last saved. `markSaved(path, revision)` with a revision that is no longer the document's, because the document changed while the file was written, sets the path and leaves the project unsaved, at every place of the history: the file holds a state no undo is known to lead back to. The shell writes the file again when the document changed meanwhile, three times at the most, and then says that the file lacks the last changes.
 3. **Merging.** A transaction is merged into the last entry instead of adding one when both have the same non-null `mergeKey` and either a gesture with that key is in progress or less than 600 ms have passed since the entry's `time`. The merged entry's forward patches are the old ones followed by the new; its inverse patches are the new ones followed by the old.
-4. **Gestures.** `beginGesture(key)` on pointer down, `endGesture()` on pointer up. They also call `beginGesture` and `endGesture` of the engine (7.1). Everything transacted with that key in between is one undo step, however long the drag. Keys: `param:<nodeId>:<name>` for a parameter control, `move:<id of the drag>` for moving nodes, `group:<groupId>` for moving or resizing a group.
-5. **Not undoable.** `undoable: false` adds no entry and leaves `future` intact. It is used for, and only for, `setView`, `setGraphViewport`, and `setSettings` of `buildResolution` or `previewLevel`. Such a transaction touches no other path, and no undoable transaction touches those paths; that is what keeps earlier patches applicable. Changes under `ui` do not set `unsaved`.
+4. **Gestures.** `beginGesture(key)` on pointer down, `endGesture()` on pointer up. `EngineClient` calls `beginGesture` and `endGesture` of the engine (7.1) when `DocState.gesture` begins and ends. Everything transacted with that key in between is one undo step, however long the drag, and a step of its own: the first transaction of a gesture merges into an entry that was there before the gesture only by the 600 ms of rule 3. Keys: `param:<nodeId>:<name>` for a parameter control, `move:<id of the drag>` for moving nodes, `group:<groupId>` for moving or resizing a group.
+5. **Not undoable.** `undoable: false` adds no entry and leaves `future` intact. It is used for, and only for, `setView`, `setGraphViewport`, and `setSettings` of `buildResolution` or `previewLevel`. Such a transaction touches no other path, and no undoable transaction touches those paths; that is what keeps earlier patches applicable. A transaction that breaks this throws and changes nothing. Changes under `ui` do not set `unsaved`; a change of `buildResolution` or `previewLevel` sets it until the next save.
 6. `undo` applies the last entry's inverse patches and moves it to `future`; `redo` the reverse. Both increment `revision`, restore the entry's selection and end any gesture.
 7. The history holds at most 500 entries and at most 64 MiB of patches; the oldest are dropped.
 8. While nodes are dragged their positions live in `uiStore`; one `moveNodes` transaction is made when the drag ends.
@@ -2201,13 +2272,54 @@ added or removed, a node's `type`, `version`, `params` or `bypass`, or
 `ui.view`. `EngineClient` subscribes to `docStore` and calls
 `setDocument(doc, revision)` when `engineRevision` has changed. Moving,
 renaming or collapsing a node, editing a group and panning the graph send
-nothing.
+nothing. The revision the engine reports in `view-updated` is therefore
+compared with `engineRevision`, not with `revision`.
+
+**The engine client.**
+
+```ts
+/** src/app/engine/client.ts */
+interface EngineClient extends EngineSession {
+  readonly thumbnails: ThumbnailCache;              // src/app/engine/thumbnails.ts
+  connect(port: SessionPort): void;                 // a new engine worker in place of one that is gone
+}
+
+declare function createEngineClient(opts: {
+  readonly port: SessionPort;                       // the engine worker (7.2)
+  readonly doc: StoreApi<DocState>;
+  readonly engineState: StoreApi<EngineState>;
+  readonly preferences?: EnginePreferences;         // default DEFAULT_PREFERENCES (2.4)
+  readonly thumbnails?: ThumbnailCache;             // default the application's cache
+}): EngineClient;
+```
+
+When it is created the client sends `setPreferences`, `setProject` and the
+document under `engineRevision`, in that order (8.3). Every event goes to the
+thumbnail cache, then to `engineStore`, then to the client's subscribers. The
+client keeps what a session is told that `docStore` does not hold: the
+preferences, the pause, the thumbnail list, the camera and the display.
+`connect(port)` leaves the session it had, whose pending `inspect`, `build` and
+`pick` reject, sets `engineStore` back to its initial state and tells the
+session behind the new port everything again, the document last. The state it
+sets is a new object with a `device` object of its own, so that the store's
+subscribers are told even when the store was still at its first state. Nothing
+the user made is lost with a worker: the document was never there. The canvas
+is: the viewport panel attaches a new one when the store's `device` is another
+object whose state is `'starting'` (7.5 rule 8), which only `connect` makes. The
+page calls `connect`: `src/app/main.tsx` holds the worker, and on
+`engine.restart` (8.8 rule 8) it terminates the worker it has, creates another
+and connects it. Nothing detects a worker that has stopped answering: a
+dedicated worker ends only with its page or by `terminate()`, and the user
+restarts an engine that hangs. An `error` event of the worker is an `engine-error` to the store
+and the subscribers, fatal while `device.state` is `'starting'`: a worker whose
+script did not load sends nothing else.
 
 ### 8.6 The bridge to the main process
 
-The preload script exposes one object, typed in
-`src/platform/electron/ipc.ts`; `src/app/platform.ts` wraps it, and panels call
-only that wrapper.
+The preload script exposes one object, `window.orogenPlatform`, typed in
+`src/platform/electron/ipc.ts` (`PlatformApi`, and `PlatformGlobal` for the
+window that holds it); `src/app/platform.ts` wraps it, and panels call only
+that wrapper.
 
 ```ts
 interface Preferences {
@@ -2219,6 +2331,8 @@ interface Preferences {
 
 interface PlatformApi {
   readonly gpuProfile: GpuProfile;
+  readonly testMode: boolean;                            // OROGEN_TEST=1: the page assigns window.orogenTest (testing.md 2.9)
+  readonly launchProject: string | null;                 // the project file given as the first argument, absolute; the page opens it at start-up
   openProjectDialog(): Promise<string | null>;
   saveProjectDialog(suggestedPath?: string): Promise<string | null>;
   openFileDialog(extensions: readonly string[]): Promise<string | null>;
@@ -2238,6 +2352,10 @@ interface PlatformApi {
 
 Project files are small JSON and go through this bridge as text. Nothing else
 does: imported images and exported files are handled in the engine worker.
+`readTextFile` and `writeTextFile` take absolute paths and reject for any
+other, and for a file above 64 MiB. Preferences are one JSON file in the
+user-data folder; a member that is not of its type takes its default, and
+`setPreferences` replaces the members its patch names.
 
 ### 8.7 Panels
 
@@ -2252,8 +2370,16 @@ interface PanelDef {
   readonly placement: { readonly relativeTo?: PanelId; readonly direction?: 'left' | 'right' | 'above' | 'below' | 'within' };
   readonly commands: readonly CommandDef[];                // 8.8
   readonly keys: readonly KeyBinding[];
+  readonly menu?: readonly MenuEntry[];                    // 8.8
 }
 ```
+
+`PanelDef`, `MenuEntry` and the types of 8.8 are declared in
+`src/app/ui/types.ts` and exported by `src/app/ui/index.ts`, which is where a
+panel imports them from (rule 2). A panel's component takes no props: it
+reaches the `CommandContext` with `useCommandContext()` and the shell's
+services (the key and the title of a command, whether it is enabled, the
+notification area) with `useApp()`, both of `src/app/ui/`.
 
 | Panel | Contents | Reads | Writes |
 | --- | --- | --- | --- |
@@ -2265,11 +2391,11 @@ interface PanelDef {
 
 1. Each panel is a folder `src/app/panels/<id>/` whose `index.ts` exports its `PanelDef` as `panel`. `src/app/registry.ts`, the panel registry (not the node registry of 5.1), imports the five and exports them as a list; it is written once and then frozen.
 2. A panel imports from `src/app/state/`, `src/app/engine/`, `src/app/ui/`, `src/app/platform.ts` and the core's entry modules `runtime.ts` and `api.ts`; it takes the node registry from `CommandContext` (8.8). It never imports another panel or `src/app/shell/`. Panels affect each other only through the stores and through commands.
-3. The shell (`src/app/shell/`) owns the window frame, docking, the menu, the command palette, key dispatch, the status bar, toasts and the theme. It mounts panels from the panel registry into `dockview-react`. Panels with `keepMounted` use dockview's `'always'` renderer: the default renderer removes a hidden panel's element from the document, which would discard a canvas whose control was transferred.
+3. The shell (`src/app/shell/`) owns the window frame, docking, the menu, the command palette, key dispatch, the status bar, toasts and the theme. It draws the menu bar inside the window, from the menu entries of the command registry (8.8); the native menu is the fixed list of the main process (8.2 rule 7). It mounts panels from the panel registry into `dockview-react`. Panels with `keepMounted` use dockview's `'always'` renderer: the default renderer removes a hidden panel's element from the document, which would discard a canvas whose control was transferred.
 4. Colours, spacing and fonts come only from the CSS custom properties defined in `src/app/shell/theme.css`. A panel's own styles are in CSS modules inside its folder.
 5. The inspector has one control per `ParamDef` kind, in `src/app/panels/inspector/controls/<kind>.tsx`. A new kind is a change to `engine.md`. The curve control draws with `evalCurve` and the gradient control with `bakeGradient` (`engine.md` 4.9), so what the user sees is what kernels get. The control of a direction (`unit: 'angle'`, range 0..360) draws 0° pointing right and 90° pointing down, as the top view shows it (`engine.md` 1.8). A control is hidden while its `visibleWhen` does not hold (`engine.md` 4.3).
 6. The inspector shows a `length` or `height` value in metres beside the stored value and accepts either (`engine.md` 1.6); it stores the fraction.
-7. The dock layout is saved to the preferences with a schema version. A layout that fails to load is replaced by the default from the panels' `placement`. Pop-out windows are not used: a WebGPU canvas moved to another window's document is untested.
+7. The dock layout is saved to the preferences with a schema version, as `{ version, dock }` with `dock` in dockview's own form. A layout that fails to load is replaced by the default from the panels' `placement`: one of another version, one that does not hold exactly the panels of the registry, and one dockview refuses. In a `placement`, a `direction` without `relativeTo` is that edge of the whole layout, and a panel without either is the first, which fills it. A panel cannot be closed. Pop-out windows are not used: a WebGPU canvas moved to another window's document is untested.
 
 ### 8.8 Commands and keys
 
@@ -2281,7 +2407,7 @@ interface CommandContext {
   readonly engine: EngineSession;            // the EngineClient
   readonly platform: PlatformApi;
   readonly registry: NodeRegistry;           // createRegistry(nodes), made once in src/app/main.tsx (5.1)
-  run(commandId: string): void;
+  run(commandId: string): void;              // runs the command when it is enabled; throws for an id nobody declares
 }
 
 interface CommandDef {
@@ -2296,13 +2422,22 @@ interface KeyBinding {
   readonly command: string;
   readonly scope: PanelId | 'global';
 }
+
+interface MenuEntry {
+  readonly menu: string;                     // the title of a menu of the menu bar: 'File', 'Edit', 'View', 'Graph'
+  readonly command: string;                  // the item shows the command's title and its current key
+  readonly group?: string;                   // entries of one group stay together; a separator is drawn between groups
+}
 ```
 
 1. Every user action that is not direct manipulation is a command: menus, the palette, keys and buttons all call `run(commandId)`. A command's owner is the prefix of its id: a panel id, or `file`, `edit`, `view`, `engine` for the shell.
 2. **Keys.** A key is written as modifiers in the order `Mod`, `Ctrl`, `Alt`, `Shift`, then a key name derived from `KeyboardEvent.code`: `KeyB` → `B`, `Digit0` → `0`, otherwise the code itself (`Tab`, `Delete`, `F2`, `Backquote`, `Home`). `Mod` is Control on Windows and Linux. Bindings are independent of the keyboard layout.
-3. **Dispatch.** One listener, owned by the shell. A binding scoped to the focused panel wins over a `global` one. While a text field has focus, only bindings with `Mod` or a function key are considered, and `Mod+Z`, `Mod+Y`, `Mod+A`, `Mod+C`, `Mod+X`, `Mod+V` are left to the field. Copy, cut and paste in the graph are handled through the DOM clipboard events, not through bindings.
-4. **Registration.** At start-up the shell collects commands and bindings from the panel registry and from its own list. Two commands with one id, a binding to an unknown command, or two bindings with the same key and scope stop start-up with a message naming both owners.
-5. **User keys.** `Preferences.keymap` replaces the default key of a command. The palette and tooltips show the current key.
+3. **Dispatch.** One listener, owned by the shell. A binding scoped to the focused panel wins over a `global` one. While a text field has focus, only bindings with `Mod` or a function key are considered, and `Mod+Z`, `Mod+Shift+Z`, `Mod+Y`, `Mod+A`, `Mod+C`, `Mod+X`, `Mod+V` are left to the field; a number field of `src/app/ui/` that has the focus counts as one. While a dialog, the palette, a menu or a popover is open, no binding runs: the keyboard is theirs. Copy, cut and paste in the graph are handled through the DOM clipboard events, not through bindings.
+4. **Registration.** At start-up the shell collects commands, bindings and menu entries from the panel registry and from its own list. Two commands with one id, a binding or a menu entry to an unknown command, or two bindings with the same key and scope stop start-up with a message naming both owners; so do a command whose id does not begin with its owner (rule 1) and a binding of a panel in another scope than its own.
+5. **User keys.** `Preferences.keymap` replaces the default keys of a command by the one it names, in the scope they had; `''` leaves the command without a key. A default binding of another command with that key in that scope gives way. The palette, the menus and tooltips show the current key.
+6. **The edit commands.** `edit.cut`, `edit.copy`, `edit.paste`, `edit.delete` and `edit.selectAll` are the shell's and go where the focus is: to the text field that has it; else to the focused panel, as its command `<panel>.<name>` (`graph.delete`, `graph.selectAll`) when the panel declares one, and for cut, copy and paste otherwise as the DOM clipboard event of that name, dispatched at the panel's focused element with a `clipboardData` of its own. What a panel puts there as `text/plain` on cut or copy, having prevented the default, is written to the clipboard; on paste the clipboard's text is in it.
+7. **Menus.** The menus of the menu bar are `File`, `Edit`, `View` and `Engine`, then the menus that panels name, then `Help`. A panel adds an item to any of them with a `MenuEntry` of its `PanelDef`.
+8. **The engine's commands.** `engine.togglePause` pauses and resumes previews. `engine.retryDevice` is enabled while `device.state` is `'failed'`: an engine that lost its device is asked to recover it (`retryDevice`, 7.8 rule 3), and one that never had a device (`device.caps` is `null`: its worker stopped, 8.3) gets another worker. `engine.restart` ends the engine worker, whether it answers or not, and connects another (8.5); it is always enabled, and the shell says in the notification area that it happened.
 
 Default bindings. A panel declares the bindings of its own scope and may add
 others in that scope; `global` bindings are the shell's.
@@ -2311,6 +2446,7 @@ others in that scope; `global` bindings are the shell's.
 | --- | --- | --- |
 | `Mod+N`, `Mod+O`, `Mod+S`, `Mod+Shift+S` | `file.new`, `file.open`, `file.save`, `file.saveAs` | global |
 | `Mod+Z`; `Mod+Shift+Z`, `Mod+Y` | `edit.undo`; `edit.redo` | global |
+| `Mod+Comma` | `edit.preferences` | global |
 | `Mod+Shift+P`, `F1` | `view.commandPalette` | global |
 | `Backquote` | `engine.togglePause` | global |
 | `Mod+B` | `build.start` | global |
@@ -2385,14 +2521,15 @@ src/
     node/                        gpu.ts files.ts cpu.ts cpu-worker.ts
     electron/
       ipc.ts                     PlatformApi and the channel list
-      main/                      main.ts switches.ts window.ts menu.ts preferences.ts
+      main/                      main.ts launch.ts switches.ts window.ts menu.ts preferences.ts files.ts
       preload/                   preload.ts
-      worker/                    engine-worker.ts cpu-worker.ts cpu.ts
+      worker/                    engine-worker.ts cpu-worker.ts cpu.ts cpu-queue.ts
   app/
     main.tsx  registry.ts  platform.ts
     state/                       doc-store.ts engine-store.ts ui-store.ts
     engine/                      client.ts thumbnails.ts
-    ui/                          shared controls: scrub field, buttons, popover wrappers
+    ui/                          shared controls: scrub field, buttons, popover wrappers; types.ts (PanelDef, the types of 8.8);
+                                 app.tsx (useApp, useCommandContext); index.ts, what a panel imports
     shell/                       frame, docking, menu, palette, keys, status bar, theme.css
     panels/
       graph/  viewport/  inspector/  library/  build/
@@ -2418,7 +2555,7 @@ Each application owner also owns `tests/ui/<owner>/**` under its own name
 
 What makes parallel panel work safe:
 
-1. The frozen files are complete before panel work starts: the stores with their full state shape, `EngineClient`, the protocol, `PlatformApi`, the panel registry listing all five panels, the shared controls and the theme tokens. A panel folder starts as a `PanelDef` with an empty component.
+1. The frozen files are complete before panel work starts: the stores with their full state shape, `EngineClient`, the protocol, `PlatformApi`, the panel registry listing all five panels, the shared controls and the theme tokens. A panel folder starts as a `PanelDef` with an empty component. Two start with more, because the shell's global bindings name commands of theirs and a binding to an unknown command stops start-up (8.8 rule 4): `build` declares `build.start` and `build.cancel`, and `viewport` declares `viewport.toggleTop` and attaches the canvas the engine worker draws to.
 2. A panel adds a command, a key or a menu entry in its own `PanelDef`, never in a shared file.
 3. A panel that needs new state in a store, a new shared control, a new bridge method or a new engine method asks the owner of that file. It does not keep a private copy of shared state.
 4. Document changes are made only with the commands of 4.6. A panel that needs a new kind of change asks for a new command in `src/core/graph/commands.ts`.

@@ -50,7 +50,7 @@ export interface ManifestLandscape {
 }
 
 export interface ManifestTexture {
-  content: 'color' | 'mask' | 'normal';
+  content: 'color' | 'data' | 'mask' | 'normal';
   file: string;
   size: TextureSide;
   channels: 1 | 3;
@@ -107,6 +107,7 @@ export interface BuildReport {
     max: number | null;
   }[];
   weightsMs: number | null;                      // duration of phase 3
+  commitMs: number | null;                       // duration of phase 4: every file closed and the manifest written; null when the build did not reach it
   height: null | {
     measuredMin: number; measuredMax: number;    // normalised heights
     valueMin: number; valueMax: number;          // normalised heights mapped to codes 0 and 65535
@@ -256,12 +257,12 @@ export const MANIFEST_SCHEMA = {
       items: {
         type: 'object', required: ['content', 'file', 'size', 'channels', 'bits', 'srgb', 'covers', 'sampling'],
         properties: {
-          content: { enum: ['color', 'mask', 'normal'] },
+          content: { enum: ['color', 'data', 'mask', 'normal'] },
           file: { type: 'string' },
           size: { enum: [1024, 2048, 4096, 8192] },
           channels: { enum: [1, 3] },
           bits: { enum: [8, 16] },
-          srgb: { type: 'boolean', description: 'True when the file holds sRGB-encoded colour.' },
+          srgb: { type: 'boolean', description: 'True when the file holds sRGB-encoded colour: content color. False for data, which is stored as it is.' },
           covers: { const: 'landscapeExtent' },
           sampling: { const: 'texel-center' },
           normalEncoding: { const: 'xyz-landscape-axes', description: 'Present for content normal.' },

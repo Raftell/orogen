@@ -12,6 +12,13 @@ import { spawnSync } from 'node:child_process';
 
 const CATEGORIES: readonly string[] = ['generate', 'adjust', 'filter', 'simulate', 'select', 'color', 'surface'];
 
+/**
+ * The node reference of the user documentation. It is written by tools/node-reference.ts from the registry, and
+ * the unit layer fails while it is behind (tests/unit/docs.test.ts): whoever changes a node hands in the page the
+ * tool makes of it. Nobody edits it by hand.
+ */
+const NODE_REFERENCE = 'docs/user/nodes.md';
+
 /** What each application owner may change besides its tests and change requests (runtime.md 8.10). A pattern ending in `/` is a folder. */
 const APPLICATION: Readonly<Record<string, readonly string[]>> = {
   platform: ['src/platform/'],
@@ -46,7 +53,7 @@ export function ownerOf(branch: string): Owner | null {
     return { name: 'export', requests: 'export', paths: ['src/core/nodes/io/', 'tests/nodes/io/', 'src/export/', 'tests/export/', 'unreal/', 'docs/user/'] };
   }
   if (kind === 'nodes' && parts.length >= 3 && CATEGORIES.includes(second!)) {
-    return { name: `nodes/${second}`, requests: second!, paths: [`src/core/nodes/${second}/`, `tests/nodes/${second}/`] };
+    return { name: `nodes/${second}`, requests: second!, paths: [`src/core/nodes/${second}/`, `tests/nodes/${second}/`, NODE_REFERENCE] };
   }
   if (kind === 'ui' && parts.length >= 3 && Object.hasOwn(APPLICATION, second!)) {
     return { name: `ui/${second}`, requests: `ui-${second}`, paths: [...APPLICATION[second!]!, `tests/ui/${second}/`] };

@@ -676,8 +676,12 @@ fn bilinear(t: texture_2d<f32>, uv: vec2f) -> f32 { return bilinear4(t, uv).r; }
 
 // ---- terrain shape ----------------------------------------------------------
 // The derivative at a sample from itself (a) and the next two on one side (b, c), per
-// sample: the one-sided difference of second order.
-fn _oneSided(a: f32, b: f32, c: f32) -> f32 { return 0.5 * (4.0 * b - 3.0 * a - c); }
+// sample: the one-sided difference of second order, (4b - 3a - c) / 2, taken over the
+// differences from the sample itself. Its weights total 0, and a device that rounds
+// each product by itself does not find 0 in 4k - 3k - k: level ground at 0.7 had a
+// slope of 3e-8 per sample on its border there, where a device that fuses the
+// products finds none.
+fn _oneSided(a: f32, b: f32, c: f32) -> f32 { return 2.0 * (b - a) - 0.5 * (c - a); }
 // Gradient (dz/dx, dz/dy) of the height texture t at texel p, in metres per metre.
 // Central difference; on t's border the one-sided difference of second order, so that
 // a paraboloid has its own slope up to the border, as it has inside. (The difference of
@@ -1897,14 +1901,34 @@ const step = defineKernel({
   outputs: { next: 'field' },      // new heights: the other half of the ping-pong pair
   inPlace: { moved: 'field' },     // accumulator: read and written at the own texel only
   params: { talus: 'f32', rate: 'f32' },
+  cost: 33,                        // per texel: its own height, and for each of its eight pairs the neighbour and the two or four heights beside the pair
   code: /* wgsl */ `
-// Height this texel receives from neighbour q (negative: gives). The amount
-// depends only on the two heights, so both texels compute the same magnitude
-// with opposite sign and the total is conserved.
-fn exchange(hp: f32, q: vec2i, dist: f32) -> f32 {
+// Height this texel receives from its neighbour at offset o (negative: gives).
+// A pair exchanges the share of its height difference by which the slope at its
+// middle is above the talus slope. That slope has two parts: along the pair the
+// difference of the two heights, and across it the other diagonal of the cell
+// the two share, or for a pair in a row or column the mean of the two central
+// differences beside it. Measured between the two texels alone, a slope that
+// faces between a row and a diagonal is gentler than it is, and a heap comes to
+// rest as an octagon. Seen from the other texel the sums are the same and the
+// differences only change sign, so both compute the same magnitude with
+// opposite sign and the total is conserved.
+fn exchange(px: vec2i, hp: f32, o: vec2i) -> f32 {
+  let q = px + o;
   if (!inGrid(q)) { return 0.0; }
-  let d = h_at(q) - hp;
-  return sign(d) * max(abs(d) - P.talus * dist, 0.0) * P.rate / dist;
+  let along = h_at(q) - hp;
+  var across: f32;
+  var run = 1.0;                   // texels between the two
+  if (o.x != 0 && o.y != 0) {
+    across = h_at(px + vec2i(o.x, 0)) - h_at(px + vec2i(0, o.y));
+    run = sqrt(2.0);
+  } else {
+    let e = vec2i(abs(o.y), abs(o.x));
+    across = 0.25 * ((h_at(px + e) + h_at(q + e)) - (h_at(px - e) + h_at(q - e)));
+  }
+  let steep = sqrt(along * along + across * across) / run;
+  if (steep <= P.talus) { return 0.0; }
+  return along * (steep - P.talus) / steep * P.rate / run;
 }
 
 // moved accumulates the height that crossed the texel: half of what it gave and
@@ -1918,7 +1942,7 @@ fn compute(px: vec2i, uv: vec2f, cur: Cur) -> Out {
   for (var j = -1; j <= 1; j++) {
     for (var i = -1; i <= 1; i++) {
       if (i != 0 || j != 0) {
-        let e = exchange(hp, px + vec2i(i, j), length(vec2f(vec2i(i, j))));
+        let e = exchange(px, hp, vec2i(i, j));
         net += e;
         gross += abs(e);
       }
@@ -1976,6 +2000,9 @@ export default defineNode({
 What makes it correct:
 
 - The kernel reads neighbours only from `h`, an input, and writes the new heights to a different field. The accumulator is in place and touches its own texel only. A run never reads and writes one field.
+- A pair exchanges by the slope at its middle, not by the difference of its two heights alone: along the pair that difference, across it the other diagonal of the cell the two share, or for a pair in a row or a column the mean of the two central differences beside it (`simulation.md` 5.3). A plane 6 % steeper than the talus slope gives way whichever way it faces, and a heap comes to rest round: its contour lies within 0.03 texels of one radius along the rows, the diagonals and between them. With the threshold taken between the two texels alone, a plane that faces 22.5° off a row rested 8 % steeper than the talus slope and the heap was an octagon, 0.25 texels further out on the diagonals.
+- Both texels of a pair compute the same amount with opposite sign, so the total is conserved: seen from the other texel the two sums of the slope across the pair are the same and its differences only change sign, and a read beyond the border clamps for both alike.
+- The kernel declares `cost: 33`, the loads of one texel: its own height, and for each of its eight pairs the neighbour and the two or four heights beside the pair (3.15 rule 4).
 - The stored parameters are an angle and a length. The talus threshold per texel and the iteration count are derived in `evaluate()` from `ctx.cellSize`, `ctx.heightRange` and `ctx.lengthToPx`, so material can travel the same physical distance in a preview and in a build. That bounds how far material travels; it is not an iteration-scaling rule. The rate per iteration is fixed, so two ladder levels agree where the relaxation has converged within `reach` and differ where it has not: between 257 and 513 `out` differs by 0.2 % of its standard deviation at the defaults on a smooth terrain, by 4.6 % there at `talus` 0 and `reach` 0.25, and by 2 % on a `ref/fbm` of four octaves at `talus` 30 and `reach` 0.05. (`simulation.md` owns the stability and iteration-scaling rules of the real simulations; the constants here are this node's.)
 - `moved` is a height: what crossed the texel, half of everything it gave and received, summed over the iterations. It is not the texel's net change. Along a uniform slope what a texel receives and what it gives cancel, and the remainder halves with the cell, so a sum of net changes differs by half its size from one ladder level to the next. The height that crossed a texel is half as much per iteration at half the cell, twice as often: between 257 and 513 it differs by 7 to 16 % of its standard deviation.
 - The swap is ordinary JavaScript inside the synchronous loop body. Whatever the batch sizes, `a` holds the latest state when the loop ends and when a preview is taken.
