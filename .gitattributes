@@ -1,0 +1,17 @@
+# Text files are LF in the working tree on every platform. Project files, generated WGSL and
+# expectation files are compared byte for byte with what the code writes, and a CRLF checkout
+# on Windows made those comparisons fail.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.r8 binary
+*.r16 binary
+*.r32 binary
+*.raw binary
+*.exr binary
+*.tif binary
+*.tiff binary
+*.zip binary
