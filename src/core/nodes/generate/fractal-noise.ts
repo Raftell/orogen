@@ -91,9 +91,7 @@ export default defineNode({
     },
     param.size(),
     param.octaves(),
-    // Not the canonical 0.5: these heights fill the whole range, and at 0.5 a terrain of the project's default
-    // proportions (half as high as wide) is a field of spikes in the 3D view. 0.45 reads as mountains.
-    param.gain({ default: 0.45 }),
+    param.gain(),
     {
       kind: 'float', name: 'lacunarity', label: 'Lacunarity', unit: 'none', default: 2, min: 1.5, max: 4, step: 0.1,
       help: 'How much finer each layer is than the one before. Larger values leave wider gaps between the sizes of the features.',

@@ -647,7 +647,7 @@ no `file` parameter (`engine.md` 1.7). The generator checks are `generator-range
 and the exact form of `resolution`, which takes no `resolutionTol`.
 
 - A node without required inputs that is no generator gets the `resolution` check of every other node, tolerance included: a mask or a colour made from nothing (`generate/shape`, `color/constant`) has no height range to keep, and a node with a `file` parameter (`io/import-field`, `ref/image`) returns what the file holds, resampled.
-- An optional input does not change what a node is. The checks run with every input connected (3.1), so a generator that stamps into a terrain (`generate/crater`) is held to the range and to exact agreement on the `terrain` fixture it is given; it reads that input at its own texel only.
+- An optional input does not change what a node is. The checks run with every input connected (3.1), so a generator that stamps into a terrain (`generate/crater`) is held to the range and to exact agreement on the `terrain` fixture it is given; it reads that input at its own texel, and on the coarsest ladder level, which 257 and 513 share (`engine.md` 1.9 rule 1).
 - A generator that cannot meet one of the two checks opts out with `skip` and a reason (3.6), as any node does.
 
 To keep engine switches to two per file (2.1), the suite runs every `'auto'`
@@ -1028,7 +1028,7 @@ The canonical concepts and their helpers are `engine.md` 4.4. Beyond them:
 | A position on the terrain | `center` | `vec2`, unit `length` (a `uv`) |
 | Inverting the result | `invert` | `bool` |
 | Clamping the result to 0..1 | `clamp` | `bool` |
-| A soft edge | `feather` | `float`, unit `length` |
+| A soft edge | `feather` | `float`, unit `length`; where the edge is that of a measured quantity which is no length, the unit of that quantity: `height` in `select/height` and `select/peaks`, `angle` in `select/slope` and `select/aspect` |
 
 Booleans are named for what `true` does, without `is` or `use`: `invert`, not
 `isInverted`.
@@ -1055,6 +1055,16 @@ Booleans are named for what `true` does, without `is` or `use`: `invert`, not
 | `ratio` | 0..1, hard | `strength`: 1, so the node shows its full effect and the mask scales it |
 | `none` | stated explicitly; log when it spans two decades | |
 | `int` | a hard `max` equal to the constant bound of the kernel's loop | |
+
+The Default column gives the value a parameter has unless rule 1 asks for
+another. In `select`: the direction of `select/aspect` and `select/exposure`
+defaults to 180, the slopes the 3D picture faces; the radius of `select/peaks`
+and `select/occlusion` to 0.04, the size of a landform, and that of
+`select/curvature` and `select/roughness` to 0.01, the width of a crest and of
+the relief that makes ground rough; and a `strength` that
+sets how readily a selection responds (`select/curvature`, `select/occlusion`,
+`select/roughness`) to 0.5, where it acts as its cube, so that half of it asks
+for eight times as much and there is room on both sides of the default.
 
 1. At defaults the node's effect is plain in the gallery picture: a reviewer can tell what the node does without reading its description.
 2. A default is never at the end of its slider, except: a `strength`, or another ratio that is fully on, of 1; a direction of 0; an optional effect whose off value is 0; and a `<what>Min`, `<what>Max` pair that defaults to the whole range.

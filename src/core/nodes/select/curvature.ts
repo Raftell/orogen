@@ -74,7 +74,7 @@ export default defineNode({
       ],
       help: 'Convex selects ridges and crests, concave selects gullies and hollows, both selects every bend of the ground.',
     },
-    param.radius({ help: 'The scale the bend is measured at: larger values pick out broader ridges and valleys and ignore small detail.' }),
+    param.radius({ default: 0.01, help: 'The scale the bend is measured at: larger values pick out broader ridges and valleys and ignore small detail.' }),
     param.strength({ default: 0.5, help: 'Larger values select gentler bends, until every bend of the chosen kind is fully selected.' }),
     invert,
   ],

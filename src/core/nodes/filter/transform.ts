@@ -61,8 +61,6 @@ fn compute(px: vec2i, uv: vec2f) -> out_t {
 });
 const softeners = { field: soften('field'), color: soften('color') };
 
-const EDGES = ['clamp', 'mirror', 'repeat', 'constant'] as const;
-
 export default defineNode({
   type: 'filter/transform',
   title: 'Transform',
@@ -108,7 +106,7 @@ export default defineNode({
       return;
     }
 
-    const edgeRule = EDGE[EDGES[ctx.enumIndex('edge')]!];
+    const edgeRule = EDGE[edge];
 
     // A picture shrunk to 1/k of its size is read every k texels. What is finer than that is removed first, or
     // it would come out as noise: by a Gaussian that, with the texel's own width, makes up the width of k texels.

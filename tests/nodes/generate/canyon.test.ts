@@ -28,23 +28,70 @@ test('generate/canyon: the plateau lies half the depth above the middle height a
   expectStats(flat.out, { min: [0.5 - ROLL, 0.5], max: [0.5, 0.5 + ROLL] });
 });
 
-test('generate/canyon: the walls climb in terraces, and floors and benches are level', async () => {
-  // The cut below the plateau, as a part of the depth: with three terraces the ground gathers at 0, 1/3, 2/3 and 1.
-  const depth = 0.6;
-  const stepped = async (levels: number): Promise<number> => {
-    const { out } = await renderNode(def, { params: { levels, depth, width: 0.3 } });
-    // A tenth of the wall is left unstepped, and the plateau rolls by up to ROLL: within 0.07 of a level counts.
-    return share(out, (value) => {
-      const cut = (0.5 + 0.5 * depth - value) / depth * 3;
-      return Math.abs(cut - Math.round(cut)) < 0.07 * 3;
-    });
+/**
+ * The benches in the walls: the heights between the floor of the main canyon and the plateau at which ground
+ * gathers. A bench is gentle and takes much ground for its height, a cliff little: over the heights, the
+ * ground lies in as many heaps as the walls have benches.
+ */
+function benches(out: FieldData, depth: number, levels: number): number {
+  const top = 0.5 + 0.5 * depth - ROLL, bottom = 0.5 - 0.5 * depth + 0.3 * ROLL;
+  const bins = 24 * levels;
+  const heap = new Float64Array(bins);
+  let total = 0;
+  for (let i = 0; i < out.data.length; i++) {
+    const t = (out.data[i]! - bottom) / (top - bottom);
+    if (t <= 0.02 || t >= 0.98) continue;
+    heap[Math.min(Math.floor(t * bins), bins - 1)]!++;
+    total++;
+  }
+  // A heap begins where a band of heights holds a quarter more ground than the mean and ends where one holds a fifth less.
+  const mean = total / bins;
+  let count = 0, inHeap = false;
+  for (let k = 0; k < bins; k++) {
+    if (heap[k]! > 1.25 * mean) {
+      if (!inHeap) count++;
+      inHeap = true;
+    } else if (heap[k]! < 0.8 * mean) inHeap = false;
+  }
+  return count;
+}
+
+test('generate/canyon: the walls step down through as many beds as there are terraces, each a cliff above a bench', async () => {
+  // The main canyon alone, wide, without side gullies: its walls are all the ground between plateau and floor.
+  for (const seed of [0, 1, 2]) {
+    const counts: number[] = [];
+    for (const levels of [1, 2, 4, 8]) {
+      const { out } = await renderNode(def, { res: 513, params: { seed, levels, depth: 0.6, width: 0.5, branching: 0, erosion: 0 } });
+      counts.push(benches(out, 0.6, levels));
+    }
+    // Beds differ in thickness, and a thin one may not show apart from its neighbor at this resolution.
+    assert.ok(counts[0] === 1 && counts[1] === 2, `seed ${seed}: walls of 1 and 2 beds show ${counts[0]} and ${counts[1]} benches`);
+    assert.ok(Math.abs(counts[2]! - 4) <= 1 && counts[3]! >= 6 && counts[3]! > counts[2]!, `seed ${seed}: walls of 4 and 8 beds show ${counts[2]} and ${counts[3]} benches`);
+  }
+});
+
+test('generate/canyon: erosion cuts side gullies that scallop the walls, and leaves the plateau and the floors where they are', async () => {
+  const depth = 0.55, plateau = 0.5 + 0.5 * depth, floor = 0.5 - 0.5 * depth;
+  // The line along which the walls pass the middle height: land texels above it with a neighbor at or below it.
+  const contour = (out: FieldData): number => {
+    let count = 0;
+    for (let y = 1; y < out.height - 1; y++) {
+      for (let x = 1; x < out.width - 1; x++) {
+        if (at(out, x, y) > 0.5 && (at(out, x - 1, y) <= 0.5 || at(out, x + 1, y) <= 0.5 || at(out, x, y - 1) <= 0.5 || at(out, x, y + 1) <= 0.5)) count++;
+      }
+    }
+    return count;
   };
-  const [three, sixteen] = [await stepped(3), await stepped(16)];
-  // The cliffs between the benches take 38 % of each climb and a tenth of the wall is left unstepped; the rest of
-  // the terrain is level ground at one of the four heights. With sixteen terraces the walls pass through
-  // those heights like any other.
-  assert.ok(three > 0.75, `with 3 terraces ${three} of the terrain lies at one of their levels`);
-  assert.ok(three > sixteen + 0.02, `with 16 terraces ${sixteen} lies at the levels of 3, against ${three} with 3`);
+  for (const seed of [0, 1]) {
+    const smooth = await renderNode(def, { res: 513, params: { seed, erosion: 0 } });
+    const cut = await renderNode(def, { res: 513, params: { seed, erosion: 1 } });
+    assert.ok(contour(cut.out) > 1.15 * contour(smooth.out), `seed ${seed}: the walls pass the middle height along ${contour(cut.out)} texels with erosion and ${contour(smooth.out)} without`);
+    const onPlateau = (out: FieldData): number => share(out, (value) => value > plateau - ROLL);
+    const onFloor = (out: FieldData): number => share(out, (value) => value < floor + 0.02 * depth);
+    assert.ok(Math.abs(onPlateau(cut.out) - onPlateau(smooth.out)) < 0.01, `seed ${seed}: the plateau takes ${onPlateau(cut.out)} of the terrain with erosion and ${onPlateau(smooth.out)} without`);
+    assert.ok(Math.abs(onFloor(cut.out) - onFloor(smooth.out)) < 0.01, `seed ${seed}: the main floor takes ${onFloor(cut.out)} with erosion and ${onFloor(smooth.out)} without`);
+    expectStats(cut.out, { min: [floor - 0.3 * ROLL, floor + 0.3 * ROLL], max: [plateau, plateau + ROLL] });
+  }
 });
 
 test('generate/canyon: more branching and more width give more canyon', async () => {

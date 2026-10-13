@@ -2,12 +2,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  at, channelOf, conformance, expectClose, expectIdentical, expectLadder, fixtures, renderLadder, renderNode, stats, traceNode,
+  at, channelOf, conformance, expectClose, expectIdentical, expectLadder, fieldOf, fixtures, renderLadder, renderNode, stats, traceNode,
   type FieldData,
 } from '../../helpers/index.ts';
 import type { ParamValue } from '../../../src/core/api.ts';
 import def from '../../../src/core/nodes/filter/warp.ts';
-import { cubicAt, gaussian, inner, mapField, pushAt, roughness } from './_reference.ts';
+import { cubicAt, gaussian, inner, mapField, pathEnd, roughness } from './_reference.ts';
 
 conformance(def, {
   skip: { seed: 'The suite connects every input, and with a guide connected the noise and its seed play no part. The test of the noise below changes the seed without a guide.' },
@@ -84,15 +84,22 @@ test('filter/warp: with a guide the picture is read up the guide\'s slope, in pr
   assert.equal(at(steep.x, 30, 30), 0);
   assert.equal(at(steep.y, 30, 30), 0);
 
-  // Any guide: the push of the smoothed guide at each texel, as the cubic reading of the picture finds it.
+  // Any guide: the end of the path of 11 steps up the slope of the smoothed guide, as the cubic reading of the
+  // picture finds it.
   const src = await fixtures.fbm(N);
   const guide = await fixtures.fbm(N, 3);
   const { out } = await renderNode(def, { inputs: { in: src, guide }, params: { distance: 0.03, guideRadius: 0.02 } });
   const smooth = gaussian(guide, 0.02 * L);
-  expectClose(out, mapField(src, (x, y) => {
-    const [sx, sy] = pushAt(smooth, x, y);
-    return cubicAt(src, x + 0.03 * L * sx, y + 0.03 * L * sy);
-  }), { max: 1e-3 });
+  // The path is followed in float32 over a blur computed in float32, on a terrain that changes by up to 0.05 a texel.
+  expectClose(out, mapField(src, (x, y) => cubicAt(src, ...pathEnd(smooth, x, y, 0.03 * L, 11))), { max: 2e-3 });
+
+  // Paths do not cross: where single strides from the two sides of a hollow would fold the picture over, the
+  // places a row of texels is read from stay in their order. A valley along y, its sides at 45 degrees.
+  const valley = fieldOf(N, (u) => 4 * Math.abs(u - 0.5));
+  const across = await offsets({ distance: 0.08, guideRadius: 0.0005 }, valley);
+  let folds = 0;
+  for (let x = 100; x < 156; x++) if (x + 1 + L * at(across.x, x + 1, 128) < x + L * at(across.x, x, 128) - 1e-3) folds++;
+  assert.equal(folds, 0, 'the places a row is read from are in the order of its texels');
 
   // The noise plays no part: another seed, size or octave count changes nothing.
   const other = await renderNode(def, { inputs: { in: src, guide }, params: { distance: 0.03, guideRadius: 0.02, seed: 9, size: 0.03, octaves: 7 } });

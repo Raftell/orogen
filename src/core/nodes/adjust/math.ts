@@ -11,10 +11,11 @@ const math = defineKernel({
   cost: 2,
   code: /* wgsl */ `
 // The remainder that has the sign of the divisor: for a divisor above 0 a sawtooth from 0 up to the divisor,
-// through negative values too. 0 for a divisor of 0.
+// through negative values too. 0 for a divisor of 0. It never leaves the band between 0 and the divisor, also
+// where the height is so many divisors that their number is no float.
 fn modulo(v: f32, w: f32) -> f32 {
   if (w == 0.0) { return 0.0; }
-  return v - w * floor(v / w);
+  return clamp(v - w * floor(v / w), min(w, 0.0), max(w, 0.0));
 }
 
 fn compute(px: vec2i, uv: vec2f) -> f32 {
@@ -39,8 +40,12 @@ fn compute(px: vec2i, uv: vec2f) -> f32 {
     case 7u: { r = max(v, w); }
     case 8u: { r = modulo(v, w); }
     case 9u: {                                          // fold: back and forth between 0 and the magnitude of the operand
-      let m = abs(w);
-      r = m - abs(modulo(v, 2.0 * m) - m);
+      // The pattern is the same on both sides of 0, so it is read from the magnitude of the height: within the
+      // first rise that is the height itself, bit for bit, however large the operand. Twice the operand is the
+      // period, kept a float.
+      let period = 2.0 * min(abs(w), 1.7e38);
+      let up = modulo(abs(v), period);
+      r = min(up, period - up);
     }
     default: {}
   }

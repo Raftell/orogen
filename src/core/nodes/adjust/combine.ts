@@ -99,7 +99,7 @@ export default defineNode({
     },
     param.strength({
       default: 0.5,
-      help: 'How much of the combination replaces the first input. Larger values show more of it; a mask scales this texel by texel.',
+      help: 'How much of the combination replaces the first input. Larger values show more of it; a mask scales it from place to place.',
     }),
     {
       kind: 'float', name: 'smoothness', label: 'Smoothness', unit: 'height', default: 0.1, min: 0, max: 1, soft: true,

@@ -35,10 +35,11 @@ test('select/height: the band is 1, the ground a feather outside it is 0, both e
 test('select/height: across the feather the mask is the smooth step of the height, below the band and above it', async () => {
   const { out } = await renderNode(def, { inputs: { in: 'rampX' }, params: { heightMin: 0.3, heightMax: 0.6, feather: 0.2 } });
   expectClose(out, fieldOf(257, (u) => band(Math.fround(u), 0.3, 0.6, 0.2)), { max: 1e-5 });
-  // Half a feather outside either end the smooth step is a half.
-  assert.ok(Math.abs(at(out, Math.round(0.2 * 256), 7) - band(Math.fround(Math.round(0.2 * 256) / 256), 0.3, 0.6, 0.2)) <= 1e-5);
-  assert.ok(Math.abs(at(out, 179, 7) - 0.5) <= 0.02, `0.1 above the band the mask is ${at(out, 179, 7)}`);
+  // Half a feather outside either end the smooth step is a half: at the heights 0.2 and 0.7, the columns 51 and 179.
   assert.ok(Math.abs(at(out, 51, 7) - 0.5) <= 0.02, `0.1 below the band the mask is ${at(out, 51, 7)}`);
+  assert.ok(Math.abs(at(out, 179, 7) - 0.5) <= 0.02, `0.1 above the band the mask is ${at(out, 179, 7)}`);
+  // A quarter of the feather outside it, 0.844; three quarters, 0.156.
+  assert.ok(Math.abs(at(out, 64, 7) - 0.84375) <= 1e-4 && Math.abs(at(out, 192, 7) - 0.15625) <= 1e-4);
 });
 
 test('select/height: a feather of 0 is a hard edge at both ends of the band', async () => {

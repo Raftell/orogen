@@ -32,9 +32,10 @@ test('filter/high-pass: the broad shape goes and the detail stays: a larger radi
 });
 
 test('filter/high-pass: a flat terrain, and any terrain at a radius of nothing, becomes the level 0.5', async () => {
+  // The level is a sum the device computes: one that adds in another order is off by the last bit of 1.3.
   const level = fieldOf(257, () => 0.5);
-  expectIdentical((await renderNode(def, { inputs: { in: fieldOf(257, () => 0.8) } })).out, level);
-  expectIdentical((await renderNode(def, { inputs: { in: 'terrain' }, params: { radius: 0 } })).out, level);
+  expectClose((await renderNode(def, { inputs: { in: fieldOf(257, () => 0.8) } })).out, level, { max: 1e-6 });
+  expectClose((await renderNode(def, { inputs: { in: 'terrain' }, params: { radius: 0 } })).out, level, { max: 1e-6 });
 });
 
 test('filter/high-pass: the detail is the same at two levels of the ladder', async () => {

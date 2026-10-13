@@ -1,10 +1,10 @@
 // tests/nodes/adjust/height-blend.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { at, conformance, expectClose, expectIdentical, expectMask, fieldOf, fixtures, renderNode, type FieldData, type FixtureName } from '../../helpers/index.ts';
+import { at, conformance, expectClose, expectFinite, expectIdentical, expectMask, fieldOf, fixtures, renderNode, type FieldData, type FixtureName } from '../../helpers/index.ts';
 import type { ParamValue } from '../../../src/core/api.ts';
 import def from '../../../src/core/nodes/adjust/height-blend.ts';
-import { countValues, mapValues, PAIR_A, PAIR_B, zipValues } from './_reference.ts';
+import { countValues, HUGE_A, HUGE_B, mapValues, PAIR_A, PAIR_B, zipValues } from './_reference.ts';
 
 conformance(def);
 
@@ -52,6 +52,19 @@ test('adjust/height-blend: beyond the band the higher terrain is the result, bit
   // Within the band the result lies between the two, and where they cross it is both.
   assert.equal(countValues(out, (v, i) => v < Math.min(PAIR_A.data[i], PAIR_B.data[i]) - 1e-6 || v > Math.max(PAIR_A.data[i], PAIR_B.data[i]) + 1e-6), 0);
   for (const x of [0, 100, 256]) assert.ok(at(out, x, x) === at(PAIR_A, x, x) && at(weight, x, x) === 0.5);
+});
+
+test('adjust/height-blend: heights as large as a float holds blend like any others', async () => {
+  // Every pair of -3e38 .. 3e38: the difference of two of them is no float, and still says which is the higher.
+  for (const contrast of [0, 0.8, 1]) {
+    const { out, weight } = await blend(HUGE_A, HUGE_B, { contrast });
+    expectFinite(out);
+    expectMask(weight);
+    // No two of these heights that differ lie within the band of each other, except 0, 0.5 and 1 at no contrast.
+    const apart = (i: number): boolean => Math.abs(HUGE_A.data[i] - HUGE_B.data[i]) > 0.5;
+    assert.equal(countValues(out, (v, i) => apart(i) && v !== Math.max(HUGE_A.data[i], HUGE_B.data[i])), 0, 'the higher terrain does not win outright');
+    assert.equal(countValues(weight, (v, i) => apart(i) && v !== (HUGE_B.data[i] > HUGE_A.data[i] ? 1 : 0)), 0);
+  }
 });
 
 test('adjust/height-blend: at full contrast the result is the higher terrain, with a crease, and the blend has none', async () => {

@@ -9,9 +9,10 @@ const MAX_SIGMA = MAX_TAPS / 3;
 // nearer to and are read between the two texels the line passes there: two loads a tap, and none of the blur
 // across the line that reading between four texels would add.
 //
-// The border: where the line leaves the terrain the picture continues as its mirror image along the line. A
-// Gaussian of a mirror image is the mirror image of the Gaussian, so the passes of a wide blur together are the
-// one Gaussian up to the border, which they are not when each of them repeats the border texel.
+// The border: beyond it the picture continues as its mirror image, and the line runs on into that. A tap moves
+// into the mirror image evenly as the texel nears the border, so that no row or column of a border differs from
+// the next by where its line was cut. Repeating the border texel instead gives it the weight of everything
+// beyond it, in every pass of a wide blur again.
 const pass = (kind: 'field' | 'color') => defineKernel({
   name: `filter/directional-blur.pass#${kind}`,
   inputs: { src: kind },
@@ -22,43 +23,34 @@ const pass = (kind: 'field' | 'color') => defineKernel({
   code: /* wgsl */ `
 const MAX_TAPS = ${MAX_TAPS};
 
-// How many texels along the major axis the line stays inside the terrain when the minor axis has room texels left.
-fn within(room: i32, lean: f32) -> i32 {
-  return i32(min(floor(f32(room) / lean + 1.0e-4), 1.0e6));
+// The texel i of an axis whose texels are 0..last, mirrored into it at the border texels, which are not repeated.
+fn mirrored(i: i32, last: i32) -> i32 {
+  if (last <= 0) { return 0; }
+  let period = 2 * last;
+  var k = i % period;
+  if (k < 0) { k += period; }
+  return select(k, period - k, k > last);
 }
 
-// The step m along the line, mirrored into the steps lo..hi that lie inside the terrain.
-fn mirrored(m: i32, lo: i32, hi: i32) -> i32 {
-  let span = hi - lo;
-  if (span <= 0) { return lo; }
-  let period = 2 * span;
-  var k = (m - lo) % period;
-  if (k < 0) { k += period; }
-  return lo + select(k, period - k, k > span);
+// The same for a position between texels.
+fn mirroredBetween(v: f32, last: f32) -> f32 {
+  if (last <= 0.0) { return 0.0; }
+  let period = 2.0 * last;
+  let k = v - period * floor(v / period);
+  return select(k, period - k, k > last);
 }
 
 // The picture on the line, step texels along the major axis from px.
 fn along(px: vec2i, step: i32) -> out_t {
-  let across = f32(step) * P.lean;
+  let last = i32(frame.res.x) - 1;
+  let across = mirroredBetween(f32(dot(px, P.minor)) + f32(step) * P.lean, f32(last));
   let whole = floor(across);
-  let p = px + step * P.major + i32(whole) * P.minor;
+  let p = mirrored(dot(px, P.major) + step, last) * P.major + i32(whole) * P.minor;
   return mix(src_at(p), src_at(p + P.minor), across - whole);
 }
 
 fn compute(px: vec2i, uv: vec2f) -> out_t {
   let taps = clamp(P.taps, 0, MAX_TAPS);
-  // The steps along the major axis for which the line through px is inside the terrain: lo..hi, around 0.
-  let last = i32(frame.res.x) - 1;
-  let at = vec2i(dot(px, P.major), dot(px, P.minor));
-  var lo = -at.x;
-  var hi = last - at.x;
-  if (P.lean > 0.0) {
-    hi = min(hi, within(last - at.y, P.lean));
-    lo = max(lo, -within(at.y, P.lean));
-  } else if (P.lean < 0.0) {
-    hi = min(hi, within(at.y, -P.lean));
-    lo = max(lo, -within(last - at.y, -P.lean));
-  }
   let centre = src_at(px);
   // Summed as differences from the centre: a constant stays that constant and an opaque color opaque.
   var sum = out_t(0.0);
@@ -66,7 +58,7 @@ fn compute(px: vec2i, uv: vec2f) -> out_t {
   for (var i = 1; i <= taps; i++) {
     let w = exp(-P.falloff * f32(i * i));
     let step = i * P.stride;
-    sum += w * ((along(px, mirrored(-step, lo, hi)) - centre) + (along(px, mirrored(step, lo, hi)) - centre));
+    sum += w * ((along(px, -step) - centre) + (along(px, step) - centre));
     weight += 2.0 * w;
   }
   return centre + sum / weight;

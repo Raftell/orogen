@@ -13,6 +13,15 @@ export const PAIR_A = fieldOf(RES, (u) => -1 + 3 * u);
 export const PAIR_B = fieldOf(RES, (_u, v) => -1 + 3 * v);
 
 /**
+ * Two fields that together hold every pair of these heights, up to nearly the largest a field holds: `a` in bands
+ * along x and `b` along y. Any finite height is legal, and sums, products and differences of these are no floats.
+ */
+const HUGE_STEPS = [-3e38, -1e30, -1, 0, 0.5, 1, 1e30, 3e38];
+const hugeStep = (t: number): number => HUGE_STEPS[Math.min(HUGE_STEPS.length - 1, Math.floor(t * HUGE_STEPS.length))];
+export const HUGE_A = fieldOf(RES, (u) => hugeStep(u));
+export const HUGE_B = fieldOf(RES, (_u, v) => hugeStep(v));
+
+/**
  * A value a `color` field holds exactly: a multiple of 1/512 below 4 has the 11 significant bits of a half
  * float. A reference computed from such inputs differs from the node by the rounding of its output alone.
  */

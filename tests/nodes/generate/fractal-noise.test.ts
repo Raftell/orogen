@@ -18,7 +18,7 @@ interface Noise {
   readonly mode: string; readonly size: number; readonly octaves: number; readonly gain: number; readonly lacunarity: number;
   readonly warpStrength: number; readonly warpSize: number; readonly seed: number;
 }
-const BASE: Noise = { mode: 'fbm', size: 0.25, octaves: 8, gain: 0.45, lacunarity: 2, warpStrength: 0, warpSize: 0.5, seed: 0 };
+const BASE: Noise = { mode: 'fbm', size: 0.25, octaves: 8, gain: 0.5, lacunarity: 2, warpStrength: 0, warpSize: 0.5, seed: 0 };
 const render = async (noise: Partial<Noise>, res = 257): Promise<FieldData> => (await renderNode(def, { res, params: { ...BASE, ...noise } })).out;
 
 // The constants of the kernel.

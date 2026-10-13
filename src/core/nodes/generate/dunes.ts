@@ -7,11 +7,15 @@ const dunes = defineKernel({
   outputs: { out: 'field' },
   params: { mode: 'u32', wind: 'vec2f', invSize: 'f32', height: 'f32', irregularity: 'f32' },
   includes: [generateLand],
-  cost: 96,
   code: /* wgsl */ `
 // The crest of a transverse dune lies this far along its wavelength: the windward slope takes the part before
 // it, the slip face the rest.
 const CREST = 0.74;
+// The most arms a star dune has: the constant bound of the loop over them.
+const STAR_ARMS = 5;
+// How fast the two sides of a star dune's arm fall away from its crest: the slip face and the gentler side.
+const STAR_SLIP = 3.2;
+const STAR_SLOPE = 1.5;
 
 // The height of a dune at the position u = 0..1 along its wavelength, downwind: a long convex windward slope up to
 // the brink, then the slip face straight down to the next trough.
@@ -25,7 +29,9 @@ fn ridge(u: f32) -> f32 {
 // phase, so they line up across the whole field; irregularity lets a field of random phasors shift that phase
 // from place to place, which bends the crests, and where the phasors cancel a ridge ends or forks.
 fn transverse(p: vec2f) -> f32 {
-  let bend = P.irregularity * 0.9 * noise_fbm(p * 0.21 + vec2f(3.3, 7.7), seedFor(1u), 3, 2.0, 0.5);
+  // The crests bend broadly, over several dunes, and swing in and out along their length, each on its own.
+  let bend = P.irregularity * (0.9 * noise_fbm(p * 0.21 + vec2f(3.3, 7.7), seedFor(1u), 3, 2.0, 0.5)
+    + 0.22 * noise_fbm(p * vec2f(0.45, 0.8) + vec2f(15.2, 0.6), seedFor(6u), 2, 2.0, 0.5));
   let q = p * 0.4;                                   // the phasors stand 2.5 wavelengths apart
   let cell = vec2i(floor(q));
   let f = q - floor(q);
@@ -50,7 +56,12 @@ fn transverse(p: vec2f) -> f32 {
   let u = fract(p.x + bend + turn);
   // Irregular dunes also differ in height along their crests; regular ones all reach the full height.
   let tall = 1.0 - min(2.0 * P.irregularity, 1.0) * (0.28 - 0.28 * noise_fbm(p * 0.33 + vec2f(1.9, 4.6), seedFor(3u), 2, 2.0, 0.5));
-  return ridge(u) * tall * smoothstep(0.0, 0.45, strength);
+  let dune = ridge(u) * tall * smoothstep(0.0, 0.45, strength);
+  // Small dunes climb the windward slopes of the large ones, four to a wavelength, and die out towards the
+  // brink and in the troughs. A regular field has none.
+  let climb = saturate(u / CREST);
+  let small = ridge(fract(4.0 * (p.x + bend) + 1.7 * noise_fbm(p * 0.6 + vec2f(8.1, 2.2), seedFor(7u), 2, 2.0, 0.5)));
+  return dune + min(2.0 * P.irregularity, 1.0) * 0.09 * small * smoothstep(0.05, 0.3, climb) * (1.0 - smoothstep(0.7, 0.95, climb)) * smoothstep(0.0, 0.45, strength);
 }
 
 // Sand meets the ground at a tangent: the foot of a dune h is drawn out, and its top keeps 0.9 of its height.
@@ -79,7 +90,7 @@ fn barchans(p: vec2f) -> f32 {
       let more = hash_unit2(hash_u32(h ^ 0x9e3779b9u));
       // Irregularity moves the dunes off their places, varies their size and leaves some places empty.
       if (more.y < 0.45 * P.irregularity) { continue; }
-      let centre = vec2f(f32(c.x), f32(c.y) + stagger) + vec2f(0.5) + P.irregularity * 0.55 * (rnd - vec2f(0.5));
+      let centre = vec2f(f32(c.x), f32(c.y) + stagger) + vec2f(0.5) + P.irregularity * 0.9 * (rnd - vec2f(0.5));
       let size = 1.0 - 0.5 * P.irregularity * more.x;
       // A dune 0.42 of a place in half-width; a smaller dune is lower in proportion.
       best = max(best, size * crescent((q - centre) / (0.42 * size)));
@@ -88,7 +99,10 @@ fn barchans(p: vec2f) -> f32 {
   return best;
 }
 
-// Star dunes: pyramids with three to five sinuous arms, where the wind turns through the year.
+// Star dunes: pyramids with three to five arms, where the wind turns through the year. Each arm is a crest that
+// falls from the summit to its tip, with a slip face on one side and a gentler slope on the other. In a regular
+// field the arms stand evenly around the summit and are all alike; irregularity turns them, bends them, makes
+// them differ in length and lets them wind.
 fn stars(p: vec2f) -> f32 {
   let q = p / 2.1;
   let home = vec2i(floor(q));
@@ -104,19 +118,33 @@ fn stars(p: vec2f) -> f32 {
       let d = (q - centre) / (0.74 * size);
       let rho = length(d);
       if (rho >= 1.0) { continue; }
-      let arms = 3.0 + floor(3.0 * more.y);
-      let sector = generateLand_TAU / arms;
+      let arms = 3 + i32(floor(3.0 * more.y));
+      let sector = generateLand_TAU / f32(arms);
+      let angle = select(0.0, atan2(d.y, d.x), rho > 1.0e-6) + generateLand_TAU * rnd.y;
       // The arms curl: their direction turns with the distance from the summit, one way or the other.
       let curl = (rnd.x - 0.5) * 2.4 * P.irregularity + 0.5;
-      let angle = select(0.0, atan2(d.y, d.x), rho > 1.0e-6) - curl * rho + generateLand_TAU * rnd.y;
-      let off = abs(fract(angle / sector + 0.5) - 0.5) * sector;   // the angle to the nearest arm
-      let along = rho * cos(off);
-      let across = rho * sin(off);
-      // An arm's crest falls from the summit to its tip, and its sides fall away from the crest; the arms rise
-      // out of a low mound of sand.
-      let arm = pow(max(1.0 - along, 1.0e-6), 1.25) - 1.35 * across;
+      var top = 0.0;
+      for (var k = 0; k < STAR_ARMS; k++) {
+        if (k >= arms) { break; }
+        let own = hash_unit2(hash_u32(h + 0x85ebca6bu * u32(k + 1)));
+        let turn = (f32(k) + P.irregularity * 0.5 * (own.x - 0.5)) * sector;
+        let reach = 1.0 - P.irregularity * 0.35 * own.y;
+        let wind = P.irregularity * 0.3 * sin(7.0 * rho + generateLand_TAU * own.x);
+        // The angle from the arm to the texel, in -pi..pi.
+        let off = (fract((angle - turn - curl * rho - wind) / generateLand_TAU + 0.5) - 0.5) * generateLand_TAU;
+        // Beside the arm the ground falls away from its crest, and behind the summit from the summit itself.
+        let ahead = cos(off) > 0.0;
+        let along = select(0.0, rho * cos(off) / reach, ahead);
+        let away = select(rho, rho * abs(sin(off)), ahead);
+        // The slip face lies on the side the arm curls away from; the other side is gentler, and steepens
+        // towards the back of the summit, where all the arms' slopes are one. Both fall faster than the crest
+        // does along the arm, or the arm would be no crest.
+        let fall = select(STAR_SLIP, mix(STAR_SLOPE, STAR_SLIP, smoothstep(1.1, 1.5707963, off)), off > 0.0);
+        top = max(top, pow(max(1.0 - along, 1.0e-6), 1.1) - fall * away);
+      }
+      // The arms rise out of a low mound of sand.
       let mound = 0.45 * (1.0 - rho) * (1.0 - rho);
-      best = max(best, size * toe(max(max(arm, mound), 0.0)));
+      best = max(best, size * toe(max(max(top, mound), 0.0)));
     }
   }
   return best;
@@ -155,7 +183,7 @@ export default defineNode({
     },
     param.size({ label: 'Dune spacing', default: 0.11, min: 0.01, max: 1, help: 'Larger values set the dunes further apart and make each one broader.' }),
     param.angle({ label: 'Wind direction', default: 20, help: 'The direction the wind blows to: slip faces look that way.' }),
-    param.height({ default: 0.07, help: 'Larger values pile the dunes higher, which also steepens their faces.' }),
+    param.height({ default: 0.07, max: 0.25, help: 'Larger values pile the dunes higher, which also steepens their faces.' }),
     {
       kind: 'float', name: 'irregularity', label: 'Irregularity', unit: 'ratio', default: 0.5, min: 0, max: 1,
       help: 'Larger values bend the crests, vary the dunes in size and break their ranks; 0 gives a perfectly regular field.',
@@ -176,6 +204,9 @@ export default defineNode({
         height,
         irregularity,
       },
+      // Octaves of noise and rounds over neighbouring cells: the ridges read nine cells and nine octaves, the
+      // crescents nine cells, and the star dunes five arms in each of nine.
+      cost: [128, 48, 96][ctx.enumIndex('mode')] ?? 128,
     });
     ctx.output('out', out);
   },

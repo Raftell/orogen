@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import {
   at, conformance, diff, expectClose, expectLadder, expectStats, fieldOf, renderLadder, renderNode, stats, TEST_SETTINGS, type FieldData,
 } from '../../helpers/index.ts';
-import { hashCell, hashUnit, mixSeed } from '../../../src/core/api.ts';
-import def from '../../../src/core/nodes/generate/cellular-noise.ts';
-import { hashUnit2, soften } from './_noise-cpu.ts';
+import { hashCell, hashU32, hashUnit, mixSeed } from '../../../src/core/api.ts';
+import def, { CELLS } from '../../../src/core/nodes/generate/cellular-noise.ts';
+import { soften } from './_noise-cpu.ts';
 
 conformance(def);
 
@@ -20,29 +20,44 @@ const render = async (cells: Partial<Cells>, res = 257): Promise<FieldData> => (
 
 interface Sample { readonly first: number; readonly second: number; readonly wall: number; readonly value: number }
 
-/** The kernel, written again for the CPU: the two nearest feature points of the 5 x 5 cells around the point, the nearest wall and the cell's value. */
+const { pitch: PITCH, row: ROW, corner: CORNER } = CELLS;
+// From the centre of a cell to every second of its corners, as the kernel holds them.
+const SPOKES: readonly (readonly [number, number])[] = [[0, f(CORNER)], [f(f(-0.866025404) * f(CORNER)), f(f(-0.5) * f(CORNER))], [f(f(0.866025404) * f(CORNER)), f(f(-0.5) * f(CORNER))]];
+
+/** The feature point of lattice point (i, j), from the centre of the terrain, in feature sizes: a point of one of the three rhombi of its cell. */
+function featurePoint(i: number, j: number, jitter: number, seed: number): readonly [number, number] {
+  const h = hashCell(i, j, seed), h2 = hashU32(h), rhombus = hashU32(h2) % 3;
+  const a = SPOKES[rhombus]!, b = SPOKES[(rhombus + 1) % 3]!;
+  return [(i + 0.5 * j) * PITCH + (hashUnit(h) * a[0] + hashUnit(h2) * b[0]) * jitter, j * ROW + (hashUnit(h) * a[1] + hashUnit(h2) * b[1]) * jitter];
+}
+
+/**
+ * The definition, not the kernel's search: every lattice point up to five steps from the one below the point,
+ * 91 of them where the kernel looks at 19, gives its feature point; the two nearest, the nearest wall of the
+ * nearest point's cell and that cell's value follow. Agreement therefore also shows that two steps are enough.
+ */
 function sample(u: number, v: number, cells: Cells, frameSeed: number): Sample {
   const perSize = f(1 / cells.size), jitter = f(cells.jitter), seed = mixSeed(frameSeed, 0);
   const px = f(f(u - 0.5) * perSize), py = f(f(v - 0.5) * perSize);
-  const cx = Math.floor(px), cy = Math.floor(py), fx = f(px - cx), fy = f(py - cy);
+  const j0 = Math.round(py / ROW), i0 = Math.round(px / PITCH - 0.5 * j0);
   const points: (readonly [number, number, number, number])[] = [];
-  let first = 64, second = 64, nearest = 0;
-  for (let j = -2; j <= 2; j++) {
-    for (let i = -2; i <= 2; i++) {
-      const unit = hashUnit2(hashCell(cx + i, cy + j, seed));
-      const dx = i + 0.5 + (unit[0] - 0.5) * jitter - fx, dy = j + 0.5 + (unit[1] - 0.5) * jitter - fy;
-      const d2 = dx * dx + dy * dy;
+  let first = Infinity, second = Infinity, nearest = 0;
+  for (let j = -5; j <= 5; j++) {
+    for (let i = -5; i <= 5; i++) {
+      if (Math.abs(i + j) > 5) continue;
+      const q = featurePoint(i0 + i, j0 + j, jitter, seed);
+      const dx = q[0] - px, dy = q[1] - py, d2 = dx * dx + dy * dy;
       if (d2 < first) { second = first; first = d2; nearest = points.length; } else if (d2 < second) second = d2;
-      points.push([dx, dy, i, j]);
+      points.push([dx, dy, i0 + i, j0 + j]);
     }
   }
-  const [nx, ny, hi, hj] = points[nearest]!;
-  let wall = 64;
+  const [nx, ny, si, sj] = points[nearest]!;
+  let wall = Infinity;
   points.forEach(([dx, dy], k) => {
     const ax = dx - nx, ay = dy - ny, span = ax * ax + ay * ay;
     if (k !== nearest && span > 1e-12) wall = Math.min(wall, (0.5 * (nx + dx) * ax + 0.5 * (ny + dy) * ay) / Math.sqrt(span));
   });
-  return { first: Math.sqrt(first), second: Math.sqrt(second), wall: Math.max(wall, 0), value: hashUnit(hashCell(cx + hi, cy + hj, mixSeed(frameSeed, 1))) };
+  return { first: Math.sqrt(first), second: Math.sqrt(second), wall: Math.max(wall, 0), value: hashUnit(hashCell(si, sj, mixSeed(frameSeed, 1))) };
 }
 /** Heights follow the value up to 0.9 and bend towards 1 from there. */
 const height = (s: Sample, mode: Mode): number =>
@@ -56,7 +71,8 @@ test('generate/cellular-noise: the modes of the node are distance, second, edge 
 
 for (const mode of MODES) {
   test(`generate/cellular-noise: mode ${mode} is what the feature points of its definition give`, async () => {
-    for (const change of [{}, { size: 0.031, jitter: 0.6, seed: 5 }, { size: 0.4, jitter: 0.25, seed: 9 }]) {
+    // The last setting has 4000 cells and full jitter: the texels fall anywhere in their cells, the corners included.
+    for (const change of [{}, { size: 0.031, jitter: 0.6, seed: 5 }, { size: 0.4, jitter: 0.25, seed: 9 }, { size: 0.25, jitter: 0 }, { size: 0.0158, seed: 2 }]) {
       const cells = { ...BASE, mode, ...change };
       const frameSeed = mixSeed(TEST_SETTINGS.seed, cells.seed);
       const out = await render(cells, 129);
@@ -70,45 +86,62 @@ for (const mode of MODES) {
           compared++;
         }
       }
-      assert.ok(compared > 0.99 * 129 * 129);
+      assert.ok(compared > 0.97 * 129 * 129);
       assert.ok(worst <= 2e-5, `mode ${mode}, size ${cells.size}: up to ${worst} from the definition; allowed 2e-5`);
     }
   });
 }
 
-test('generate/cellular-noise: without jitter the points are the centres of square cells, as wide as the feature size', async () => {
-  // Four cells of 64 texels across at 257. (a, b): the position in the cell, from its centre, in cells.
-  const local = (u: number): number => { const p = (u - 0.5) * 4; return p - Math.floor(p) - 0.5; };
-  const grid = { size: 0.25, jitter: 0 };
-  const distance = await render({ ...grid, mode: 'distance' });
-  expectClose(distance, fieldOf(257, (u, v) => Math.hypot(local(u), local(v))), { max: 1e-6 });
-  for (const centre of [32, 96, 160, 224]) assert.equal(at(distance, centre, 96), 0);
-  // The second nearest centre is the one across the nearer side of the cell.
-  const second = await render({ ...grid, mode: 'second' });
-  expectClose(second, fieldOf(257, (u, v) => 0.75 * Math.hypot(1 - Math.max(Math.abs(local(u)), Math.abs(local(v))), Math.min(Math.abs(local(u)), Math.abs(local(v))))), { max: 1e-6 });
-  // The walls are the sides of the cell: a pyramid, 1 on the centre before its top is bent over at 0.9.
-  const edge = await render({ ...grid, mode: 'edge' });
-  expectClose(edge, fieldOf(257, (u, v) => soften(2 * (0.5 - Math.max(Math.abs(local(u)), Math.abs(local(v)))), 0.9, 0.1)), { max: 1e-6 });
-  for (const wall of [0, 64, 128, 192, 256]) assert.ok(at(edge, wall, 77) <= 1e-6 && at(edge, 77, wall) <= 1e-6);
-  // One value per cell: every texel inside a square has the value of its centre, and the sixteen squares differ.
-  const cell = await render({ ...grid, mode: 'cell' });
-  const values = new Set<number>();
-  for (let cy = 0; cy < 4; cy++) {
-    for (let cx = 0; cx < 4; cx++) {
-      const value = at(cell, 64 * cx + 32, 64 * cy + 32);
-      values.add(value);
-      for (let y = 64 * cy + 1; y < 64 * cy + 64; y += 7) for (let x = 64 * cx + 1; x < 64 * cx + 64; x += 7) assert.equal(at(cell, x, y), value);
+test('generate/cellular-noise: without jitter the cells are a honeycomb, each hexagon as large as a square of the feature size', async () => {
+  // A size that puts the points of one row 32 texels apart at 257: the pitch of the lattice is 1.0746 feature
+  // sizes, the pitch of hexagons of area 1. A lattice point lies on the centre of the terrain.
+  const comb = { size: 0.125 / PITCH, jitter: 0 };
+  const distance = await render({ ...comb, mode: 'distance' });
+  for (const x of [0, 32, 64, 96, 128, 160, 192, 224, 256]) {
+    assert.ok(at(distance, x, 128) <= 1e-6, `the point at texel (${x}, 128)`);
+    // Half way to the next point of the row, on the wall between the two cells.
+    if (x < 256) assert.ok(Math.abs(at(distance, x + 16, 128) - PITCH / 2) < 1e-5);
+  }
+  // The next row lies sqrt(3) / 2 pitches further, half a pitch along: 27.7 texels down and 16 across.
+  const rowTexels = 32 * (ROW / PITCH);
+  assert.ok(Math.abs(at(distance, 144, 156) - ((156 - 128 - rowTexels) / 32) * PITCH) < 1e-5);
+  // The pattern repeats along the row, and no texel is further from its point than the corner of a hexagon.
+  let repeat = 0, furthest = 0;
+  for (let y = 0; y < 257; y++) {
+    for (let x = 0; x < 257; x++) {
+      furthest = Math.max(furthest, at(distance, x, y));
+      if (x + 32 < 257) repeat = Math.max(repeat, Math.abs(at(distance, x + 32, y) - at(distance, x, y)));
     }
   }
-  assert.equal(values.size, 16);
+  assert.ok(repeat < 1e-5, `moved by one pitch the honeycomb differs by ${repeat}`);
+  assert.ok(furthest <= CORNER + 1e-5 && furthest > CORNER - 0.03, `the furthest texel is ${furthest} from its point; a corner is ${CORNER}`);
+  // The mean distance from the centre of a regular hexagon whose sides are a from it is
+  // a (2 / 3 + ln(3) / 2) / sqrt(3) = 0.7020 a, and a is half the pitch.
+  expectStats(distance, { mean: [0.7020 * (PITCH / 2) - 0.004, 0.7020 * (PITCH / 2) + 0.004] });
+
+  // The second nearest point is a neighbour, a pitch from a point and half a pitch from the wall between the two.
+  const second = await render({ ...comb, mode: 'second' });
+  assert.ok(Math.abs(at(second, 128, 128) - 0.75 * PITCH) < 1e-5 && Math.abs(at(second, 144, 128) - 0.75 * (PITCH / 2)) < 1e-5);
+  // The wall is half a pitch from the point: twice that, bent over at 0.9, on the point, and 0 on the wall.
+  const edge = await render({ ...comb, mode: 'edge' });
+  assert.ok(Math.abs(at(edge, 128, 128) - soften(PITCH, 0.9, 0.1)) < 1e-5 && at(edge, 144, 128) <= 1e-5);
+  // One value per cell, the same on every texel within a quarter of a pitch of the point.
+  const cell = await render({ ...comb, mode: 'cell' });
+  const values = new Set<number>();
+  for (const x of [32, 64, 96, 128, 160, 192, 224]) {
+    const value = at(cell, x, 128);
+    values.add(value);
+    for (const [dx, dy] of [[7, 0], [-7, 0], [0, 7], [0, -7], [5, 5], [-5, -5]] as const) assert.equal(at(cell, x + dx, 128 + dy), value);
+  }
+  assert.equal(values.size, 7);
 });
 
 test('generate/cellular-noise: the distances are in feature sizes, 0 on a point and on a wall, and stay within 0..1', async () => {
   for (const jitter of [0, 0.5, 1]) {
     const [distance, second, edge, cell] = await Promise.all(MODES.map((mode) => render({ mode, size: 0.05, jitter }, 513)));
-    // 400 cells. The nearest point is at most 1.42 away and typically 0.4; a wall is nearer than half a cell or so.
-    expectStats(distance!, { min: [0, 0.06], max: [0.6, 1], mean: [0.35, 0.47] });
-    expectStats(second!, { min: [0, 0.4], max: [0.7, 1], mean: [0.48, 0.57] });
+    // 400 cells. The nearest point is at most 1.24 away and typically 0.4; a wall is nearer than half a cell or so.
+    expectStats(distance!, { min: [0, 0.06], max: [0.55, 1], mean: [0.35, 0.47] });
+    expectStats(second!, { min: [0, 0.45], max: [0.7, 1], mean: [0.48, 0.6] });
     expectStats(edge!, { min: [0, 0.01], max: [0.9, 1], mean: [0.28, 0.38] });
     expectStats(cell!, { min: [0, 0.05], max: [0.95, 1], mean: [0.4, 0.6] });
     // The second nearest point is never nearer than the nearest. Where neither height is bent: distance <= second / 0.75.
@@ -120,50 +153,117 @@ test('generate/cellular-noise: the distances are in feature sizes, 0 on a point 
   }
 });
 
-test('generate/cellular-noise: a smaller feature size gives more cells, and jitter scatters them', async () => {
-  const count = (field: FieldData): number => new Set(field.data).size;
-  // One value per cell: about 1 / size squared of them, and the cells cut by the border.
-  const few = count(await render({ mode: 'cell', size: 0.25 }));
-  const many = count(await render({ mode: 'cell', size: 0.05 }));
-  assert.ok(few >= 16 && few <= 40, `${few} cells at size 0.25`);
-  assert.ok(many >= 400 && many <= 520, `${many} cells at size 0.05`);
-  // Without jitter every wall is straight along a row or a column; with it hardly any texel keeps its height.
-  const square = await render({ mode: 'edge', size: 0.25, jitter: 0 });
-  const free = await render({ mode: 'edge', size: 0.25, jitter: 1 });
-  assert.ok(diff(square, free).rms > 0.1);
-  let onRow = 0;
-  for (let x = 0; x < 257; x++) if (at(free, x, 64) <= 1e-6) onRow++;
-  assert.ok(onRow < 20, `${onRow} texels of row 64 lie on a wall with full jitter; without jitter all 257 do`);
-});
-
-test('generate/cellular-noise: with full jitter the rows of the cells no longer show', async () => {
-  // The two measures of the fractal noise's test: roughness across steps of five texels along the axes and the
-  // 3-4-5 slants, and the curvature (h_xx - h_yy) along the axes against the same along the slants. The points
-  // are scattered one to a square cell: measured, the roughness is alike within 1.2 % and the curvature within
-  // 5 %, a trace of the rows that the eye does not find. At half the jitter the curvature ratio is 2.2.
-  const steps = [[5, 0], [0, 5], [3, 4], [4, 3], [-3, 4], [-4, 3], [4, -3], [3, -4]] as const;
-  const measure = async (jitter: number): Promise<{ readonly worst: number; readonly curvature: number }> => {
-    const sums = steps.map(() => 0);
-    let axes = 0, slants = 0;
-    for (const seed of [0, 1, 2, 3]) {
-      const out = await render({ size: 0.06, jitter, seed }, 513);
-      for (let y = 8; y < 505; y++) {
-        for (let x = 8; x < 505; x++) {
-          const h = at(out, x, y);
-          steps.forEach(([dx, dy], k) => { sums[k] += (at(out, x + dx, y + dy) - h) ** 2; });
-          axes += (at(out, x + 5, y) + at(out, x - 5, y) - at(out, x, y + 5) - at(out, x, y - 5)) ** 2;
-          slants += (at(out, x + 3, y + 4) + at(out, x - 3, y - 4) - at(out, x - 4, y + 3) - at(out, x + 4, y - 3)) ** 2;
-        }
+test('generate/cellular-noise: a smaller feature size gives more cells, and jitter makes them unequal', async () => {
+  /** The texels of every cell that does not touch the border, by the cell's value. */
+  const areas = (field: FieldData): number[] => {
+    const count = new Map<number, number>(), cut = new Set<number>();
+    for (let y = 0; y < field.height; y++) {
+      for (let x = 0; x < field.width; x++) {
+        const value = at(field, x, y);
+        count.set(value, (count.get(value) ?? 0) + 1);
+        if (x === 0 || y === 0 || x === field.width - 1 || y === field.height - 1) cut.add(value);
       }
     }
-    const mean = sums.reduce((a, b) => a + b, 0) / sums.length;
-    return { worst: Math.max(...sums.map((sum) => Math.abs(sum / mean - 1))), curvature: axes / slants };
+    return [...count].filter(([value]) => !cut.has(value)).map(([, texels]) => texels);
   };
-  const free = await measure(1);
-  assert.ok(free.worst < 0.04, `the roughness along one direction differs from the mean of all by ${(100 * free.worst).toFixed(1)} %`);
-  assert.ok(Math.abs(free.curvature - 1) < 0.1, `curvature along the axes is ${free.curvature.toFixed(3)} of that along the slants`);
-  const half = await measure(0.5);
-  assert.ok(half.curvature > 1.5, `at half the jitter the rows show: ${half.curvature.toFixed(3)}`);
+  const spread = (list: readonly number[]): { readonly mean: number; readonly relative: number } => {
+    const mean = list.reduce((a, b) => a + b, 0) / list.length;
+    return { mean, relative: Math.sqrt(list.reduce((a, b) => a + (b - mean) ** 2, 0) / list.length) / mean };
+  };
+  // One value per cell, and a cell has the area of a square of the feature size: 64 x 64 texels at size 0.25
+  // and 257, and a twenty-fifth of that at size 0.05.
+  const few = spread(areas(await render({ mode: 'cell', size: 0.25, jitter: 0 })));
+  const many = areas(await render({ mode: 'cell', size: 0.05, jitter: 0 }));
+  assert.ok(Math.abs(few.mean / 4096 - 1) < 0.03, `a cell of size 0.25 holds ${few.mean} texels`);
+  assert.ok(many.length > 300 && many.length <= 400 && Math.abs(spread(many).mean / 163.84 - 1) < 0.03, `${many.length} whole cells of ${spread(many).mean} texels at size 0.05`);
+  // Without jitter the cells are alike, but for the texels on their walls: measured, their areas differ by 2 %.
+  // With full jitter by 24 %.
+  const even = spread(many), free = spread(areas(await render({ mode: 'cell', size: 0.05, jitter: 1 })));
+  assert.ok(even.relative < 0.06, `without jitter the areas differ by ${(100 * even.relative).toFixed(1)} %`);
+  assert.ok(free.relative > 0.15, `with full jitter the areas differ by ${(100 * free.relative).toFixed(1)} %`);
+  assert.ok(diff(await render({ mode: 'edge', size: 0.25, jitter: 0 }), await render({ mode: 'edge', size: 0.25, jitter: 1 })).rms > 0.1);
+});
+
+/** In place: the discrete Fourier transform of a row whose length is a power of two. */
+function fft(re: Float64Array, im: Float64Array): void {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { const r = re[i]!; re[i] = re[j]!; re[j] = r; const m = im[i]!; im[i] = im[j]!; im[j] = m; }
+  }
+  for (let length = 2; length <= n; length <<= 1) {
+    const half = length >> 1, wr = Math.cos((-2 * Math.PI) / length), wi = Math.sin((-2 * Math.PI) / length);
+    for (let i = 0; i < n; i += length) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < half; k++) {
+        const ur = re[i + k]!, ui = im[i + k]!;
+        const vr = re[i + k + half]! * cr - im[i + k + half]! * ci, vi = re[i + k + half]! * ci + im[i + k + half]! * cr;
+        re[i + k] = ur + vr; im[i + k] = ui + vi; re[i + k + half] = ur - vr; im[i + k + half] = ui - vi;
+        const next = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = next;
+      }
+    }
+  }
+}
+
+/**
+ * How much the lattice shows in a field of 513 texels: the power of the waves that the rows of lattice points
+ * would give, within 15 % of their wavelength and 10 degrees of their three directions, over the power of the
+ * waves of the same lengths half way between those directions. 1 for a field without a lattice.
+ */
+function latticeTrace(fields: readonly FieldData[], size: number): number {
+  const n = 512, rows = 1 / (ROW * size);      // waves across the terrain, one per row of points: 512 texels of 513 are one terrain width
+  let on = 0, onCount = 0, between = 0, betweenCount = 0;
+  for (const field of fields) {
+    const re = new Float64Array(n * n), im = new Float64Array(n * n);
+    const mean = stats(field).mean;
+    const window = (i: number): number => 0.5 - 0.5 * Math.cos((2 * Math.PI * (i + 0.5)) / n);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) re[y * n + x] = (at(field, x, y) - mean) * window(x) * window(y);
+    const lineRe = new Float64Array(n), lineIm = new Float64Array(n);
+    for (let y = 0; y < n; y++) {
+      lineRe.set(re.subarray(y * n, (y + 1) * n)); lineIm.fill(0);
+      fft(lineRe, lineIm);
+      re.set(lineRe, y * n); im.set(lineIm, y * n);
+    }
+    for (let x = 0; x < n; x++) {
+      for (let y = 0; y < n; y++) { lineRe[y] = re[y * n + x]!; lineIm[y] = im[y * n + x]!; }
+      fft(lineRe, lineIm);
+      for (let y = 0; y < n; y++) { re[y * n + x] = lineRe[y]!; im[y * n + x] = lineIm[y]!; }
+    }
+    for (let ky = -n / 2; ky < n / 2; ky++) {
+      for (let kx = 0; kx < n / 2; kx++) {
+        const k = Math.hypot(kx, ky);
+        if (k < 0.85 * rows || k > 1.15 * rows) continue;
+        // The rows run along x, so their waves run along y: at 90 degrees, and at 30 and 150. Folded to 0..60.
+        const angle = (((Math.atan2(ky, kx) * 180) / Math.PI) % 60 + 60) % 60;
+        const power = re[((ky + n) % n) * n + kx]! ** 2 + im[((ky + n) % n) * n + kx]! ** 2;
+        if (Math.abs(angle - 30) <= 10) { on += power; onCount++; }
+        if (angle <= 10 || angle >= 50) { between += power; betweenCount++; }
+      }
+    }
+  }
+  return on / onCount / (between / betweenCount);
+}
+
+test('generate/cellular-noise: full jitter leaves no more than a trace of the lattice of the points', async () => {
+  // One point to a cell is an order that scattering each within its cell cannot remove altogether. Measured over
+  // four seeds: mode distance 1.19 at full jitter, 8.0 at half the jitter and millions without; at full jitter
+  // mode cell 0.90, second 1.43 and edge 1.50. The eye finds no rows in any of them.
+  const fields = async (jitter: number, mode: Mode): Promise<FieldData[]> => {
+    const list: FieldData[] = [];
+    for (const seed of [0, 1, 2, 3]) list.push(await render({ mode, size: 0.04, jitter, seed }, 513));
+    return list;
+  };
+  const free = latticeTrace(await fields(1, 'distance'), 0.04);
+  const half = latticeTrace(await fields(0.5, 'distance'), 0.04);
+  const none = latticeTrace(await fields(0, 'distance'), 0.04);
+  assert.ok(free > 0.8 && free < 1.35, `with full jitter the waves of the lattice hold ${free.toFixed(3)} times the power of those between`);
+  assert.ok(half > 4 && none > 1000, `${half.toFixed(2)} at half the jitter and ${none.toFixed(0)} without`);
+  for (const [mode, most] of [['cell', 1.25], ['second', 1.7], ['edge', 1.8]] as const) {
+    const trace = latticeTrace(await fields(1, mode), 0.04);
+    assert.ok(trace > 0.75 && trace < most, `mode ${mode}, full jitter: ${trace.toFixed(3)}`);
+  }
 });
 
 test('generate/cellular-noise: every level of the ladder has the same cells, in every mode', async () => {

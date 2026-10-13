@@ -258,9 +258,8 @@ export default defineNode({
     }
     const { rim, sets } = plan(texels);
     const signs = SEQUENCE[ctx.params.mode];
-    // The disc kernel first, on the terrain as it came; with a radius of next to nothing it is left out.
-    const rims = rim >= 0.05 ? 1 : 0;
-    const perSign = rims + sets.length;
+    // Each dilation or erosion: the disc kernel first, on the terrain as it came, then the sets of texels.
+    const perSign = 1 + sets.length;
     const rimCost = discLoads(rim) + RIM;
     // A table cannot be made inside the loop: one for every set, before it.
     const tables: Lut<'vec4f'>[] = sets.map((set) => ctx.lut(new Float32Array(set.flatMap(([x, y]) => [x, y, 0, 0])), 'vec4f'));
@@ -271,10 +270,10 @@ export default defineNode({
       const out = targets[i % 2]!;
       const sign = signs[Math.floor(i / perSign)]!;
       const step = i % perSign;
-      if (step < rims) {
+      if (step === 0) {
         ctx.run(disc, { in: { src: current }, out: { out }, params: { radius: rim, sign }, cost: rimCost });
       } else {
-        const offsets = tables[step - rims]!;
+        const offsets = tables[step - 1]!;
         ctx.run(points, { in: { src: current }, out: { out }, params: { sign }, luts: { offsets }, cost: offsets.length + 1 });
       }
       current = out;

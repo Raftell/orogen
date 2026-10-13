@@ -39,13 +39,13 @@ export default defineNode({
   type: 'select/slope',
   title: 'Slope',
   category: 'select',
-  description: 'Selects the terrain whose slope lies between two angles, measured in real metres after smoothing over a radius.',
+  description: 'Selects the terrain whose physical slope lies between two angles, measured after smoothing over a radius.',
   keywords: ['steepness', 'angle', 'gradient', 'cliff', 'flat', 'incline'],
   inputs: [{ name: 'in', type: 'field' }],
   outputs: [{ name: 'out', type: 'field', role: 'mask' }],
   params: [
     param.slope('slopeMin', { label: 'Lower slope', default: 40, help: 'Terrain at least this steep is fully selected.' }),
-    param.slope('slopeMax', { label: 'Upper slope', default: 70, help: 'Terrain up to this steep is fully selected.' }),
+    param.slope('slopeMax', { label: 'Upper slope', default: 70, help: 'Terrain no steeper than this is fully selected.' }),
     {
       kind: 'float', name: 'feather', label: 'Feather', unit: 'angle', default: 5, min: 0, max: 45,
       help: 'Larger values fade the selection out over a wider margin of angles below and above the band.',

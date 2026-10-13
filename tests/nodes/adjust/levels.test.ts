@@ -1,10 +1,10 @@
 // tests/nodes/adjust/levels.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { channelOf, conformance, expectClose, expectIdentical, fixtures, renderNode, type FieldData } from '../../helpers/index.ts';
+import { channelOf, conformance, expectClose, expectFinite, expectIdentical, fieldOf, fixtures, renderNode, type FieldData } from '../../helpers/index.ts';
 import type { ParamValue } from '../../../src/core/api.ts';
 import def from '../../../src/core/nodes/adjust/levels.ts';
-import { COLOR_TOL, countValues, mapValues, WIDE, WIDE_COLOR } from './_reference.ts';
+import { COLOR_TOL, countValues, extremes, HUGE_A, mapValues, WIDE, WIDE_COLOR } from './_reference.ts';
 
 conformance(def);
 
@@ -68,6 +68,16 @@ test('adjust/levels: the points at 0 and 1 without a gamma or a limit leave ever
   expectIdentical(await levels(WIDE, neutral), WIDE);
   // With the limit the same setting is a clamp to 0..1 and nothing else.
   expectIdentical(await levels(WIDE, { ...neutral, clamp: true }), mapValues(WIDE, (x) => Math.min(1, Math.max(0, x))));
+});
+
+test('adjust/levels: without the limit a result too large for a float is the largest float, and an output range of no width gives its one value', async () => {
+  // Two points a thousandth apart: a height of 3e38 lies 3e41 widths beyond them, which is no float.
+  const far = await levels(HUGE_A, { clamp: false, inMin: 0, inMax: 0.001 });
+  expectFinite(far);
+  assert.ok(extremes(far).max > 1e38 && extremes(far).min < -1e38, `the result spans ${extremes(far).min}..${extremes(far).max}`);
+  expectIdentical(await levels(HUGE_A, { clamp: false, inMin: 0, inMax: 0.001, outMin: 0.5, outMax: 0.5 }), fieldOf(257, () => 0.5));
+  // With the limit such heights are the two ends of the output range like any others beyond the two points.
+  expectIdentical(await levels(HUGE_A, { inMin: 0, inMax: 0.001 }), mapValues(HUGE_A, (x) => (x >= 0.001 ? 1 : 0)));
 });
 
 test('adjust/levels: a terrain is stretched: its floor and its top become flat, and what lies between spans the whole range', async () => {

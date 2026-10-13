@@ -6,17 +6,27 @@ import { selectShape } from './_wgsl.ts';
 
 /**
  * The roughness that is fully selected at a strength of 0.5: the relief within a radius, as the root mean
- * square of the height about its smoothed surface in metres, over the radius in metres. Half of it and less
- * is not selected, and the mask rises as a smooth step between the two. To calibrate: ref/fbm at the test
- * scale, which is rough everywhere, has between 0.2 and 0.55 at any radius, with a median of 0.33.
+ * square of the height about its smoothed surface in metres, over the radius in metres. To calibrate:
+ * ref/fbm at the test scale, which is rough everywhere, has between 0.26 and 0.47 of it at the default
+ * radius, with a median of 0.35, and comes out half selected.
  */
-const FULL_ROUGHNESS = 0.5;
+const FULL_ROUGHNESS = 0.55;
+/**
+ * The share of the full roughness up to which ground is not selected at all; the mask is a smooth step from
+ * there to all of it. A step from nearer the full roughness is a narrower one: from 0.7 the whole of ref/fbm
+ * went from unselected to selected between the strengths 0.42 and 0.58, and of a terrain with smooth valleys
+ * and rough heights only the roughest tops were selected at the default. From 0 smooth ground keeps a haze.
+ */
+const SMOOTH_SHARE = 0.25;
 
 /**
  * How many radii the mean of the squares is taken over. Over one radius it is the size of the one bump at
- * hand, and a terrain that is rough throughout comes out mottled; over three it is the roughness of a patch.
+ * hand, and a terrain that is rough throughout comes out mottled; over three the mask is a blur that no
+ * longer follows the ground it selects.
  */
-const PATCH = 3;
+const PATCH = 2;
+/** How many radii from the border the squares are not counted: there the smoothed surface has samples on one side only. */
+const MARGIN = 3;
 
 // The square of what the terrain stands above or below its smoothed surface.
 const deviation = defineKernel({
@@ -40,10 +50,11 @@ const mask = defineKernel({
   includes: [selectShape],
   cost: 1,
   code: /* wgsl */ `
+const SMOOTH_SHARE = ${SMOOTH_SHARE};
+
 fn compute(px: vec2i, uv: vec2f) -> f32 {
   let share = sqrt(max(variance_at(px), 0.0)) * P.gain;
-  // From half of the full roughness to all of it.
-  return selectShape_flip(selectShape_ease(2.0 * share - 1.0), P.invert);
+  return selectShape_flip(selectShape_ease((share - SMOOTH_SHARE) / (1.0 - SMOOTH_SHARE)), P.invert);
 }`,
 });
 
@@ -72,9 +83,9 @@ export default defineNode({
     const squares = ctx.alloc('field');
     ctx.run(deviation, { in: { height: src, around: around.field }, out: { out: squares } });
     if (around.owned) ctx.release(around.field);
-    // Within three radii of the border the smoothed surface has fewer samples on one side and lies closer to
-    // the terrain than it does inside: the squares there are too small, and are not counted.
-    const variance = smoothed(ctx, squares, PATCH * radius, { level: true, skip: 3 * radius });
+    // Near the border the smoothed surface has fewer samples on one side and lies closer to the terrain than
+    // it does inside: the squares there are too small, and are not counted.
+    const variance = smoothed(ctx, squares, PATCH * radius, { level: true, skip: MARGIN * radius });
     if (variance.owned) ctx.release(squares);
 
     // Relief in metres over the radius in metres. The strength acts as its cube: 0 selects nothing.

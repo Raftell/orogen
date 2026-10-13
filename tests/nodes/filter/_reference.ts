@@ -183,37 +183,47 @@ export function stepAt(f: FieldData, x: number, y: number): readonly [number, nu
   return softStep(...slopeAt(f, x, y));
 }
 
-/** The push at texel (x, y): the gradient itself up to 45 degrees, and of length 1 beyond. */
-export function pushAt(f: FieldData, x: number, y: number): readonly [number, number] {
-  const [gx, gy] = slopeAt(f, x, y);
+/** A physical gradient as a push: itself up to 45 degrees, and of length 1 beyond. */
+function capped(gx: number, gy: number): readonly [number, number] {
   const scale = 1 / Math.max(Math.hypot(gx, gy), 1);
   return [gx * scale, gy * scale];
 }
 
-/**
- * The place reached from texel (x, y) by `steps` equal steps up the slope of `guide`, `reach` texels in all on
- * steep ground: the first step by the slope at the texel, the others by the slope between texels.
- */
-export function pathEnd(guide: FieldData, x: number, y: number, reach: number, steps: number): readonly [number, number] {
-  const last = guide.width - 1;
-  let p: readonly [number, number] = [x, y];
-  let flow = stepAt(guide, x, y);
-  for (let i = 0; i < steps; i++) {
-    p = [Math.min(last, Math.max(0, p[0] + (reach / steps) * flow[0])), Math.min(last, Math.max(0, p[1] + (reach / steps) * flow[1]))];
-    flow = stepBetween(guide, p[0], p[1]);
-  }
-  return p;
+/** The push at texel (x, y). */
+export function pushAt(f: FieldData, x: number, y: number): readonly [number, number] {
+  return capped(...slopeAt(f, x, y));
 }
 
-/** The step at the fractional position (x, y): from the gradient of the bilinear surface through the four texels around it. */
-export function stepBetween(f: FieldData, x: number, y: number): readonly [number, number] {
+/** The physical gradient at the fractional position (x, y): that of the bilinear surface through the four texels around it. */
+function slopeBetween(f: FieldData, x: number, y: number): readonly [number, number] {
   const last = f.width - 1;
   const cx = Math.min(last, Math.max(0, x)), cy = Math.min(last, Math.max(0, y));
   const ix = Math.min(Math.floor(cx), last - 1), iy = Math.min(Math.floor(cy), last - 1);
   const fx = cx - ix, fy = cy - iy;
   const h00 = at(f, ix, iy), h10 = at(f, ix + 1, iy), h01 = at(f, ix, iy + 1), h11 = at(f, ix + 1, iy + 1);
   const scale = HEIGHT_RANGE / (TERRAIN_SIZE / last);
-  return softStep(((h10 - h00) * (1 - fy) + (h11 - h01) * fy) * scale, ((h01 - h00) * (1 - fx) + (h11 - h10) * fx) * scale);
+  return [((h10 - h00) * (1 - fy) + (h11 - h01) * fy) * scale, ((h01 - h00) * (1 - fx) + (h11 - h10) * fx) * scale];
+}
+
+/**
+ * The place reached from texel (x, y) by `steps` equal steps up the slope of `guide`, each as long as the push
+ * there, `reach` texels in all on ground of 45 degrees or more: the first by the slope at the texel, the others
+ * by the slope between texels.
+ */
+export function pathEnd(guide: FieldData, x: number, y: number, reach: number, steps: number): readonly [number, number] {
+  const last = guide.width - 1;
+  let p: readonly [number, number] = [x, y];
+  let pace = pushAt(guide, x, y);
+  for (let i = 0; i < steps; i++) {
+    p = [Math.min(last, Math.max(0, p[0] + (reach / steps) * pace[0])), Math.min(last, Math.max(0, p[1] + (reach / steps) * pace[1]))];
+    pace = capped(...slopeBetween(guide, p[0], p[1]));
+  }
+  return p;
+}
+
+/** The step at the fractional position (x, y). */
+export function stepBetween(f: FieldData, x: number, y: number): readonly [number, number] {
+  return softStep(...slopeBetween(f, x, y));
 }
 
 /** How long a step is on ground of the given physical slope, in metres per metre. */

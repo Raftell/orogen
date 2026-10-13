@@ -6,7 +6,7 @@ import {
   type FieldData,
 } from '../../helpers/index.ts';
 import def from '../../../src/core/nodes/filter/directional-blur.ts';
-import { clamped, inner, mapField, range } from './_reference.ts';
+import { clamped, mapField, range } from './_reference.ts';
 
 conformance(def);
 
@@ -15,7 +15,7 @@ const N = 257;
 /**
  * The Gaussian of `sigma` texels along the line at `angle`, in float64 and with every tap: one at every texel
  * along the axis the line is nearer to, read between the two texels the line passes there; weights beyond 3 sigma
- * are dropped. Where the line leaves the terrain the picture continues as its mirror image along the line.
+ * are dropped. Beyond the border the picture continues as its mirror image, and the line runs on into that.
  */
 function lineGaussian(src: FieldData, sigma: number, angle: number): FieldData {
   const r = (angle * Math.PI) / 180;
@@ -26,33 +26,21 @@ function lineGaussian(src: FieldData, sigma: number, angle: number): FieldData {
   const spacing = Math.hypot(1, lean);
   const taps = Math.floor((3 * sigma) / spacing);
   const last = src.width - 1;
-  const within = (room: number, l: number): number => Math.min(Math.floor(room / l + 1e-4), 1e6);
-  const mirrored = (m: number, lo: number, hi: number): number => {
-    const span = hi - lo;
-    if (span <= 0) return lo;
-    const period = 2 * span;
-    const k = (((m - lo) % period) + period) % period;
-    return lo + (k > span ? period - k : k);
+  const mirrored = (v: number): number => {
+    const period = 2 * last;
+    const k = v - period * Math.floor(v / period);
+    return k > last ? period - k : k;
   };
   return mapField(src, (x, y) => {
-    // The steps along the major axis for which the line through (x, y) is inside the terrain.
     const major = alongX ? x : y, minor = alongX ? y : x;
-    let lo = -major, hi = last - major;
-    if (lean > 0) {
-      hi = Math.min(hi, within(last - minor, lean));
-      lo = Math.max(lo, -within(minor, lean));
-    } else if (lean < 0) {
-      hi = Math.min(hi, within(minor, -lean));
-      lo = Math.max(lo, -within(last - minor, -lean));
-    }
     let sum = 0, total = 0;
     for (let i = -taps; i <= taps; i++) {
       const w = Math.exp(-((i * spacing) ** 2) / (2 * sigma * sigma));
-      const m = mirrored(i, lo, hi);
-      const across = m * lean;
+      const m = mirrored(major + i);
+      const across = mirrored(Math.fround(minor + Math.fround(i * Math.fround(lean))));
       const whole = Math.floor(across), f = across - whole;
-      const a = alongX ? clamped(src, x + m, y + whole) : clamped(src, x + whole, y + m);
-      const b = alongX ? clamped(src, x + m, y + whole + 1) : clamped(src, x + whole + 1, y + m);
+      const a = alongX ? clamped(src, m, whole) : clamped(src, whole, m);
+      const b = alongX ? clamped(src, m, whole + 1) : clamped(src, whole + 1, m);
       sum += w * (a + f * (b - a));
       total += w;
     }
@@ -60,7 +48,6 @@ function lineGaussian(src: FieldData, sigma: number, angle: number): FieldData {
   });
 }
 
-// Lines that pass texels at whole and half steps: where they leave the terrain is decided without rounding.
 const HALF = (Math.atan(0.5) * 180) / Math.PI;      // one texel down for two across
 const QUARTER = 360 - (Math.atan(0.25) * 180) / Math.PI;   // one texel up for four across
 
@@ -80,20 +67,12 @@ function spread(f: FieldData, angle: number): { along: number; across: number; s
   return { along: Math.sqrt(along / sum), across: Math.sqrt(across / sum), sum };
 }
 
-test('filter/directional-blur: within the taps of one pass the output is the Gaussian along the line, mirrored at the border', async () => {
+test('filter/directional-blur: within the taps of one pass the output is the Gaussian along the line, which runs on into the mirror image at the border', async () => {
   // A radius of 0.015 is 3.84 texels at 257. At 0 and 90 degrees the line is a row or a column, at 45 a diagonal.
   const src = await fixtures.fbm(N);
-  for (const angle of [0, 90, 180, 45, 135, HALF, 90 + HALF, QUARTER]) {
+  for (const angle of [0, 90, 180, 45, 135, HALF, 90 + HALF, QUARTER, 30, 200, 290]) {
     const { out } = await renderNode(def, { inputs: { in: src }, params: { radius: 0.015, angle } });
-    expectClose(out, lineGaussian(src, 0.015 * 256, angle), { max: 1e-5 });
-  }
-  // At any other angle the tap at which a line turns back can be one further on a device that rounds the other
-  // way; away from the border no tap turns back.
-  for (const angle of [30, 200, 290]) {
-    const { out } = await renderNode(def, { inputs: { in: src }, params: { radius: 0.015, angle } });
-    const exact = lineGaussian(src, 0.015 * 256, angle);
-    expectClose(inner(out, 12), inner(exact, 12), { max: 1e-5 });
-    expectClose(out, exact, { max: 5e-3 * range(src) });
+    expectClose(out, lineGaussian(src, 0.015 * 256, angle), { max: 2e-5 });
   }
 });
 
@@ -103,9 +82,12 @@ test('filter/directional-blur: a wide radius, made of several passes, is the sam
   for (const [radius, angle] of [[0.05, 0], [0.1, 0], [0.25, 90], [0.1, 45], [0.1, HALF], [0.1, 60], [0.25, 20]] as const) {
     const { out } = await renderNode(def, { inputs: { in: src }, params: { radius, angle } });
     const exact = lineGaussian(src, radius * 256, angle);
-    // Along a row, a column or a diagonal nothing is read between texels: the passes are the Gaussian within
-    // 0.05 % of the range. Elsewhere each pass reads between two lines, which adds up to 0.6 % at a border.
-    expectClose(out, exact, { max: (angle % 45 === 0 ? 5e-4 : 8e-3) * range(src), rms: 5e-4 * range(src) });
+    // Along a row or a column the passes are the Gaussian within 0.05 % of the range. Elsewhere each pass reads
+    // between two lines, and a later pass finds the mirror image blurred along the line, not along its mirror
+    // image, by the passes before it: measured, up to 0.9 % of the range at a border at a radius of 0.1 and
+    // 1.4 % at 0.25, and 0.1 % and 0.26 % in the root mean square.
+    const axis = angle % 90 === 0;
+    expectClose(out, exact, { max: (axis ? 5e-4 : 2e-2) * range(src), rms: (axis ? 2e-4 : 4e-3) * range(src) });
   }
 });
 

@@ -238,7 +238,7 @@ the frame above only.
 
 The same graph is evaluated at several ladder levels. A node obeys:
 
-1. A generator (1.7) is a pure function of `uv`, its parameters and its seed, and of an optional input, where one is connected, at the texel it writes. It positions features with `uv`, never with `px`, and never reads `frame.res` or `frame.cellSize`. Its octave count and feature sizes do not depend on the resolution. The same holds for every other node without required inputs that reads no file.
+1. A generator (1.7) is a pure function of `uv`, its parameters and its seed, and of an optional input, where one is connected, at the texel it writes. It may also read that input on the coarsest level of `ctx.ladder`, taken with `ops.resample` and the filter `'nearest'`: that level is the same grid at every level of one ladder and the filter takes its vertices as they are, so what the node derives from it (the ground a crater is cut into, `generate/crater`) is the same in a preview and in the build. It positions features with `uv`, never with `px`, and never reads `frame.res` or `frame.cellSize`. Its octave count and feature sizes do not depend on the resolution. The same holds for every other node without required inputs that reads no file.
 2. Neighbourhood sizes are `'length'` parameters converted with `ctx.lengthToPx()`. A filter whose radius in texels is below the size at which it has an effect passes its input through.
 3. Slopes and gradients are physical (1.6).
 4. Simulations scale their time steps and iteration counts with the cell size as `simulation.md` prescribes.

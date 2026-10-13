@@ -11,7 +11,7 @@ const LADDER_TOLERANCE = 0.02;
 conformance(def, {
   resolutionTol: {
     value: LADDER_TOLERANCE,
-    reason: 'Measures slope by central differences, with half the step at the finer level. On the terrain fixture the mask differs by 1.0 % of its standard deviation between 257 and 513 at the defaults, as much at a radius the finer level smooths on a coarser grid; the test below measures both.',
+    reason: 'Measures slope by central differences, with half the step at the finer level. On the terrain fixture the mask differs by 1.1 % of its standard deviation between 257 and 513 at the defaults, where the radius is 1.28 texels of the coarser level, and by 0.3 % at a radius of 0.03; the test below measures both.',
   },
 });
 
@@ -132,29 +132,31 @@ test('select/slope: a cone is selected on its flank and not on its floor, and in
   expectClose(inverted, fieldOf(257, (u, v) => 1 - at(plain, Math.round(u * 256), Math.round(v * 256))), { max: 1e-6 });
 });
 
-test('select/slope: two levels of the ladder agree within the declared tolerance, also where only the finer one smooths on a coarser grid', async () => {
-  // At the default radius both levels smooth in one pass: 1.28 texels at 257 and 2.56 at 513.
+test('select/slope: two levels of the ladder agree within the declared tolerance, and closer at a radius of several texels', async () => {
+  // At the default radius both levels smooth in one pass: 1.28 texels at 257 and 2.56 at 513. The central
+  // difference of the slope has half the step at the finer level, which is what the tolerance is for.
   const fine = await renderLadder(def, { inputs: { in: 'terrain' } });
   const atDefault = expectLadder(fine[257].out, fine[513].out, { rel: LADDER_TOLERANCE });
-  assert.ok(atDefault.rel > 0.002, `the levels differ by ${atDefault.rel} of the standard deviation: the central difference has half the step`);
-  // A radius of 0.03 is 7.68 texels at 257 and 15.36 at 513, which one pass does not hold. The band is one the
-  // smoothed fixture has slopes in.
+  assert.ok(atDefault.rel > 0.005, `the levels differ by ${atDefault.rel} of the standard deviation: the tolerance is not there for nothing`);
+  // A radius of 0.03 is 7.68 texels at 257, in one pass, and 15.36 at 513, on a coarser grid. The band is one
+  // the smoothed fixture has slopes in.
   const broad = await renderLadder(def, { inputs: { in: 'terrain' }, params: { radius: 0.03, slopeMin: 20, slopeMax: 45 } });
-  expectLadder(broad[257].out, broad[513].out, { rel: LADDER_TOLERANCE });
+  expectLadder(broad[257].out, broad[513].out, { rel: 0.01 });
   // No texel differs by more than a slope a degree apart makes across a feather of 5, the border included.
   expectLadder(fine[257].out, fine[513].out, { max: 0.25 });
   expectLadder(broad[257].out, broad[513].out, { max: 0.25 });
 });
 
 test('select/slope: on rough ground the radius is what makes a preview show what the build selects', async () => {
-  // A terrain with detail down to 8 cells at 257. Measured as it is, the finer level resolves steeper faces;
-  // smoothed over 0.02, both levels measure the same ground.
+  // A terrain with detail down to 8 cells at 257, and a band it has slopes on both sides of. Measured as it
+  // is, the finer level resolves steeper faces and the masks differ by 7 % of their standard deviation; at the
+  // default radius, 1.28 texels at 257, by 5 %; smoothed over 0.02, both levels measure the same ground.
   const share: number[] = [];
-  for (const radius of [0.0001, 0.02]) {
+  for (const radius of [0.0001, 0.005, 0.02]) {
     const levels: FieldData[] = [];
-    for (const res of [257, 513]) levels.push((await renderNode(def, { res, inputs: { in: rough(res) }, params: { radius } })).out);
-    share.push(expectLadder(levels[0], levels[1], { rel: 0.2 }).rel);
+    for (const res of [257, 513]) levels.push((await renderNode(def, { res, inputs: { in: rough(res) }, params: { radius, slopeMin: 20, slopeMax: 60 } })).out);
+    share.push(expectLadder(levels[0], levels[1], { rel: 0.1 }).rel);
   }
-  assert.ok(share[1] < 0.03, `smoothed over 0.02 the levels differ by ${share[1]} of the standard deviation`);
-  assert.ok(share[0] > 2 * share[1], `unsmoothed they differ by ${share[0]}, smoothed by ${share[1]}`);
+  assert.ok(share[2] < 0.01, `smoothed over 0.02 the levels differ by ${share[2]} of the standard deviation`);
+  assert.ok(share[0] > share[1] && share[1] > 2 * share[2], `the levels differ by ${share[0]} unsmoothed, by ${share[1]} at the default radius and by ${share[2]} smoothed over 0.02`);
 });

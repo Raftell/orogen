@@ -26,8 +26,11 @@ export function hashUnit2(h: number): Vec2 {
   return [hashUnit(h), hashUnit(hashU32(h))];
 }
 
-/** generateNoise_simplexD: [value, d/dx, d/dy]. */
-export function simplexD(px: number, py: number, seed: number): readonly [number, number, number] {
+/** A point of the triangular lattice that reaches p: its lattice cell, and the vector from it to p. */
+export interface Corner { readonly cx: number; readonly cy: number; readonly x: number; readonly y: number }
+
+/** The three lattice points around p, as generateNoise_simplexD finds them: for a kernel that carries something else on the same lattice. */
+export function corners(px: number, py: number): readonly [Corner, Corner, Corner] {
   const qx = Math.min(Math.max(px, -LIMIT), LIMIT);
   const qy = Math.min(Math.max(py, -LIMIT), LIMIT);
   const skew = f(f(qx + qy) * F2);
@@ -38,17 +41,18 @@ export function simplexD(px: number, py: number, seed: number): readonly [number
   const y0 = f(f(qy - cy) + unskew);
   const ox = x0 > y0 ? 1 : 0;
   const oy = 1 - ox;
-  const x1 = f(f(x0 - ox) + G2);
-  const y1 = f(f(y0 - oy) + G2);
-  const x2 = f(x0 - X2);
-  const y2 = f(y0 - X2);
-  let value = 0, dx = 0, dy = 0;
-  const corners: readonly (readonly [number, number, Vec2])[] = [
-    [x0, y0, gradientAt(cx, cy, seed)],
-    [x1, y1, gradientAt(cx + ox, cy + oy, seed)],
-    [x2, y2, gradientAt(cx + 1, cy + 1, seed)],
+  return [
+    { cx, cy, x: x0, y: y0 },
+    { cx: cx + ox, cy: cy + oy, x: f(f(x0 - ox) + G2), y: f(f(y0 - oy) + G2) },
+    { cx: cx + 1, cy: cy + 1, x: f(x0 - X2), y: f(y0 - X2) },
   ];
-  for (const [x, y, g] of corners) {
+}
+
+/** generateNoise_simplexD: [value, d/dx, d/dy]. */
+export function simplexD(px: number, py: number, seed: number): readonly [number, number, number] {
+  let value = 0, dx = 0, dy = 0;
+  for (const { cx, cy, x, y } of corners(px, py)) {
+    const g = gradientAt(cx, cy, seed);
     const t = Math.max(0.5 - (x * x + y * y), 0);
     const t2 = t * t;
     const t4 = t2 * t2;

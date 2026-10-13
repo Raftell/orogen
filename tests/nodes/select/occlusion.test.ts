@@ -1,7 +1,7 @@
 // tests/nodes/select/occlusion.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { at, conformance, expectClose, expectLadder, expectStats, fieldOf, renderLadder, renderNode, stats, type FieldData } from '../../helpers/index.ts';
+import { at, conformance, expectClose, expectLadder, expectStats, fieldOf, fixtures, renderLadder, renderNode, stats, type FieldData } from '../../helpers/index.ts';
 import def from '../../../src/core/nodes/select/occlusion.ts';
 
 /** What two levels of the ladder may differ by, as a part of the standard deviation: the default is 0.01. */
@@ -10,7 +10,7 @@ const LADDER_TOLERANCE = 0.03;
 conformance(def, {
   resolutionTol: {
     value: LADDER_TOLERANCE,
-    reason: 'Looks out at distances that double from one texel: the finer level has one distance nearer, which the coarser has no texels for. On the terrain fixture the mask differs by 1.1 % of its standard deviation between 257 and 513; the test below measures it at three radii.',
+    reason: 'Looks out at distances that double from one texel: the finer level has one distance nearer, which the coarser has no texels for. On the terrain fixture the mask differs by 1.1 % of its standard deviation between 257 and 513 at the defaults and by 2.0 % at a radius of 0.01; the test below measures both.',
   },
 });
 
@@ -111,6 +111,53 @@ test('select/occlusion: a slope is not sheltered by being steep, up to its borde
     expectStats((await renderNode(def, { inputs: { in: plane }, params: { radius, strength: 1 } })).out, { min: [0, 2e-3], max: [0, 2e-3] });
   }
   expectStats((await renderNode(def, { inputs: { in: 'one' }, params: { strength: 1 } })).out, { min: [0, 0], max: [0, 0] });
+});
+
+test('select/occlusion: a valley that runs out of the terrain is sheltered up to the border', async () => {
+  // The notch fixture: a V-shaped channel along the middle row, from one border to the other, in a tilted plane.
+  // On the border the hollow is that of the one axis that runs along it, across the channel, and no less than
+  // the mean of the four axes inside; faded out with the room there is, it would be a quarter of it.
+  for (const radius of [0.01, 0.04, 0.1]) {
+    const { out } = await renderNode(def, { inputs: { in: 'notch' }, params: { radius } });
+    const inside = at(out, 128, 128);
+    assert.ok(inside > 0.1 && inside < 0.5, `radius ${radius}: the floor of the channel is ${inside} inside the terrain`);
+    for (const x of [0, 1, 2, 4, 8, 16, 32, 224, 248, 252, 255, 256]) {
+      assert.ok(at(out, x, 128) >= inside - 1e-3 && at(out, x, 128) <= 1.7 * inside, `radius ${radius}: the floor is ${at(out, x, 128)} at column ${x} and ${inside} inside`);
+    }
+    // Beside the channel the plane is not sheltered, on the border either.
+    for (const x of [0, 3, 128, 256]) assert.ok(at(out, x, 40) <= 1e-3, `radius ${radius}: the plane at column ${x} is ${at(out, x, 40)}`);
+  }
+  // A channel that runs into two corners, where no axis has ground on both sides.
+  const diagonal = fieldOf(257, (u, v) => 0.3 + 0.3 * Math.abs(u - v));
+  const { out } = await renderNode(def, { inputs: { in: diagonal } });
+  for (const i of [0, 1, 2, 8, 250, 255, 256]) assert.ok(at(out, i, i) > 0.5 * at(out, 128, 128), `the floor is ${at(out, i, i)} at (${i}, ${i}) and ${at(out, 128, 128)} inside`);
+});
+
+test('select/occlusion: the mask has no frame: along the border ground is sheltered as much as it is with more ground beyond', async () => {
+  // The middle of a rough terrain, by itself and as part of the whole. With the same cell and the same heights
+  // both are the same ground, and the whole knows what lies beyond the border of the part.
+  const whole = await fixtures.fbm(513);
+  const part = fieldOf(257, (u, v) => at(whole, 128 + Math.round(u * 256), 128 + Math.round(v * 256)));
+  for (const radius of [0.01, 0.04]) {
+    const settings = { heightRange: 2 * RANGE };
+    const alone = (await renderNode(def, { inputs: { in: part }, params: { radius }, settings })).out;
+    const within = (await renderNode(def, { res: 513, inputs: { in: whole }, params: { radius: radius / 2 }, settings: { ...settings, terrainSize: 2 * TERRAIN } })).out;
+    let sumAlone = 0, sumWithin = 0, middle = 0;
+    for (let y = 0; y < 257; y++) {
+      for (let x = 0; x < 257; x++) {
+        const fromBorder = Math.min(x, y, 256 - x, 256 - y);
+        if (fromBorder < 3) {
+          sumAlone += at(alone, x, y);
+          sumWithin += at(within, 128 + x, 128 + y);
+        }
+        // Farther from the border than the farthest ground that counts, four radii, the two are the same mask.
+        if (fromBorder > 6 * radius * 256) middle = Math.max(middle, Math.abs(at(alone, x, y) - at(within, 128 + x, 128 + y)));
+      }
+    }
+    assert.ok(sumWithin > 300, `radius ${radius}: the border texels of the part add up to ${sumWithin} within the whole`);
+    assert.ok(sumAlone > 0.8 * sumWithin && sumAlone < 1.25 * sumWithin, `radius ${radius}: along its border the part alone is sheltered ${sumAlone / sumWithin} times as much as within the whole`);
+    assert.ok(middle <= 0.02, `radius ${radius}: away from the border the two differ by ${middle}`);
+  }
 });
 
 test('select/occlusion: the radius is the distance of the ground that shelters: a narrow hollow and a wide valley', async () => {

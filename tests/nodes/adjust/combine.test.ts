@@ -6,7 +6,7 @@ import {
 } from '../../helpers/index.ts';
 import type { ParamValue } from '../../../src/core/api.ts';
 import def from '../../../src/core/nodes/adjust/combine.ts';
-import { COLOR_TOL, countValues, half, PAIR_A, PAIR_B, WIDE_COLOR, zipValues } from './_reference.ts';
+import { COLOR_TOL, countValues, half, HUGE_A, HUGE_B, PAIR_A, PAIR_B, WIDE_COLOR, zipValues } from './_reference.ts';
 
 conformance(def);
 
@@ -53,6 +53,22 @@ for (const [mode, combined] of Object.entries(MODES)) {
     expectIdentical(await combine(PAIR_A, PAIR_B, { mode, strength: 0 }), PAIR_A);
   });
 }
+
+test('adjust/combine: every mode gives a float for every pair of heights as large as a float holds', async () => {
+  for (const mode of Object.keys(MODES)) {
+    for (const strength of [1, 0.5]) expectFinite(await combine(HUGE_A, HUGE_B, { mode, strength }));
+  }
+  // The modes that select are exact there too, and a smooth one is the hard one wherever the two heights differ:
+  // no two of these heights that differ lie within a smoothness of 0.25 of each other.
+  const higher = zipValues(HUGE_A, HUGE_B, (a, b) => Math.max(a, b)), lower = zipValues(HUGE_A, HUGE_B, (a, b) => Math.min(a, b));
+  expectIdentical(await combine(HUGE_A, HUGE_B, { mode: 'maximum', strength: 1 }), higher);
+  expectIdentical(await combine(HUGE_A, HUGE_B, { mode: 'minimum', strength: 1 }), lower);
+  const differ = (i: number): boolean => HUGE_A.data[i] !== HUGE_B.data[i];
+  const smoothMax = await combine(HUGE_A, HUGE_B, { mode: 'smooth-maximum', strength: 1, smoothness: 0.25 });
+  const smoothMin = await combine(HUGE_A, HUGE_B, { mode: 'smooth-minimum', strength: 1, smoothness: 0.25 });
+  assert.equal(countValues(smoothMax, (v, i) => differ(i) && v !== higher.data[i]), 0, 'the smooth maximum of two heights far apart is not the higher');
+  assert.equal(countValues(smoothMin, (v, i) => differ(i) && v !== lower.data[i]), 0, 'the smooth minimum of two heights far apart is not the lower');
+});
 
 test('adjust/combine: the modes that select one of the two inputs pass its bits through', async () => {
   expectIdentical(await combine(PAIR_A, PAIR_B, { mode: 'mix', strength: 1 }), PAIR_B);

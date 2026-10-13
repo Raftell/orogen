@@ -1,4 +1,4 @@
-// Shared by the landform generators: the WGSL library `generateLand` (smooth minima, segment distances and roofs,
+// Shared by the landform generators: the WGSL library `generateLand` (smooth minima, roofs over crest segments,
 // domain warps, slope-aligned gullies) and the seeded number stream their skeletons are laid out with on the CPU.
 import { defineLib, hashU32, hashUnit, mixSeed, noise } from '../../api.ts';
 
@@ -18,28 +18,23 @@ fn generateLand_smin(a: f32, b: f32, k: f32) -> f32 {
   return min(a, b) - 0.25 * w * t * t;
 }
 
-// (distance from p to the segment a-b, position 0..1 of the nearest point along it).
-fn generateLand_segment(p: vec2f, a: vec2f, b: vec2f) -> vec2f {
-  let ab = b - a;
-  let ap = p - a;
-  let t = saturate(dot(ap, ab) / max(dot(ab, ab), 1.0e-12));
-  return vec2f(length(ap - ab * t), t);
-}
-
 // Fractal gradient noise with its derivative: .x is the value in [-1, 1], .yz its gradient with respect to p.
+// Each octave is turned against the one before (by the angle whose cosine is 0.8), so the lattices of the
+// octaves do not line up and the noise shows no weave along the axes or the diagonals.
 fn generateLand_fbmD(p: vec2f, seed: u32, octaves: i32, gain: f32) -> vec3f {
   let n = clamp(octaves, 1, generateLand_MAX_OCTAVES);
+  let turn = mat2x2f(1.6, 1.2, -1.2, 1.6);   // twice the rotation: the next octave has half the wavelength
+  var m = mat2x2f(1.0, 0.0, 0.0, 1.0);
   var sum = vec3f(0.0);
   var norm = 0.0;
   var amp = 1.0;
-  var freq = 1.0;
   for (var i = 0; i < generateLand_MAX_OCTAVES; i++) {
     if (i >= n) { break; }
-    let v = noise_gradientD(p * freq, mixSeed(seed, u32(i)));
-    sum += amp * vec3f(v.x, v.yz * freq);
+    let v = noise_gradientD(m * p, mixSeed(seed, u32(i)));
+    sum += amp * vec3f(v.x, transpose(m) * v.yz);
     norm += amp;
     amp *= gain;
-    freq *= 2.0;
+    m = turn * m;
   }
   return sum / norm;
 }
@@ -129,7 +124,7 @@ fn generateLand_erode(p: vec2f, h0: f32, g0: vec2f, wavelength: f32, strength: f
 }
 `;
 
-/** Helpers of the landform generators: smooth minima, segment distances and roofs, warps, and slope-aligned gullies. */
+/** Helpers of the landform generators: smooth minima, roofs over crest segments, warps, and slope-aligned gullies. */
 export const generateLand = defineLib({ name: 'generateLand', code, deps: [noise] });
 
 /** A stream of uniform numbers in [0, 1) that depends on the seed alone: integer hashing, as in the kernels. */

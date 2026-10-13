@@ -3,14 +3,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { at, conformance, expectClose, expectIdentical, expectLadder, fixtures, renderLadder, renderNode, traceNode, type FieldData } from '../../helpers/index.ts';
 import def from '../../../src/core/nodes/filter/slope-warp.ts';
-import { cubicAt, gaussian, mapField, pathEnd, stepLength } from './_reference.ts';
+import { cubicAt, gaussian, mapField, pathEnd } from './_reference.ts';
 
 conformance(def);
 
 const N = 257;
 const L = N - 1;
 
-/** The node on the CPU: each texel reads the terrain where 11 steps up the slope of the smoothed terrain end, `reach` texels away on steep ground. */
+/** The node on the CPU: each texel reads the terrain where 11 steps up the slope of the smoothed terrain end, `reach` texels away on ground of 45 degrees. */
 function pushed(src: FieldData, reach: number, sigma: number): FieldData {
   const shape = sigma > 0 ? gaussian(src, sigma) : src;
   return mapField(src, (x, y) => cubicAt(src, ...pathEnd(shape, x, y, reach, 11)));
@@ -26,9 +26,9 @@ test('filter/slope-warp: each point takes the height found the distance along th
   expectClose(up.out, pushed(src, -7.68, 5.12), { max: 2e-3 });
 });
 
-test('filter/slope-warp: downhill moves an even slope down itself by the distance, uphill up it', async () => {
-  // rampX rises towards +X at 0.25 metres per metre, where a step is 0.857 of the distance: 0.04 moves it 8.78 texels.
-  const shift = 0.04 * stepLength(0.25);
+test('filter/slope-warp: downhill moves an even slope down itself, in proportion to its steepness, and uphill up it', async () => {
+  // rampX rises towards +X at 0.25 metres per metre: it moves by a quarter of the distance, 0.01.
+  const shift = 0.04 * 0.25;
   const down = await renderNode(def, { inputs: { in: 'rampX' }, params: { distance: 0.04 } });
   const up = await renderNode(def, { inputs: { in: 'rampX' }, params: { distance: 0.04, mode: 'uphill' } });
   for (const x of [48, 128, 200]) {
@@ -43,19 +43,20 @@ test('filter/slope-warp: downhill swells a peak and uphill pinches it, and level
   const cone = fixtures.cone(N);
   const down = await renderNode(def, { inputs: { in: cone }, params: { distance: 0.03, radius: 0.004 } });
   const up = await renderNode(def, { inputs: { in: cone }, params: { distance: 0.03, radius: 0.004, mode: 'uphill' } });
-  // On the flank, 0.125 from the centre, the cone is 0.5 high and at 45 degrees: a step is 0.989 of the distance.
-  const flank = at(cone, 160, 128), moved = 4 * 0.03 * stepLength(1);
+  // On the flank, 0.125 from the centre, the cone is 0.5 high and at 45 degrees, where the push is the whole
+  // distance: the flank moves 0.03, which is 0.12 of height.
+  const flank = at(cone, 160, 128), moved = 4 * 0.03;
   assert.ok(Math.abs(at(down.out, 160, 128) - (flank + moved)) < 2e-3, `downhill the flank is at ${at(down.out, 160, 128)}`);
   assert.ok(Math.abs(at(up.out, 160, 128) - (flank - moved)) < 2e-3, `uphill the flank is at ${at(up.out, 160, 128)}`);
   let changed = 0;
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (Math.hypot(x - 128, y - 128) > 80 && (at(down.out, x, y) !== 0 || at(up.out, x, y) !== 0)) changed++;
   assert.equal(changed, 0, 'texels of the floor that moved');
 
-  // The path ends on the crest: within the distance of the summit every point takes a height near the summit's,
-  // and none reads the far side, as one stride along the slope would. The tip itself is rounded by the radius.
+  // The path follows the slope and ends at the crest: within the distance of the summit a point takes a height
+  // near the summit's, and none reads the far side, as one stride along the slope would, which leaves a pit of
+  // 0.12 around the summit. A path of 11 steps of 0.7 texels overshoots this cone's tip, which is a point, by
+  // half a step at most: by the height of that, 0.005, the swollen peak is uneven.
   for (const x of [129, 131, 134]) assert.ok(at(down.out, x, 128) > 0.95, `${x - 128} texels from the summit the swollen peak is ${at(down.out, x, 128)} high`);
-  // A path of 11 steps of 0.7 texels comes to rest within half a step of this cone's tip, which is a point:
-  // by the height of half a step, 0.005, the swollen peak is uneven. One stride would leave a pit of 0.12.
   for (let x = 128; x < 190; x++) assert.ok(at(down.out, x + 1, 128) <= at(down.out, x, 128) + 0.006, `the swollen peak rises again at ${x + 1}`);
 });
 

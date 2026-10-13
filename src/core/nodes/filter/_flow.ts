@@ -16,8 +16,7 @@ fn filterFlow_soft(g: vec2f) -> vec2f {
   return g / sqrt(dot(g, g) + filterFlow_GENTLE * filterFlow_GENTLE);
 }
 
-// The step at texel p of the height texture t. A path that starts on a texel takes its first step by this one:
-// the bilinear surface has four gradients at a texel, and this is their mean.
+// The step at texel p of the height texture t.
 fn filterFlow_at(t: texture_2d<f32>, p: vec2i) -> vec2f {
   return filterFlow_soft(slopeAt(t, p));
 }
@@ -29,9 +28,9 @@ fn filterFlow_push(g: vec2f) -> vec2f {
   return g / max(length(g), 1.0);
 }
 
-// The step at the fractional texel position x of t: from the gradient of the bilinear surface through the four
-// texels around x, so that a path can be followed between texels at 4 loads a step.
-fn filterFlow_lerp(t: texture_2d<f32>, x: vec2f) -> vec2f {
+// The physical gradient at the fractional texel position x of t, in metres per metre: that of the bilinear surface
+// through the four texels around x, so that a path can be followed between texels at 4 loads a step.
+fn filterFlow_slope(t: texture_2d<f32>, x: vec2f) -> vec2f {
   let last = vec2i(textureDimensions(t)) - vec2i(1);
   let c = clamp(x, vec2f(0.0), vec2f(last));
   let i = min(vec2i(floor(c)), max(last - vec2i(1), vec2i(0)));
@@ -42,6 +41,6 @@ fn filterFlow_lerp(t: texture_2d<f32>, x: vec2f) -> vec2f {
   let h11 = ld(t, i + vec2i(1, 1));
   let d = vec2f(mix(h10 - h00, h11 - h01, f.y), mix(h01 - h00, h11 - h10, f.x));
   let cell = frame.terrainSize / vec2f(max(last, vec2i(1)));
-  return filterFlow_soft(d * frame.heightRange / cell);
+  return d * frame.heightRange / cell;
 }`,
 });

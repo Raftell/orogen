@@ -21,8 +21,10 @@ fn shape(x: f32) -> f32 {
   // Nor is a gamma of 1 computed: pow(s, 1) is not s to the last bit everywhere.
   var g = s;
   if (s > 0.0 && s < 1.0 && P.invGamma != 1.0) { g = pow(s, P.invGamma); }
-  // Without the limit, what lies beyond the two points continues in a straight line.
-  if (P.limit == 0u) { g += t - s; }
+  // Without the limit, what lies beyond the two points continues in a straight line. Kept a float: an input far
+  // beyond two points that lie close together is so many widths away that their number is none, and an
+  // output range of no width must still give its one value.
+  if (P.limit == 0u) { g = adjust_field(g + (t - s)); }
   if (g == 0.0) { return P.outMin; }
   if (g == 1.0) { return P.outMax; }
   return P.outMin + g * (P.outMax - P.outMin);

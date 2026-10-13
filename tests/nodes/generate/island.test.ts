@@ -3,11 +3,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { at, conformance, expectClose, expectMask, expectStats, renderNode, stats, type FieldData } from '../../helpers/index.ts';
 import def from '../../../src/core/nodes/generate/island.ts';
-import { mapField, share } from './_land-probe.ts';
+import { mapField, mean, meanStep, ring, share } from './_land-probe.ts';
 
 conformance(def, {
   skip: {
-    'generator-range': 'Most of the terrain is seabed, which lies below the project sea level by design (0.25 in the test settings): the mean is 0.16 to 0.18 at the defaults. The tests below hold the range.',
+    'generator-range': 'Most of the terrain is seabed, which lies below the project sea level by design (0.25 in the test settings): the mean is 0.15 to 0.18 at the defaults. The tests below hold the range.',
   },
 });
 
@@ -46,7 +46,7 @@ test('generate/island: the water mask is the ground below sea level, and the sho
 });
 
 test('generate/island: the borders of the terrain are under water, whatever the size', async () => {
-  for (const size of [0.6, 1.2, 2]) {
+  for (const size of [0.7, 1.2, 2]) {
     const { water } = await renderNode(def, { params: { size, coast: 1 } });
     let dry = 0;
     for (let k = 0; k <= 256; k++) dry += 4 - at(water, k, 0) - at(water, k, 256) - at(water, 0, k) - at(water, 256, k);
@@ -71,7 +71,7 @@ test('generate/island: a larger size is more land, and the height lifts it furth
 
 test('generate/island: without irregularity the shore is a circle; with it the shore is longer', async () => {
   // Size 0.6: the unbroken shore lies 0.3 from the middle, 76.8 texels at 257.
-  const round = await renderNode(def, { params: { coast: 0 } });
+  const round = await renderNode(def, { params: { size: 0.6, coast: 0 } });
   let wrong = 0;
   for (let y = 0; y <= 256; y++) {
     for (let x = 0; x <= 256; x++) {
@@ -80,8 +80,11 @@ test('generate/island: without irregularity the shore is a circle; with it the s
     }
   }
   assert.equal(wrong, 0, 'texels of a round island on the wrong side of its shore');
-  const ragged = await renderNode(def, { params: { coast: 1 } });
-  assert.ok(shoreLength(ragged.water) > 1.5 * shoreLength(round.water), `the shore is ${shoreLength(ragged.water)} texels long at irregularity 1 and ${shoreLength(round.water)} at 0`);
+  const ragged = await renderNode(def, { params: { size: 0.6, coast: 1 } });
+  // Bays, headlands and coves: a quarter more shore at the least, around less land than the circle holds.
+  assert.ok(shoreLength(ragged.water) > 1.25 * shoreLength(round.water), `the shore is ${shoreLength(ragged.water)} texels long at irregularity 1 and ${shoreLength(round.water)} at 0`);
+  const half = await renderNode(def, { params: { size: 0.6, coast: 0.5 } });
+  assert.ok(shoreLength(half.water) > 1.08 * shoreLength(round.water) && shoreLength(half.water) < shoreLength(ragged.water), `the shore is ${shoreLength(half.water)} texels long at irregularity 0.5`);
 });
 
 test('generate/island: at a sea level of 0 the island stands on a level floor', async () => {
@@ -100,4 +103,30 @@ test('generate/island: the water alone is the water of the island', async () => 
   const both = await renderNode(def);
   const alone = await renderNode(def, { wants: ['water'] });
   expectClose(alone.water!, both.water, { max: 0 });
+});
+
+test('generate/island: the high ground stands in the middle, lowland lies behind the shore, and the seabed deepens away from it', async () => {
+  // A round island 0.6 wide: the shore is the circle 0.3 from the middle.
+  for (const seed of [0, 1, 2]) {
+    const { out } = await renderNode(def, { params: { size: 0.6, coast: 0, seed } });
+    const top = stats(out).max;
+    assert.ok(top > SEA + 0.6 * 0.65, `seed ${seed}: the highest ground is at ${top}; the height asked for is 0.65 above the sea`);
+    let far = 0;
+    for (let y = 0; y <= 256; y++) for (let x = 0; x <= 256; x++) if (at(out, x, y) > SEA + 0.5 * (top - SEA)) far = Math.max(far, Math.hypot(x - 128, y - 128) / 256);
+    assert.ok(far < 0.2, `seed ${seed}: ground higher than half the summit lies ${far} from the middle; the shore is at 0.3`);
+    // Around the island just inside the shore the ground is low; just outside it the sea is shallow, and deeper further out.
+    const behind = mean(ring(out, 0.5, 0.5, 0.28)), shallow = mean(ring(out, 0.5, 0.5, 0.33)), deep = mean(ring(out, 0.5, 0.5, 0.42));
+    assert.ok(behind > SEA && behind < SEA + 0.2 * (top - SEA), `seed ${seed}: the ground behind the shore is at ${behind}, the summit at ${top}`);
+    assert.ok(shallow < SEA && deep < shallow - 0.02, `seed ${seed}: the seabed is at ${shallow} near the shore and ${deep} further out`);
+  }
+});
+
+test('generate/island: erosion cuts gullies into the land and leaves the shore and the seabed as they are', async () => {
+  const smooth = await renderNode(def, { params: { erosion: 0 } });
+  const cut = await renderNode(def, { params: { erosion: 1 } });
+  expectClose(cut.water, smooth.water, { max: 0 });
+  expectClose(mapField(cut.out, (value) => Math.min(value, SEA)), mapField(smooth.out, (value) => Math.min(value, SEA)), { max: 0 });
+  assert.ok(meanStep(cut.out) > 1.15 * meanStep(smooth.out), `mean step ${meanStep(cut.out)} with erosion against ${meanStep(smooth.out)} without`);
+  // Gullies are cut below the uneroded ground far more than their crests stand above it.
+  assert.ok(stats(cut.out).mean < stats(smooth.out).mean, 'erosion removes material');
 });

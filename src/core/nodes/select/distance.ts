@@ -59,7 +59,7 @@ export default defineNode({
   ],
   params: [
     {
-      kind: 'float', name: 'distance', label: 'Distance', unit: 'length', default: 0.03, min: 0.001, max: 0.5, scale: 'log', soft: true,
+      kind: 'float', name: 'distance', label: 'Distance', unit: 'length', default: 0.02, min: 0.001, max: 0.5, scale: 'log', soft: true,
       help: 'How far from the edge of the mask the result fades: larger values give a broader, gentler ramp.',
     },
     {

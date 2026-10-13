@@ -18,16 +18,17 @@ const STEPS = ${STEPS};
 
 fn compute(px: vec2i, uv: vec2f) -> f32 {
   // The place a texel is read from is found by following the slope of the smoothed terrain, not by one stride
-  // along the slope at the texel: a stride would carry it across a crest and read the far side. A path slows
-  // down where the ground levels out and ends on the crest. On level ground it does not leave the texel, and
-  // the terrain is read at its own vertex.
+  // along the slope at the texel: a stride would carry it across a crest and read the far side. The pace of the
+  // path is in proportion to the slope, up to 45 degrees: it slows down towards a crest or a hollow and does not
+  // reach it, so that the ground around a summit is not all read from the summit. On level ground the path does
+  // not leave the texel, and the terrain is read at its own vertex.
   let last = vec2f(frame.res) - vec2f(1.0);
   let step = P.reach / f32(STEPS);
   var at = vec2f(px);
-  var flow = filterFlow_at(shape, px);
+  var pace = filterFlow_push(slopeAt(shape, px));
   for (var i = 0; i < STEPS; i++) {
-    at = clamp(at + step * flow, vec2f(0.0), last);
-    if (i + 1 < STEPS) { flow = filterFlow_lerp(shape, at); }
+    at = clamp(at + step * pace, vec2f(0.0), last);
+    if (i + 1 < STEPS) { pace = filterFlow_push(filterFlow_slope(shape, at)); }
   }
   return filterSample_cubic(src, at, 0u, vec4f(0.0)).r;
 }`,

@@ -43,7 +43,7 @@ of `engine.md` 3.9.
 | `generate/waves` | Waves | Parallel waves: a periodic profile along a direction | `mode`: `sine`, `triangle`, `saw`, `square`; `size` (wavelength), `angle`, `offset`, optional warp (`warpSize`, `warpStrength`) |
 | `generate/fractal-noise` | Fractal Noise | Fractal gradient noise, the workhorse for base terrain | `mode`: `fbm`, `ridged`, `billow`; `size`, `octaves`, `gain`, `lacunarity`, `warpStrength`, `warpSize`. Keywords: perlin, simplex, fbm |
 | `generate/cellular-noise` | Cellular Noise | Cell patterns from scattered feature points | `mode`: `distance`, `second`, `edge`, `cell`; `size`, `jitter`. Keywords: voronoi, worley |
-| `generate/eroded-noise` | Eroded Noise | Fractal noise whose fine octaves are suppressed on slopes, giving smooth valleys and rough crests without simulation | `size`, `octaves`, `gain`, `erosion` (ratio) |
+| `generate/eroded-noise` | Eroded Noise | Fractal noise whose fine octaves are suppressed on slopes and valley floors, with gullies that run down the slopes in their place, giving smooth valleys and sharp, rough crests without simulation | `size`, `octaves`, `gain`, `erosion` (ratio) |
 | `generate/mountain` | Mountain | One massif: a peak with ridges radiating from it | `center`, `size` (base width), `height`, `sharpness`, `ridges` (ratio) |
 | `generate/mountain-range` | Mountain Range | An elongated chain of peaks with spurs | `angle`, `size` (width of the range), `length`, `height`, `count` (peaks) |
 | `generate/island` | Island | A landmass with an irregular coast that falls below sea level at the borders; second output `water` (mask) | `size`, `coast` (ratio, irregularity), `height`. Uses the project's sea level |
@@ -120,7 +120,10 @@ owner works on thermal and hydraulic erosion, which do not need it.
 ## 5. `select`: 10 nodes
 
 Input `in` (field, the terrain) unless noted; output `out` (field, role
-`mask`) unless noted. Not maskable. Each has `invert`.
+`mask`) unless noted. Not maskable. Each has `invert`, which gives the
+complement of the mask; in `select/peaks` it selects the opposite landform
+instead, because the complement of "above its surroundings" is every slope and
+plain as well as the valley floors.
 
 | Id | Title | What it selects; named parameters |
 | --- | --- | --- |
@@ -130,7 +133,7 @@ Input `in` (field, the terrain) unless noted; output `out` (field, role
 | `select/aspect` | Aspect | Slopes that face a compass direction: `angle`, `spread` (angle), `slopeMin` |
 | `select/exposure` | Exposure | Ground lit by a sun at a given direction and elevation, with cast shadows: `angle`, `elevation` (angle), `softness` |
 | `select/occlusion` | Occlusion | Sheltered ground: hollows, valley floors, cliff feet (ambient occlusion): `radius`, `strength` |
-| `select/peaks` | Peaks | Ground that stands above its surroundings: summits and ridge tops; inverted, valley floors: `radius`, `feather` |
+| `select/peaks` | Peaks | Ground that stands above its surroundings: summits and ridge tops; with `invert`, ground that lies below them: valley floors: `radius`, `feather` (height: how far above its surroundings ground stands before it is fully selected) |
 | `select/roughness` | Roughness | Rough ground against smooth: local variation of height: `radius` |
 | `select/distance` | Distance | Input `in` (field, role `mask`): distance from the mask's edge, as a soft band: `distance` (length), `mode`: `outside`, `inside`, `both`. Second output `raw` (data, the distance as a length) |
 | `select/edge` | Edge | Input `in` (field, role `mask`): a band along the mask's boundary: `width` (length), `feather` |

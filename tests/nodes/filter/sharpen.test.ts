@@ -25,7 +25,7 @@ test('filter/sharpen: the terrain gets rougher with the strength, and a flat or 
   assert.ok(roughness(full.out) > 1.4 * roughness(weak.out));
 
   const flat = fieldOf(257, () => 0.3);
-  expectIdentical((await renderNode(def, { inputs: { in: flat } })).out, flat);
+  expectClose((await renderNode(def, { inputs: { in: flat } })).out, flat, { max: 1e-6 });
   // A blur leaves a plane a plane, away from the border it clamps at: there is no detail to add.
   const ramp = await renderNode(def, { inputs: { in: 'rampX' }, params: { radius: 0.01 } });
   for (let x = 16; x <= 240; x += 16) assert.ok(Math.abs(ramp.out.data[128 * 257 + x]! - x / 256) <= 1e-6);

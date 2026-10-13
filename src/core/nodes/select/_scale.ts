@@ -32,9 +32,11 @@ const fit = defineKernel({
   // value: the line through the samples, at the texel. slope and bend: the first and second derivative of the
   // parabola through them, per texel and per texel squared.
   outputs: { value: 'field', slope: 'field', bend: 'field' },
-  // margin: how many texels at each end of a row or column are not samples of the terrain but texels to fill.
-  // perSigma: 1 / sigma, in texels. level: 1 takes the value as the mean of the samples, not from the line.
-  params: { dir: 'vec2i', taps: 'i32', perSigma: 'f32', margin: 'i32', level: 'u32' },
+  // ring: how many texels at each end of a row or column are no samples of the terrain but texels to fill (the
+  // ring of a coarser grid). skip: how far from the first and the last sample, in texels, samples are left
+  // out as well. perSigma: 1 / sigma, in texels. level: 1 takes the value as the mean of the samples, not
+  // from the line through them.
+  params: { dir: 'vec2i', taps: 'i32', perSigma: 'f32', ring: 'i32', skip: 'f32', level: 'u32' },
   cost: 2 * MAX_TAPS + 2,
   code: /* wgsl */ `
 const MAX_TAPS = ${MAX_TAPS};
@@ -42,8 +44,13 @@ const MAX_TAPS = ${MAX_TAPS};
 fn compute(px: vec2i, uv: vec2f) -> Out {
   let taps = clamp(P.taps, 0, MAX_TAPS);
   let last = dot(vec2i(src_res()) - vec2i(1), P.dir);
-  let lo = min(max(P.margin, 0), last);
-  let hi = max(last - max(P.margin, 0), lo);
+  let first = min(max(P.ring, 0), last);
+  let end = max(last - max(P.ring, 0), first);
+  // The samples from lo to hi count. What is left out ends between two samples: a sample counts by the part
+  // of its own texel that lies beyond that, so that the cut is at the same place on a finer grid.
+  let gone = max(i32(ceil(P.skip - 0.5)), 0);
+  let lo = min(first + gone, end);
+  let hi = max(end - gone, lo);
   let at = dot(px, P.dir);
   let row = px - at * P.dir;
   // Sums are taken of differences from one sample of the terrain: a constant stays that constant.
@@ -63,7 +70,8 @@ fn compute(px: vec2i, uv: vec2f) -> Out {
     if (j < lo || j > hi) { continue; }
     let x = f32(i) * P.perSigma;
     let xx = x * x;
-    let w = exp(-0.5 * xx);
+    var w = exp(-0.5 * xx);
+    if (P.skip > 0.0) { w *= saturate(f32(min(j - first, end - j)) + 0.5 - P.skip); }
     let d = src_at(row + j * P.dir) - base;
     m0 += w;
     m1 += w * x;
@@ -153,8 +161,8 @@ export interface Scale {
   readonly cell: number;
   /** Whether the grid is a coarser one: it then has a ring of one texel, which is no sample of the terrain. */
   readonly ring: boolean;
-  /** How many texels at each end of a row or column are no samples and are filled from those inside: the ring, and what the caller leaves out. */
-  readonly margin: number;
+  /** How far from the border, in texels of the grid, samples are left out and filled from those inside. */
+  readonly skip: number;
   /** Whether a smoothed value is the mean of the samples and not the value of the line through them. */
   readonly level: boolean;
   /** The side of the terrain's own grid, to bring a result back to. */
@@ -185,9 +193,9 @@ export function scaleOf(ctx: OpContext, src: Field<'field'>, radius: number, opt
   const last = src.width - 1;
   const metres = ctx.terrainSize / Math.max(last, 1);
   // What is left out never reaches the middle of the grid: a sample is always left.
-  const within = (margin: number, texels: number): number => Math.max(Math.min(margin, Math.floor((texels - 1) / 2)), 0);
+  const within = (texels: number, vertices: number): number => Math.max(Math.min(texels, (vertices - 1) / 2 - 1), 0);
   if (sigma <= MAX_SIGMA) {
-    return { field: src, owned: false, sigma, cell: metres, ring: false, margin: within(Math.ceil(skip), src.width), level, full: src.width };
+    return { field: src, owned: false, sigma, cell: metres, ring: false, skip: within(skip, src.width), level, full: src.width };
   }
 
   let size = src.width;
@@ -201,9 +209,13 @@ export function scaleOf(ctx: OpContext, src: Field<'field'>, radius: number, opt
   // terrain: the fits fill the ring themselves. Its border vertices are taken back to the border.
   const reduced = ops.resample(ctx, src, { size, filter: 'tent', ring: { out: true } });
   const ratio = last / (size - 1);
-  // A coarse vertex is the triangle over one coarse step to either side: what is left out is left out a step further in.
-  const margin = within(1 + (skip > 0 ? Math.ceil(skip / ratio) + 1 : 0), size + 2);
-  const scale = { owned: true, sigma: Math.min(coarse, MAX_SIGMA), cell: metres * ratio, ring: true, margin, level, full: src.width } as const;
+  const scale = {
+    owned: true, sigma: Math.min(coarse, MAX_SIGMA), cell: metres * ratio, ring: true, level, full: src.width,
+    // The cut is at the same place as on the terrain's own grid, so that two levels of the ladder agree
+    // along the border too. A vertex just inside it is a triangle over one coarse step to either side and
+    // holds a little of what lies beyond the cut: a caller leaves out a margin that allows for that.
+    skip: within(skip / ratio, size),
+  } as const;
   // A mean of the samples wants them as the triangle left them: taken back to the border, a quantity that is
   // never below 0 could come out below it.
   if (level) return { field: reduced, ...scale };
@@ -242,7 +254,7 @@ export function fitPass(
   };
   ctx.run(fit, {
     in: { src }, out,
-    params: { dir: dir === 0 ? [1, 0] : [0, 1], taps, perSigma: 1 / sigma, margin: scale.margin, level: scale.level },
+    params: { dir: dir === 0 ? [1, 0] : [0, 1], taps, perSigma: 1 / sigma, ring: scale.ring ? 1 : 0, skip: scale.skip, level: scale.level },
     cost: 2 * taps + 2,
   });
   return out;

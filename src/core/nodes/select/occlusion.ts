@@ -12,7 +12,7 @@ const OCTAVES = 4;
 const OUTER = 4;
 /**
  * The occlusion that is fully selected at a strength of 0.5: the sine of the angle by which the ground on both
- * sides stands above a point, as a mean over four axes and over the distances within the radius. To calibrate:
+ * sides stands above a point, as a mean over four axes and over the distances around the radius. To calibrate:
  * on ref/fbm at the test scale the floors of the valleys reach it and open slopes stay near 0.
  */
 const FULL_OCCLUSION = 0.3;
@@ -42,35 +42,56 @@ const reach = defineKernel({
 const OCTAVES = ${OCTAVES}.0;
 const PI = 3.14159265358979;
 
-// How many texels there are from p to the border along one component of an axis, either way.
+// How many texels there are from p to the border along one component of an axis, the way that component points.
 fn room(p: i32, last: i32, along: i32) -> i32 {
   if (along == 0) { return 1 << 20; }
-  return min(p, last - p);
+  return select(p, last - p, along > 0);
 }
 
-// The sine of the angle by which the ground at both ends of one axis stands above the texel, weighted by how
-// near the radius this reach lies; 0 where the ground does not.
-fn hollow(px: vec2i, z: f32, axis: vec2i) -> f32 {
+// .x: the sine of the angle by which the ground at both ends of one axis stands above the texel at p, weighted
+// by how near the radius this reach lies; 0 where the ground does not. .y: 1 where the axis has ground at both
+// ends and so says something, else 0.
+fn hollow(p: vec2i, z: f32, axis: vec2i) -> vec2f {
+  // Near the border an end is as far out as the terrain goes. With the border at the texel itself the axis has
+  // one end only, and one end says nothing: a slope would count as a hollow by the way it happens to face.
+  let last = vec2i(level_res()) - vec2i(1);
+  let ahead = min(P.stride, min(room(p.x, last.x, axis.x), room(p.y, last.y, axis.y)));
+  let behind = min(P.stride, min(room(p.x, last.x, -axis.x), room(p.y, last.y, -axis.y)));
+  if (ahead < 1 || behind < 1) { return vec2f(0.0, 0.0); }
   // The weight over the doublings below the farthest distance, most in their middle, which is the radius: the
   // weights of all the reaches add up to 2.
   let below = -log2(length(vec2f(axis)) * f32(P.stride) / P.outer);
-  if (below <= 0.0 || below >= OCTAVES) { return 0.0; }
-  // Near the border the reach is as long as the terrain is on both sides: nothing is known of the ground
-  // beyond it, and a hollow fades out towards the border without a step.
-  let last = vec2i(level_res()) - vec2i(1);
-  let steps = min(P.stride, min(room(px.x, last.x, axis.x), room(px.y, last.y, axis.y)));
-  if (steps < 1) { return 0.0; }
-  let span = length(vec2f(axis)) * f32(steps) * frame.cellSize;
-  // Heights in metres over the distance in metres: a tangent.
-  let rise = (level_at(px + axis * steps) + level_at(px - axis * steps) - 2.0 * z) * frame.heightRange / (2.0 * span);
-  if (rise <= 0.0) { return 0.0; }
+  if (below <= 0.0 || below >= OCTAVES) { return vec2f(0.0, 1.0); }
+  // Heights in metres over the distance in metres: the tangent to each end, and their mean. A plane has
+  // tangents that cancel at any tilt, with its ends at different distances too.
+  let up = (level_at(p + axis * ahead) - z) / f32(ahead) + (level_at(p - axis * behind) - z) / f32(behind);
+  let rise = 0.5 * up * frame.heightRange / (length(vec2f(axis)) * frame.cellSize);
+  if (rise <= 0.0) { return vec2f(0.0, 1.0); }
   let weight = sin(PI * below / OCTAVES) * sin(PI * below / OCTAVES);
-  return weight * rise / sqrt(1.0 + rise * rise);
+  return vec2f(weight * rise / sqrt(1.0 + rise * rise), 1.0);
+}
+
+// The hollows of the four axes at p, added up, and how many of the axes said something.
+fn hollows(p: vec2i) -> vec2f {
+  let z = level_at(p);
+  return hollow(p, z, vec2i(1, 0)) + hollow(p, z, vec2i(1, 1)) + hollow(p, z, vec2i(0, 1)) + hollow(p, z, vec2i(-1, 1));
 }
 
 fn compute(px: vec2i, uv: vec2f) -> f32 {
-  let z = level_at(px);
-  let sheltered = 0.25 * (hollow(px, z, vec2i(1, 0)) + hollow(px, z, vec2i(1, 1)) + hollow(px, z, vec2i(0, 1)) + hollow(px, z, vec2i(-1, 1)));
+  // What is found is the mean over the axes that said something: on the border, the axis that runs along it.
+  // A valley that runs out of the terrain is sheltered up to the border as it is inside, and the mask has no
+  // frame along it. Measured on ref/fbm against the same ground with more of it beyond the border, the
+  // texels of the border are sheltered a twentieth more in the mean; faded out with the room there is, half as much.
+  var found = hollows(px);
+  if (found.y < 0.5) {
+    // A corner has the border at one end of every axis: it takes what the texel diagonally inside it finds.
+    let last = vec2i(level_res()) - vec2i(1);
+    let nearest = min(vec2i(1), last / 2);
+    found = hollows(clamp(px, nearest, max(last - vec2i(1), nearest)));
+  }
+  // On a grid too small for an axis to have two ends nothing is found.
+  var sheltered = 0.0;
+  if (found.y > 0.5) { sheltered = found.x / found.y; }
   return carry_at(px) + 0.5 * sheltered;
 }`,
 });
@@ -92,7 +113,7 @@ export default defineNode({
   type: 'select/occlusion',
   title: 'Occlusion',
   category: 'select',
-  description: 'Selects sheltered ground: hollows, valley floors and the feet of cliffs, where higher ground within a radius stands on both sides.',
+  description: 'Selects sheltered ground: hollows, valley floors and the feet of cliffs, where the ground about a radius away stands higher.',
   keywords: ['ambient occlusion', 'ao', 'cavity', 'sheltered', 'hollow', 'valley', 'crevice', 'shade'],
   inputs: [{ name: 'in', type: 'field' }],
   outputs: [{ name: 'out', type: 'field', role: 'mask' }],
@@ -102,7 +123,7 @@ export default defineNode({
     invert,
   ],
   kernels: [reach, mask, ...scaleKernels],
-  evaluate(ctx) {
+  async evaluate(ctx) {
     const { strength } = ctx.params;
     const src = ctx.input('in');
     // The farthest ground that counts, in texels. Soft: any finite radius can arrive.
@@ -123,17 +144,19 @@ export default defineNode({
     }
 
     // Reaches 0 and 1 read the terrain itself, one and two texels out; reach k from 2 on reads it reduced
-    // 2^(k - 1) times, two texels out. The levels are built down to the farthest reach.
+    // 2^(k - 1) times, two texels out. The levels are built down to the farthest reach: each a quarter of the
+    // one before it, a third of the terrain together.
     const levelOf = (k: number): number => Math.max(k - 1, 0);
     const levels: Field<'field'>[] = [src];
-    for (let level = 1; level <= levelOf(reaches.at(-1)!); level++) {
-      levels.push(halved(ctx, levels[level - 1]!, Math.ceil((ctx.res - 1) / 2 ** level) + 1));
-    }
+    await ctx.loop(levelOf(reaches.at(-1)!), (i) => {
+      levels.push(halved(ctx, levels[i]!, Math.ceil((ctx.res - 1) / 2 ** (i + 1)) + 1));
+    }, { progress: [0, 0.5] });
 
     // From the farthest reach to the nearest: each adds what it finds to the sum of the farther ones, which
     // is brought onto its grid first. The cubic B-spline leaves no trace of the coarser grid in the sum.
     let sum: Field<'field'> | null = null;
-    for (const k of reaches.toReversed()) {
+    await ctx.loop(reaches.length, (i) => {
+      const k = reaches[reaches.length - 1 - i]!;
       const level = levels[levelOf(k)]!;
       if (sum && sum.width !== level.width) {
         const finer = ops.resample(ctx, sum, { size: level.width, filter: 'bspline' });
@@ -147,17 +170,18 @@ export default defineNode({
       });
       if (sum) ctx.release(sum);
       sum = next;
-    }
+    }, { progress: [0.5, 1] });
     for (const level of levels.slice(1)) ctx.release(level);
-    if (sum!.width !== ctx.res) {
-      const full = ops.resample(ctx, sum!, { size: ctx.res, filter: 'bspline' });
-      ctx.release(sum!);
-      sum = full;
+    let total: Field<'field'> = sum!;
+    if (total.width !== ctx.res) {
+      const full = ops.resample(ctx, total, { size: ctx.res, filter: 'bspline' });
+      ctx.release(total);
+      total = full;
     }
 
     // The strength acts as its cube: half of it asks for eight times the occlusion, and 0 selects nothing.
-    ctx.run(mask, { in: { sum: sum! }, out: { out }, params: { gain: (2 * strength) ** 3 / FULL_OCCLUSION, invert: ctx.params.invert } });
-    ctx.release(sum!);
+    ctx.run(mask, { in: { sum: total }, out: { out }, params: { gain: (2 * strength) ** 3 / FULL_OCCLUSION, invert: ctx.params.invert } });
+    ctx.release(total);
     ctx.output('out', out);
   },
 });

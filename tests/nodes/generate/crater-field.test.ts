@@ -1,7 +1,7 @@
 // tests/nodes/generate/crater-field.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { at, conformance, expectClose, expectStats, fixtures, renderNode, stats } from '../../helpers/index.ts';
+import { at, conformance, expectClose, expectStats, fieldOf, fixtures, renderNode, stats } from '../../helpers/index.ts';
 import def from '../../../src/core/nodes/generate/crater-field.ts';
 import { mapField, share } from './_land-probe.ts';
 
@@ -60,30 +60,52 @@ test('generate/crater-field: small craters outnumber large ones', async () => {
   assert.ok(shallow > 2 * deep && deep > 0, `${shallow} of the terrain lies in shallow bowls and ${deep} in deep ones`);
 });
 
-test('generate/crater-field: stamped into a terrain, the craters are added to it, and flattening levels it inside each rim', async () => {
-  const terrain = fixtures.terrain(257);
+test('generate/crater-field: without flattening the craters are added to the terrain, and on a slope they lie on the slope', async () => {
   const flat = await renderNode(def, { inputs: alone });
+  const terrain = fixtures.terrain(257);
   const added = await renderNode(def, { inputs: { in: terrain }, params: { flatten: 0 } });
   expectClose(added.out, mapField(terrain, (value, x, y) => value + at(flat.out, x, y) - 0.5), { max: 1e-6 });
-  // Full flattening: wherever the ground is deep in a bowl, the terrain is gone and the result is the field on level ground.
-  const levelled = await renderNode(def, { inputs: { in: terrain }, params: { flatten: 1 } });
-  let worst = 0, bowls = 0;
-  for (let i = 0; i < flat.out.data.length; i++) {
-    if (flat.out.data[i]! > 0.5 - 0.04) continue;
-    bowls++;
-    worst = Math.max(worst, Math.abs(levelled.out.data[i]! - flat.out.data[i]!));
-  }
-  assert.ok(bowls > 500 && worst <= 1e-6, `in ${bowls} texels of the bowls the levelled terrain differs from level ground by up to ${worst}`);
-  // Half of it leaves half of the terrain's relief there.
-  const half = await renderNode(def, { inputs: { in: terrain }, params: { flatten: 0.5, count: 1, radiusMin: 0.3, radiusMax: 0.3 } });
-  const one = await renderNode(def, { inputs: alone, params: { count: 1, radiusMin: 0.3, radiusMax: 0.3 } });
-  // The lowest part of the one bowl lies well inside its rim, whatever its age and wherever it struck.
+  // The ground each impact strikes is the plane that fits the terrain under its crater. A terrain that is a
+  // plane is that ground itself: flattening finds nothing to wipe out.
+  const slope = fieldOf(257, (u, v) => 0.4 + 0.15 * u + 0.05 * v);
+  const tilted = await renderNode(def, { inputs: { in: slope } });
+  expectClose(tilted.out, mapField(slope, (value, x, y) => value + at(flat.out, x, y) - 0.5), { max: 1e-5 });
+});
+
+test('generate/crater-field: flattening wipes out the relief of the terrain inside a rim, as far as it is asked to', async () => {
+  // One crater of radius 0.3 on a slope with bumps 0.02 high, a twentieth of the terrain apart.
+  const bump = (u: number, v: number): number => 0.02 * Math.sin(40 * Math.PI * u) * Math.sin(40 * Math.PI * v);
+  const slope = fieldOf(257, (u, v) => 0.4 + 0.15 * u + 0.05 * v);
+  const bumpy = fieldOf(257, (u, v) => 0.4 + 0.15 * u + 0.05 * v + bump(u, v));
+  const params = { count: 1, radiusMin: 0.3, radiusMax: 0.3 };
+  const one = await renderNode(def, { inputs: alone, params });
+  const full = await renderNode(def, { inputs: { in: bumpy }, params: { ...params, flatten: 1 } });
+  const half = await renderNode(def, { inputs: { in: bumpy }, params: { ...params, flatten: 0.5 } });
+  // The lowest part of the bowl lies well inside its rim, whatever its age and wherever it struck.
   const floor = stats(one.out).min;
-  let off = 0, deepest = 0;
-  for (let i = 0; i < one.out.data.length; i++) {
-    if (one.out.data[i]! > floor + 0.3 * (0.5 - floor)) continue;
-    deepest++;
-    off = Math.max(off, Math.abs(half.out.data[i]! - (one.out.data[i]! + 0.5 * (terrain.data[i]! - 0.5))));
+  let left = 0, halfway = 0, deepest = 0;
+  for (let y = 0; y <= 256; y++) {
+    for (let x = 0; x <= 256; x++) {
+      if (at(one.out, x, y) > floor + 0.3 * (0.5 - floor)) continue;
+      deepest++;
+      const clean = at(slope, x, y) + at(one.out, x, y) - 0.5;
+      left = Math.max(left, Math.abs(at(full.out, x, y) - clean));
+      halfway = Math.max(halfway, Math.abs(at(half.out, x, y) - clean - 0.5 * bump(x / 256, y / 256)));
+    }
   }
-  assert.ok(off <= 1e-6, `at half flattening the ${deepest} texels of the floor hold half the terrain's relief, to within ${off}`);
+  assert.ok(deepest > 500, `${deepest} texels of the floor`);
+  // The plane is fitted through the terrain at vertices of the coarsest ladder level, bumps included, which
+  // moves it by a part of their height.
+  assert.ok(left < 0.006, `on the floor ${left} is left of bumps 0.02 high`);
+  assert.ok(halfway < 0.006, `at half flattening the floor is ${halfway} from half the bumps`);
+});
+
+test('generate/crater-field: a crater too small for the terrain to show the ground under it is added to the terrain as it is', async () => {
+  // At 257 the coarsest level of the ladder has 33 vertices a side, 1 / 32 apart: craters of radius 0.01 lie
+  // between them, on ground the node does not know, and flattening would cut them to a guess.
+  const terrain = fixtures.terrain(257);
+  const params = { count: 40, radiusMin: 0.01, radiusMax: 0.01 };
+  const added = await renderNode(def, { inputs: { in: terrain }, params: { ...params, flatten: 0 } });
+  const stamped = await renderNode(def, { inputs: { in: terrain }, params: { ...params, flatten: 1 } });
+  expectClose(stamped.out, added.out, { max: 1e-6 });
 });

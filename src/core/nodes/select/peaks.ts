@@ -39,7 +39,7 @@ export default defineNode({
   params: [
     param.radius({
       default: 0.04,
-      help: 'How far the surroundings reach that a point is compared with: larger values select whole massifs, smaller ones every knoll.',
+      help: 'The size of the surroundings a point is compared with: larger values select whole massifs, smaller ones every knoll.',
     }),
     {
       kind: 'float', name: 'feather', label: 'Feather', unit: 'height', default: 0.05, min: 0, max: 0.5, soft: true,

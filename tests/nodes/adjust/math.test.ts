@@ -98,6 +98,19 @@ test('adjust/math: a remainder lies between 0 and the divisor, and a fold never 
   assert.equal(countValues(folded, (v, i) => WIDE.data[i] >= 0 && WIDE.data[i] <= 0.375 && Math.abs(v - WIDE.data[i]) > 1e-6), 0);
 });
 
+test('adjust/math: a fold by an operand far larger than the heights leaves them as they are, mirrored at 0', async () => {
+  // Within its first rise the fold is the magnitude of the height itself, bit for bit: it is not the small
+  // difference of two numbers as large as the operand.
+  for (const operand of [1e8, 1e30, 3e38]) expectIdentical(await math('fold', WIDE, operand), mapValues(WIDE, Math.abs));
+});
+
+test('adjust/math: a remainder stays between 0 and the divisor where the height is more divisors than a float counts', async () => {
+  const huge = fieldOf(257, (u) => 1e30 * (u - 0.5));
+  const divisor = Math.fround(1e-30);
+  assert.equal(countValues(await math('modulo', huge, 1e-30), (v) => !(v >= 0 && v <= divisor)), 0, 'a remainder outside 0..1e-30');
+  assert.equal(countValues(await math('modulo', huge, -1e-30), (v) => !(v <= 0 && v >= -divisor)), 0, 'a remainder outside -1e-30..0');
+});
+
 test('adjust/math: a result too large for a float is the largest float, not infinity', async () => {
   const huge = fieldOf(257, (u) => 1e30 * (u - 0.5));
   for (const [mode, value] of [['multiply', 1e30], ['divide', 1e-30], ['power', 40], ['add', 3e38]] as const) {

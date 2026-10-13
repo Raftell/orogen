@@ -1,7 +1,7 @@
 // src/core/nodes/generate/mountain-range.ts
 import { defineNode, param } from '../../api.ts';
 import { landRandom, SegmentList } from './_land.ts';
-import { massif, runMassif } from './_land-massif.ts';
+import { massif, MAX_SEGMENTS, runMassif } from './_land-massif.ts';
 
 /** With this many peaks the skeleton stays within the kernel's bound on crest segments. */
 const MAX_PEAKS = 12;
@@ -20,6 +20,28 @@ function spur(list: SegmentList, random: () => number, x: number, y: number, hei
   list.add(mx, my, mx + Math.cos(fork) * reach, my + Math.sin(fork) * reach, mid, mid * 0.2);
 }
 
+interface Knot { readonly x: number; readonly y: number; readonly h: number }
+
+/**
+ * The crest from one knot to the next. Where peaks stand far apart it does not run straight and even between
+ * them: it is laid in up to `pieces` shorter ones that wander a little to either side and up and down.
+ */
+function crest(list: SegmentList, random: () => number, from: Knot, to: Knot, pieces: number): void {
+  const count = Math.min(Math.max(Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / 0.7), 1), pieces);
+  let at = from;
+  for (let k = 1; k <= count; k++) {
+    const t = k / count;
+    const knot = k === count ? to : {
+      x: from.x + (to.x - from.x) * t + 0.16 * (random() - 0.5),
+      y: from.y + (to.y - from.y) * t + 0.16 * (random() - 0.5),
+      // Never above the higher of the two ends: the peaks stay the summits of the crest.
+      h: Math.min((from.h + (to.h - from.h) * t) * (0.82 + 0.26 * random()), Math.max(from.h, to.h)),
+    };
+    list.add(at.x, at.y, knot.x, knot.y, at.h, knot.h);
+    at = knot;
+  }
+}
+
 /**
  * The crests of a range in its own frame: the main crest winds along the x axis from -halfLength to halfLength
  * through `count` peaks with saddles between them, and spurs leave it to both sides, about 1 long. The highest
@@ -29,6 +51,9 @@ function crests(seed: number, count: number, halfLength: number): SegmentList {
   const random = landRandom(seed, 1);
   const list = new SegmentList();
   const spacing = (2 * halfLength) / count;
+
+  // What the kernel's bound on crest segments leaves for the crest between the peaks, once every spur is laid.
+  const pieces = count > 1 ? Math.max(1, Math.floor((MAX_SEGMENTS - 2 - 6 * count - 3 * (count - 1)) / (2 * (count - 1)))) : 1;
 
   const peaks: { x: number; y: number; h: number }[] = [];
   let highest = 0;
@@ -67,8 +92,8 @@ function crests(seed: number, count: number, halfLength: number): SegmentList {
       y: peak.y + (next.y - peak.y) * t + 0.3 * (random() - 0.5),
       h: Math.min(peak.h, next.h) * (0.68 + 0.2 * random()),
     };
-    list.add(peak.x, peak.y, saddle.x, saddle.y, peak.h, saddle.h);
-    list.add(saddle.x, saddle.y, next.x, next.y, saddle.h, next.h);
+    crest(list, random, peak, saddle, pieces);
+    crest(list, random, saddle, next, pieces);
     if (random() < 0.6) {
       const side = random() < 0.5 ? 1 : -1;
       spur(list, random, saddle.x, saddle.y, saddle.h, side * (Math.PI / 2 + 0.6 * (random() - 0.5)), 0.4 + 0.25 * random());

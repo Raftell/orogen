@@ -37,7 +37,7 @@ export default defineNode({
       help: 'How wide the band is that is fully selected, across the edge of the mask: larger values give a broader band.',
     },
     {
-      kind: 'float', name: 'feather', label: 'Feather', unit: 'length', default: 0.005, min: 0, max: 0.25, soft: true,
+      kind: 'float', name: 'feather', label: 'Feather', unit: 'length', default: 0.005, min: 0.0005, max: 0.25, scale: 'log', soft: true,
       help: 'Larger values fade the band out over a wider margin on both of its sides.',
     },
     invert,

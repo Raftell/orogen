@@ -145,10 +145,12 @@ test('select/curvature: inverted, the mask is its complement', async () => {
 });
 
 test('select/curvature: two levels of the ladder agree, also where only the finer one is fitted on a coarser grid', async () => {
-  // At the default radius both levels fit in one pass: 1.28 texels at 257 and 2.56 at 513.
+  // At the default radius, 2.56 texels at 257 and 5.12 at 513, and at half of it both levels fit in one pass.
   for (const mode of ['convex', 'both'] as const) {
-    const fine = await renderLadder(def, { inputs: { in: 'terrain' }, params: { mode } });
-    expectLadder(fine[257].out, fine[513].out, { rel: 0.01 });
+    for (const radius of [0.01, 0.005]) {
+      const fine = await renderLadder(def, { inputs: { in: 'terrain' }, params: { mode, radius } });
+      expectLadder(fine[257].out, fine[513].out, { rel: 0.01 });
+    }
   }
   // A radius of 0.03 is 7.68 texels at 257 and 15.36 at 513, which one pass does not hold: the finer level is
   // reduced with a triangle and brought back with a B-spline, which stand for part of the Gaussian. The two
