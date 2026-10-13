@@ -11,6 +11,7 @@ export { defineLib } from './gpu/lib.ts';
 export type { WgslLib } from './gpu/lib.ts';
 export { hash } from './wgsl/hash.ts';
 export { noise } from './wgsl/noise.ts';
+export { convert } from './wgsl/convert.ts';
 export { WGSL_LAYOUT, packLayout } from './gpu/uniforms.ts';
 export type { InBindings, KindOfInput, Lut, OptionalInputs, RunBindings, Slot, UniformValue } from './gpu/bindings.ts';
 export { FieldAccessError, KernelBindingError, KernelDefError, NodeDefError } from './gpu/errors.ts';
@@ -19,7 +20,7 @@ export { FieldAccessError, KernelBindingError, KernelDefError, NodeDefError } fr
 export type { FieldOfPortType, InputField, KindOfPortType, PortDef, PortNamed, PortRole, PortType } from './graph/ports.ts';
 export type {
   BoolParam, ColorParam, CurveParam, EnumNames, EnumParam, FileParam, FloatParam, GradientParam, IntParam, Named, Over,
-  ParamCommon, ParamDef, ParamValue, ParamsOf, SeedParam, TextParam, Unit, ValueOf, Vec2Param,
+  ParamCommon, ParamDef, ParamValue, ParamsOf, SeedParam, TextParam, Unit, ValueOf, Vec2Param, VisibleValue,
 } from './graph/param-types.ts';
 export { param } from './graph/canonical.ts';
 export { defineNode } from './graph/node.ts';
@@ -41,7 +42,11 @@ export type { DecodedImage } from './io/image.ts';
 
 // engine.md 5: shared operations
 export { ops } from './ops/index.ts';
+export { FIT_MIN_SIGMA } from './ops/smooth.ts';
 export type { Img, LadderLevel, ResampleFilter } from './ops/types.ts';
+export type { Fitted, FitWants, Scale, SmoothOptions } from './ops/smooth.ts';
+export type { ShadowOptions } from './ops/shadow.ts';
+export type { OcclusionOptions } from './ops/occlusion.ts';
 
 // Defined in other documents; a node may name them (engine.md, Imports).
 export type {

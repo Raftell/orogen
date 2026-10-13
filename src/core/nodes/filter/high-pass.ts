@@ -35,8 +35,10 @@ export default defineNode({
   evaluate(ctx) {
     const src = ctx.input('in');
     const radius = Math.min(Math.max(ctx.params.radius, 0), 4);
-    // Below a quarter of a texel the blur is the picture itself, and what is left of it is the level 0.5.
-    const low = ops.blur(ctx, src, radius);
+    // The broad shape is the picture smoothed without anything assumed beyond its border: taken from the
+    // picture, a blur that continues it level there leaves a frame wherever the ground slopes towards the border.
+    // Below a quarter of a texel it is the picture itself, and what is left of it is the level 0.5.
+    const low = ops.smooth(ctx, src, radius);
     const out = ctx.alloc(src.kind);
     ctx.run(kernels[src.kind], { in: { src, low }, out: { out } });
     ctx.release(low);

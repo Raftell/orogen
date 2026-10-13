@@ -1,13 +1,13 @@
 // src/core/nodes/adjust/combine.ts
-import { MASK_INPUT, defineKernel, defineNode, param } from '../../api.ts';
+import { MASK_INPUT, convert, defineKernel, defineNode, param } from '../../api.ts';
 import { adjust, type Kind } from './_wgsl.ts';
 
 // One variant for each pair of kinds. The result has the kind of `a`; a `b` of the other kind is read as the
-// evaluator would convert it. val_t is what the blend works on: a height, or the red, green and blue of a color.
+// evaluator would convert it (the core library `convert`). val_t is what the blend works on: a height, or the red, green and blue of a color.
 const VALUE = { field: 'f32', color: 'vec3f' } as const;
 const READ_A = { field: 'a_at(px)', color: 'a_at(px).rgb' } as const;
 const READ_B = {
-  field: { field: 'b_at(px)', color: 'adjust_luma(b_at(px))' },
+  field: { field: 'b_at(px)', color: 'convert_luma(b_at(px))' },
   color: { field: 'vec3f(b_at(px))', color: 'b_at(px).rgb' },
 } as const;
 const STORE = { field: 'adjust_field(v)', color: 'adjust_color(v, a_at(px).a)' } as const;
@@ -18,7 +18,7 @@ const combine = (kind: Kind, other: Kind) => defineKernel({
   inputs: { a: kind, b: other, mask: MASK_INPUT },   // the node's own mask: reads 1 when unconnected, saturated on read
   outputs: { out: kind },
   params: { mode: 'u32', strength: 'f32', smoothness: 'f32' },
-  includes: [adjust],
+  includes: [adjust, convert],
   cost: 3,
   code: /* wgsl */ `
 alias val_t = ${VALUE[kind]};
@@ -103,7 +103,8 @@ export default defineNode({
     }),
     {
       kind: 'float', name: 'smoothness', label: 'Smoothness', unit: 'height', default: 0.1, min: 0, max: 1, soft: true,
-      help: 'For the two smooth modes: larger values round the seam where the two inputs cross over a taller band. At 0 the seam is a crease.',
+      visibleWhen: { param: 'mode', equals: ['smooth-maximum', 'smooth-minimum'] },
+      help: 'Larger values round the seam where the two inputs cross over a taller band. At 0 the seam is a crease.',
     },
   ],
   kernels: [kernels.field.field, kernels.field.color, kernels.color.field, kernels.color.color],

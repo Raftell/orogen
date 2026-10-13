@@ -178,7 +178,7 @@ declare function channelOf(f: FieldData, channel: 0 | 1 | 2 | 3): FieldData;    
 
 type FixtureName =
   | 'terrain' | 'rampX' | 'rampY' | 'cone' | 'basin' | 'bowl' | 'notch'
-  | 'mask' | 'zero' | 'one' | 'impulse' | 'color' | 'fbm';
+  | 'mask' | 'zero' | 'one' | 'impulse' | 'color' | 'color2' | 'color3' | 'color4' | 'fbm';
 
 declare const fixtures: {
   terrain(res: number): FieldData;
@@ -193,6 +193,9 @@ declare const fixtures: {
   one(res: number): FieldData;
   impulse(res: number): FieldData;
   color(res: number): FieldData;
+  color2(res: number): FieldData;
+  color3(res: number): FieldData;
+  color4(res: number): FieldData;
   fbm(res: number, seed?: number): Promise<FieldData>;     // seed defaults to 0
   byName(name: FixtureName, res: number): Promise<FieldData>;
 };
@@ -215,6 +218,7 @@ decimation of the same fixture at a finer one.
 | `zero`, `one` | `0`; `1` | constants |
 | `impulse` | 1 at the centre texel, else 0 | kernel shape and symmetry. Not band-limited: behaviour tests only |
 | `color` | `(u, v, terrain(u, v), 1)` | the default colour input |
+| `color2`, `color3`, `color4` | `(cone, 1 − u, basin, 1)`; `(1 − v, bowl, u, 1)`; `(notch, cone, 1 − v, 1)`, each fixture taken at `(u, v)` | the further colour inputs of one node. All four are opaque and within 0..1, and no channel of one is the same channel of another |
 | `fbm` | output `out` of `ref/fbm` at default parameters with the given node seed and the test settings | realistic fractal input for behaviour tests. Not band-limited and computed on the GPU: never used for a ladder comparison |
 
 ### 2.3 Rendering a node
@@ -364,17 +368,25 @@ declare function buildGraph(graph: GraphDoc | GraphSpec | string, opts?: {
 
 - Node and source ids in a `GraphSpec` match `/^[a-z][a-z0-9]*$/`. The commands generate the document's own node ids; the harness remembers which belongs to which spec id, and targets, `setParam` and reports use the spec's ids. For a project file they use the ids in the file.
 - A maskable node's mask is connected like any input, under the name `mask`.
-- `registryDoc` creates, for every given node that has outputs, one instance at default parameters, with every input connected by the wiring rule below, the optional mask inputs included. A chain of `ref/combine` nodes then takes `outputs[0]` of every instance, nodes with a `file` parameter last, and `ui.view` shows the end of the chain: evaluating the view evaluates every node. The instance of `ref/fbm` is the first terrain. A wiring type the registry lacks is left out: its inputs take the terrain itself, and without `ref/combine` the document has no chain and no view, so a test names every node as a target.
+- `registryDoc` creates, for every given node that has outputs, one instance at default parameters, with every input connected by the wiring rule below, the optional inputs and the masks included. A chain of `ref/combine` nodes then takes `outputs[0]` of every instance, nodes with a `file` parameter last, and `ui.view` shows the end of the chain: evaluating the view evaluates every node. The instance of the first terrain's type (`generate/eroded-noise` where it is among the nodes, else `ref/fbm`) is the first terrain. A wiring type the registry lacks is left out: its inputs take the terrain itself, and without `ref/combine` the document has no chain and no view, so a test names every node as a target.
 - **The wiring rule.** `registryDoc`, `orogen render <type>` and `orogen gallery` (8.6) connect the inputs of a node by port, in declaration order. It is one function, `inputFeeds` of `src/cli/document.ts`:
 
   | Input | Fed from |
   | --- | --- |
-  | type `field` of role `height` or `data`, and type `any`: the k-th of these, counted together from 0 | terrain k. Terrain 0 is `ref/fbm` at its defaults; terrain k ≥ 1 is `ref/fbm` with `seed` k and `size` 0.1, 0.5, 0.05, 0.25, … in turn. A node with two inputs is never shown one field twice |
-  | type `field` of role `mask`, required: the primary input of `select/distance` and `select/edge` among them | the mask: `ref/slope-mask` with `slopeMin` 35 and `slopeMax` 50 of a `ref/fbm` with `octaves` 3, which is the broad shape of terrain 0. It selects about half the terrain, in regions; the slopes of all eight octaves are speckle at the scale of a texel, and a mask of speckle shows nothing |
-  | type `field` of role `mask`, optional and not the node's first input, and the `mask` the evaluator adds to a `maskable` node | unconnected in the **plain variant**; the mask in the **masked variant**. A node has a masked variant when it has such an input. An optional mask that is `inputs[0]` is the node's subject, not a modifier, and is connected in both |
+  | type `field` of role `height` or `data`, and type `any`: the k-th of these, counted together from 0 | terrain k. Terrain 0 is `generate/eroded-noise` at its defaults where the registry holds it, else `ref/fbm` at its defaults; terrain k ≥ 1 is `ref/fbm` with `seed` k and `size` 0.1, 0.5, 0.05, 0.25, … in turn. A node with two inputs is never shown one field twice |
+  | type `field` of role `mask`: the primary input of `select/distance` and `select/edge` among them, and the `mask` the evaluator adds to a `maskable` node | the mask: `ref/slope-mask` of the broad shape of terrain 0. For `generate/eroded-noise` that is its first two octaves, selected with `slopeMin` 40 and `slopeMax` 55; for `ref/fbm` its first three, with 35 and 50. Either way it selects about half the terrain, in regions; the slopes of all eight octaves are speckle at the scale of a texel, and a mask of speckle shows nothing |
   | type `color`: the k-th of these | `ref/colorize` of terrain k |
 
-  The plain variant shows the node's full effect and the masked one the mask acting. `registryDoc` builds the masked variant of every node.
+  Inputs are counted whether or not they are connected, so that an input has the same feed in both of these:
+
+  | Variant | Connected |
+  | --- | --- |
+  | **plain** | the required inputs. Every optional input is left unconnected, whatever its type and also when it is the node's first, and so is the `mask` of a `maskable` node |
+  | **connected** | every input, and the `mask` of a `maskable` node. A node has a connected variant when it has an optional input or is `maskable` |
+
+  The plain variant shows a node as a user sees it on dropping it into a graph, with its own defaults: `generate/crater` on level ground, `filter/warp` moved by its noise, `filter/slope-blur` steered by its own input. The connected variant shows what the optional inputs and a mask do to that. `registryDoc` builds the connected variant of every node.
+
+  Terrain 0 is the product's eroded noise because `ref/fbm` is rough everywhere: a node that tells smooth ground from rough (`select/roughness`), keeps or flattens detail (`filter/high-pass`, `filter/smart-blur`), or works on the middle heights has nothing to show on it. The eroded noise has smooth valley floors under rough crests. The fixtures of the conformance suite (3.1) are not affected.
 - Every harness evaluation passes `thumbnails: false`.
 - `renderGraph` is one evaluation on an emptied cache (`Engine.trim()` first). It resolves when the evaluation ends, whatever its status: a failed or skipped target is absent from `fields` and described in `report`. It rejects only for a malformed call.
 - `openGraph` keeps the cache between `evaluate()` calls, for tests of cache hits and of what an edit re-evaluates. `close()` calls `Engine.trim()` and `expectNoLeaks()`.
@@ -592,7 +604,7 @@ Default fixture of an input port:
 | --- | --- |
 | type `field`, role `height` or `data`, and type `any` in the field variant | counted together in declaration order: `terrain` for the first such input, then `cone`, `rampX`, `basin`, repeating. Two inputs of one node are never the same field: a blend of a field with itself, or a guide that is the input, checks nothing |
 | type `field`, role `mask` | `mask` |
-| type `color`, and type `any` in the colour variant | `color` |
+| type `color`, and type `any` in the colour variant | counted together in declaration order: `color` for the first such input, then `color2`, `color3`, `color4`, repeating. As with heights, two inputs of one node are never the same colour: `adjust/switch` given one colour four times passes every check whichever input it passes on |
 
 A node with an input of type `any` is checked in two variants: every `any`
 input given a field, and every `any` input given a colour. The checks marked
@@ -619,7 +631,7 @@ finite, and every output of role `mask` passes `expectMask`.
 | Check | Applies to | What runs | Assertion and tolerance |
 | --- | --- | --- | --- |
 | `meta` | every node | no GPU | the lint rules of section 4 that concern one node hold for this node |
-| `finite` | every node; both variants | R257 | passes the basic assertions. Non-finite count is exactly 0. Also writes a `sheet` (or `color`) preview of every output to `nodes/<category>/<name>/<output>.png`, and to `<output>-color.png` in the colour variant |
+| `finite` | every node; both variants | R257 | passes the basic assertions. Non-finite count is exactly 0. Also writes a `sheet` (or `color`) preview of every output to `nodes/<category>/<name>/<output>.png`, and to `<output>-color.png` in the colour variant. A mask or a data output is drawn over a terrain as `render` draws it (8.6): the node's `outputs[0]` where that is a height, else the fixture of its first height input |
 | `mask-range` | nodes with an output of role `mask`; both variants | R257 | every value `v` of every mask output has `0 ≤ v ≤ 1`. No tolerance. Every other run of the suite asserts the same as part of the basic assertions |
 | `alpha` | nodes with a `color` output; both variants | R257 | alpha is exactly 1 on every texel of every colour output |
 | `generator-range` | generators (below) | resolution 257, node seeds 0, 1 and 2 (one run when the node has no `seed`), every input connected | for each seed, `outputs[0]` has `min ≥ −0.05`, `max ≤ 1.05`, `max − min ≥ 0.5` and `0.25 ≤ mean ≤ 0.75` (`engine.md` 1.7). No further tolerance |
@@ -647,7 +659,7 @@ no `file` parameter (`engine.md` 1.7). The generator checks are `generator-range
 and the exact form of `resolution`, which takes no `resolutionTol`.
 
 - A node without required inputs that is no generator gets the `resolution` check of every other node, tolerance included: a mask or a colour made from nothing (`generate/shape`, `color/constant`) has no height range to keep, and a node with a `file` parameter (`io/import-field`, `ref/image`) returns what the file holds, resampled.
-- An optional input does not change what a node is. The checks run with every input connected (3.1), so a generator that stamps into a terrain (`generate/crater`) is held to the range and to exact agreement on the `terrain` fixture it is given; it reads that input at its own texel, and on the coarsest ladder level, which 257 and 513 share (`engine.md` 1.9 rule 1).
+- An optional input does not change what a node is. The checks run with every input connected (3.1), so a generator that stamps into a terrain (`generate/crater`) is held to the range and to exact agreement on the `terrain` fixture it is given; it reads that input at its own texel, and on the coarsest ladder level, which 257 and 513 share (`engine.md` 1.9 rule 1). That level has 33 vertices a side at every test resolution, 64 in a project of 1009, 2017 or 4033 and 128 in one of 8129: the suite sees the node on the first grid alone, and what the node derives from the grid is held to its purpose on all three by the node's own tests (`tests/nodes/generate/unit/land-crater.test.ts`).
 - A generator that cannot meet one of the two checks opts out with `skip` and a reason (3.6), as any node does.
 
 To keep engine switches to two per file (2.1), the suite runs every `'auto'`
@@ -732,7 +744,7 @@ conformance(def, {
 | Opt-out | Effect | Legitimate when |
 | --- | --- | --- |
 | `resolutionTol` | replaces 0.01 in the `resolution` check | the node measures the terrain (slope, curvature, flow, erosion): finer detail legitimately changes the result. A physical slope measured on a band-limited input (shortest wavelength 8 cells of the coarser level) differs by 4 % of its standard deviation between 257 and 513 |
-| `skip['generator-range']` | the check is not run | a generator (3.2) whose purpose is not a 0..1 terrain: a constant, a single shape with a small span |
+| `skip['generator-range']` | the check is not run | a generator (3.2) whose purpose is not a terrain that fills 0..1: a constant; a single shape with a small span; and a landform whose mean or span lies outside the rule by what it is: one landform on level ground at height 0 (`generate/mountain`, `generate/mountain-range`, `generate/volcano`: the ground takes most of the terrain, and the mean is 0.04 to 0.12), a landmass in a sea (`generate/island`: most of the terrain is seabed below the sea level), relief that is low by nature (`generate/dunes`: a span of 0.06). The reason states the mean or the span measured at the defaults, and the node's own tests hold its heights to the range its parameters give it (0..`height`) |
 | `skip['resolution']` | the check is not run | never for a node that could instead declare `resolutionDependent` or a tolerance; only where the comparison itself is meaningless and the reason says why |
 | `skip['seed']` | the check is not run | the seed affects the result only at non-default parameters; the node's own tests then cover it |
 | `skip['alpha']` | the check is not run | the node writes alpha on purpose, and its description says what the alpha means |
@@ -749,8 +761,8 @@ Rules:
 
 ## 4. Registry lint
 
-The lint is `tests/unit/registry.test.ts` and `tests/unit/boundaries.test.ts`.
-It needs no GPU. It imports each category index separately, so a category that
+The lint is `tests/unit/registry.test.ts`, `tests/unit/boundaries.test.ts` and
+`tests/unit/catalog.test.ts`. It needs no GPU. It imports each category index separately, so a category that
 fails to load fails its own cases only. `defineKernel`, `defineLib`,
 `defineCpuTask` and `defineNode` already reject what `engine.md` 3.13 and 4.6
 list; the lint adds the rules below. Every failure message starts with the rule
@@ -766,7 +778,8 @@ id and the node type or file.
 | `test-location` | Every `*.test.ts` file under `tests/` is matched by exactly one layer pattern of 8.1. `node --test` reports no error for a pattern that matches nothing, so a misplaced file would otherwise never run |
 | `title-unique` | No two nodes have the same `title` |
 | `kernel-name` | The name of every kernel and every CPU task a node lists begins with the node's category and a slash, except those exported by `api.ts`. One used by a single node carries that node's name (`filter/blur.pass`); one shared by several nodes of the category carries the name of the private module that defines it (`simulate/talus.step` in `_talus.ts`) |
-| `lib-name` | The name of a library defined in a category folder begins with the category id (`filterKernel`). No category library is named `hash`, `noise` or like any library in `src/core/wgsl/` |
+| `catalog` | `tests/unit/catalog.test.ts` reads the tables of `nodes.md`. For every category that has registered nodes: each node a table lists is registered, with the title, the ports (names, types, roles, optional inputs, order) and the flags `maskable` and `resolutionDependent` of its row, and has every parameter the row names and every option it names for an `enum`; and no node is registered that no table lists. A node an owner adds is listed in its category's section under `### Added by owners`. A category with no registered node is not compared |
+| `lib-name` | The name of a library defined in a category folder begins with the category id (`filterKernel`). No category library is named `hash`, `noise`, `convert` or like any other library in `src/core/wgsl/` |
 
 **Imports** (found by scanning import specifiers)
 
@@ -784,6 +797,7 @@ id and the node type or file.
 | `no-clock` | No `Math.random`, `Date.now`, `new Date` or `performance.now` | `engine.md` 3.14 rule 3 |
 | `no-catch` | No `catch` clause and no `.catch(` | a node lets cancellation, budget and device errors propagate (`engine.md` 4.7). An error that needs a friendlier message is raised by a check before the call, or inside the CPU task |
 | `no-float-hash` | No `fract(sin(` in WGSL | `engine.md` 3.14 rule 4 |
+| `no-tanh` | No call of the WGSL builtin `tanh(` | `engine.md` 1.7: on Microsoft's software adapter `tanh(8.2)` is 1.08 and `tanh(1e5)` is not a number. A kernel writes it with the exponential of a number that is never above 0 |
 | `generator-frame` | The kernels of a node without required inputs do not mention `frame.res` or `frame.cellSize` | `engine.md` 1.9 rule 1 |
 | `stats-flag` | A node file that mentions `.stats(` or `minMax(` declares `resolutionDependent: true` | `engine.md` 1.7 |
 
@@ -884,7 +898,7 @@ failure:
 | 3 | the node's test files on the default adapter, profile `core` | every case passes |
 | 4 | the same, profile `max` | every case passes, `budget` included |
 | 5 | the same on the machine's software adapter (`tests/env/lavapipe.env` on Linux, `tests/env/warp.env` on Windows), profile `core` | every case passes |
-| 6 | `orogen render <type> --res 513`, and with `--masked` for a node that has a masked variant (2.4) | a picture of every output is written |
+| 6 | `orogen render <type> --res 513`, and with `--connected` for a node that has a connected variant (2.4) | a picture of every output is written |
 | 7 | `orogen render <type> --res 4033 --crop 768` | `render` exits with 0 (8.6): a one-to-one crop of every output is written, `longestSliceMs` is at most the hard ceiling of `runtime.md` 3.5 (500 ms), and the run emitted no `engine-error` event |
 | 8 | `orogen render <type> --res 4033 --max-params --out <output folder>/max-params` | the same condition, with every `float`, `int` and `vec2` parameter at its `max` (the last run of 3.3). Its pictures have the file names of step 7 and go to a folder of their own, so that those at the defaults stay |
 
@@ -905,13 +919,16 @@ the pictures, and the time, longest slice and peak memory of steps 7 and 8.
 ### 5.4 Pictures
 
 `orogen render` and `orogen gallery` are defined in 8.6. `render` draws one
-node with realistic fractal input, because the band-limited `terrain` fixture
-of the tests is too smooth to show texel-level defects. Each input has a
-source of its own (2.4): the second terrain of a two-input node has another
-seed and finer features than the first, so the picture shows what the node
-does with two fields and not one field met with itself. A node with an
-optional mask, its own or the one `maskable` gives it, is looked at twice:
-`orogen render <type>` and `orogen render <type> --masked`.
+node with realistic input, because the band-limited `terrain` fixture of the
+tests is too smooth to show texel-level defects: an eroded noise with smooth
+valleys and rough crests as its first terrain, fractal noise for every other.
+Each input has a source of its own (2.4): the second terrain of a two-input
+node has another seed and finer features than the first, so the picture shows
+what the node does with two fields and not one field met with itself. A node
+with an optional input or a mask, its own or the one `maskable` gives it, is
+looked at twice: `orogen render <type>`, the node as it is dropped into a
+graph, and `orogen render <type> --connected`, with its optional inputs and
+its mask connected.
 
 What the author looks for:
 
@@ -927,7 +944,8 @@ What the author looks for:
 | The 4033 crop looks like a different terrain from the 513 sheet | a parameter applied in texels, or an iteration count that does not follow the cell size |
 | A mask that is white where nothing should happen | the mask is inverted: 1 means affected |
 | The node's effect is invisible at defaults | the defaults are wrong (6.6) |
-| The masked picture is the plain one, or the input | the mask does not reach the algorithm, or acts the wrong way round: 1 means affected |
+| The connected picture is the plain one, or the input | an optional input or the mask does not reach the algorithm, or the mask acts the wrong way round: 1 means affected |
+| The plain picture of a node with an optional input shows nothing, or an error | the node does not stand on its own defaults when the input is unconnected: a user who drops it sees that |
 
 ### 5.5 Definition of done for a node
 
@@ -1234,7 +1252,7 @@ What each layer contains:
 
 | Layer | Contains |
 | --- | --- |
-| Unit | uniform packing against the WGSL layout rules; the TypeScript hashes and `mixSeed` against fixed vectors; curves and bakers; `defineKernel`, `defineLib`, `defineNode` validation and their messages; `parseDoc`, `serializeDoc`, `normalizeParams` and migration; the document commands; the stores (`docStore` through transactions, `engineStore` as a reduction of recorded `EngineEvent`s); `planBuild`, encoders and decoders (round trips), the manifest; the registry lint and import boundaries; CPU task functions; the arguments of the command line and its usage errors, the document `render` evaluates, the gallery page |
+| Unit | uniform packing against the WGSL layout rules; the TypeScript hashes and `mixSeed` against fixed vectors; curves and bakers; `defineKernel`, `defineLib`, `defineNode` validation and their messages; `parseDoc`, `serializeDoc`, `normalizeParams` and migration; the document commands; the stores (`docStore` through transactions, `engineStore` as a reduction of recorded `EngineEvent`s); `planBuild`, encoders and decoders (round trips), the manifest; the registry lint, the node catalog against the registered nodes, and import boundaries; CPU task functions; the arguments of the command line and its usage errors, the document `render` evaluates, the gallery page |
 | GPU `tests/engine/` | every rule of `engine.md` and `runtime.md` that a node cannot break by itself: generated WGSL and accessors, the standard library (vertex-centred bilinear, clamping, `slopeAt`), TypeScript and WGSL hashes agreeing on 1000 inputs, per-run uniforms within one slice, call order, binding validation, tiles, the pool (states, reuse, budget, eviction), the out-of-memory retry with `failAllocAfter`, device loss, cache hits, keys and transient entries, `wants` re-runs, the maskable blend, bypass, conversion, progressive previews, thumbnails, CPU tasks, file identity, and every shared op including the coarse-to-fine driver; in `tests/engine/session/` the session (`runtime.md` section 7) on the real engine, with a recording renderer and a build function of the tests' own: latest-wins scheduling and what stays on screen, gestures and draft levels, the view and its loans, idle thumbnails, `inspect`, builds, watched files, device recovery, the event order, both ends of the protocol over a real `MessageChannel`, and the ledger at `dispose`; every subcommand of `orogen` as a child process, with its exit code and the pictures it writes decoded again |
 | GPU `tests/nodes/` | conformance and behaviour of each node |
 | GPU `tests/export/` | builds: the stages, the files, cancellation, the output folder |
@@ -1420,13 +1438,13 @@ output. Every CI job runs it first, so a log always shows what the tests ran
 on.
 
 ```
-orogen render <type> [--res <n>] [--param <name>=<json>]... [--max-params] [--seed <n>] [--masked] [--crop <size>]
+orogen render <type> [--res <n>] [--param <name>=<json>]... [--max-params] [--seed <n>] [--connected] [--crop <size>]
 orogen render <project.orogen> --node <id> [--res <n>] [--crop <size>]
 ```
 
 | | First form | Second form |
 | --- | --- | --- |
-| Document | one instance of the node type, its inputs connected by the wiring rule of 2.4: each height, data and `any` input from a terrain of its own, masks from the slope mask, colours from a `ref/colorize` of their terrain. The plain variant; with `--masked` the masked variant, a usage error for a node that has none. Settings: `terrainSize` 4096, `heightRange` 1024, `seed` 1, `seaLevel` 0.25, those of the tests (2.1), so that a node that reads the sea level has a sea to show | the project file |
+| Document | one instance of the node type, its inputs connected by the wiring rule of 2.4: each height, data and `any` input from a terrain of its own, masks from the slope mask, colours from a `ref/colorize` of their terrain. The plain variant, in which optional inputs are unconnected; with `--connected` the connected variant, a usage error for a node that has none. Settings: `terrainSize` 4096, `heightRange` 1024, `seed` 1, `seaLevel` 0.25, those of the tests (2.1), so that a node that reads the sea level has a sea to show | the project file |
 | Parameters | defaults; with `--max-params`, every `float`, `int` and `vec2` parameter at its `max`; then each `--param`, whose value is one the parameter holds as given: a value `normalizeParams` would change (`runtime.md` 4.4) is a usage error; `--seed` sets the node's `seed` | as stored |
 | Resolution | `--res`, default 513 | `--res`, default the project's preview resolution |
 
@@ -1436,14 +1454,19 @@ they show what a build would do. For every output they write
 field, where a mask or a data output is drawn over a terrain, and a data output
 with `range: 'auto'`; for a colour, `color` and, when there is a terrain, a
 `3d` view of it with the colour drawn over it, as `<output>-<res>-3d.png`.
-That terrain is what is connected to the node's first height input. In the
-first form a node without a height input is drawn over terrain 0, whose broad
-shape made the mask and whose colouring is the colour: the distance
-`select/distance` measures is shown on the ground whose slopes made the mask. With `--crop`, they also write
-a `hillshade` (or `color`) of the centre window of that size at one texel per
-pixel, as `<output>-<res>-crop.png`. The masked variant writes files of its
-own, with `-masked` after the resolution: `<output>-<res>-masked.png`,
-`<output>-<res>-masked-3d.png`, `<output>-<res>-masked-crop.png`. They print one JSON line on
+That terrain is the node's own `outputs[0]` where that is a height: the
+`water` of `generate/island` is drawn over the island, the `weight` of
+`adjust/height-blend` over the blend and what a simulation moved over the
+terrain it left, never as a height sheet of the mask itself. For a node whose
+`outputs[0]` is no height it is what is connected to the node's first height
+input. In the first form a node with neither is drawn over terrain 0, whose
+broad shape made the mask and whose colouring is the colour: the distance
+`select/distance` measures is shown on the ground whose slopes made the mask.
+With `--crop`, they also write a `hillshade` (or `color`) of the centre window
+of that size at one texel per pixel, as `<output>-<res>-crop.png`. The
+connected variant writes files of its own, with `-connected` after the
+resolution: `<output>-<res>-connected.png`, `<output>-<res>-connected-3d.png`,
+`<output>-<res>-connected-crop.png`. They print one JSON line on
 standard output, whatever the status of the evaluation:
 `{ type, res, wallMs, gpuMs, longestSliceMs, peakBytes, files }`. `wallMs`,
 `gpuMs` and `peakBytes` are those of the node's `node-done` event
@@ -1457,20 +1480,36 @@ included; `files` holds the absolute paths of the pictures written.
 orogen gallery [--category <category>] [--res <n>]
 ```
 
-Renders every node of the registry that has outputs as the first form of
-`render` does, at resolution 513 unless `--res` is given, and a node that has
-a masked variant (2.4) a second time with `--masked`. It writes
-`gallery/index.html` with, per node: the picture of `outputs[0]`, below it
-that of the masked variant with the inputs the mask is connected to, the title,
-description and keywords, the ports, every parameter (label, unit, default,
-range, help), the flags `maskable` and `resolutionDependent`, the time and
-peak memory, and the content of the node's `conformance/…json` when the output
-folder holds one (3.6). A node that fails, in either variant, is listed with
-its error, and `gallery` then exits with 1, unless the node has a `file`
-parameter: its
-defaults select no file, the exception 8.1 makes for the registry test. After
-a cancellation or a device loss no page is written. `gallery` prints the path
-of the page on standard output. This page is what a reviewer reads.
+Renders every node of the registry that has outputs, or of one category, as
+the first form of `render` does, at resolution 513 unless `--res` is given,
+and a node that has a connected variant (2.4) a second time with
+`--connected`. For a variant in which two or more inputs of the node are
+connected it also draws what each was given, at one pixel per texel, as
+`nodes/<category>/<name>/input-<port>-<res>[-connected].png`: a terrain as a
+`hillshade`, the mask as `grey`, a colouring as `color`. (No output has such a
+name: a port name holds no hyphen.)
+
+It writes one page per category drawn, `gallery/<category>.html`, with, per
+node: the picture of `outputs[0]`, with the inputs beside it where they were
+drawn; below it that of the connected variant, with its inputs and the names
+of what was connected; the title, description and keywords, the ports, every
+parameter (label, unit, default, range, help), the flags `maskable` and
+`resolutionDependent`, the time and peak memory, and the content of the node's
+`conformance/…json` when the output folder holds one (3.6). A node that fails,
+in either variant, is listed with its error, and `gallery` then exits with 1,
+unless the node has a `file` parameter: its defaults select no file, the
+exception 8.1 makes for the registry test.
+
+It then writes `gallery/index.html`, which links the page of every category
+that has been drawn into the output folder, by this run or by an earlier one,
+in the order of `engine.md` 4.1, with the number of its nodes, how many of them
+failed, and the resolution, adapter and profile it was drawn with. A page says
+these of itself, in a `meta` element named `orogen-gallery`, so drawing one
+category leaves the pages of the others as they are and the index whole. A
+category without a node that has outputs gets no page. After a cancellation or
+a device loss nothing is written. `gallery` prints on standard output the path
+of the page to open: that of the category given with `--category`, else the
+index. These pages are what a reviewer reads.
 
 ---
 
@@ -1620,7 +1659,7 @@ the `terrain` fixture. The others behave as follows:
 | `ref/blur` | Gaussian blur with standard deviation `radius`: weights beyond 3 sigma are dropped and borders clamp. Below a quarter of a texel it outputs its input unchanged. No pass exceeds 64 loads per texel: a radius above 10 texels is handed to `ops.blur`, which computes it on a coarser grid that continues past the terrain as the field's own grid does. A node that builds such a grid itself asks `ops.resample` for a ring (`engine.md` section 5): on a grid that ends at the border a wide blur is wrong by 7 to 21 % of the range at a border whose texels differ from their neighbours. On `ref/fbm`, and on a ring of 1 around 0, the result is the direct Gaussian within 0.3 % of the input's range for radii up to 0.1, and within 0.6 % at 0.25. A constant stays that constant and an opaque colour stays opaque, bit for bit |
 | `ref/distance` | Euclidean distance, as a length, from each texel to the nearest texel whose input is at least 0.5; 0 on those texels; `√2` everywhere when there is none. Declares a `resolutionTol` of 0.03, because the boundary of the mask moves by up to one coarse cell between levels: between 257 and 513 that is 0.5 % of the standard deviation around the disc of the `mask` fixture and 1.3 % on the `terrain` fixture read as a mask |
 | `ref/colorize` | `out = mix(base, gradient(saturate(in)), strength)`, alpha 1. An unconnected `base` is black |
-| `ref/slope-mask` | 0 where the physical slope is at most `slopeMin`, 1 where it is at least `slopeMax`, linear in the slope angle between: the two thresholds are compared as tangents and the angle is computed only between them (`engine.md` 4.5). Declares a `resolutionTol` of 0.08, because it measures slope: between 257 and 513 the mask differs by 0.7 % of its standard deviation on the `terrain` fixture and by 5.6 % on a `ref/fbm` of four octaves, the terrain of the ladder checks in 10.2 |
+| `ref/slope-mask` | 0 where the physical slope is at most `slopeMin`, 1 where it is at least `slopeMax`, linear in the slope angle between: the two thresholds are compared as tangents and the angle is computed only between them (`engine.md` 4.5). Declares a `resolutionTol` of 0.08, because it measures slope: between 257 and 513 the mask differs by 0.5 % of its standard deviation on the `terrain` fixture and by 5.6 % on a `ref/fbm` of four octaves, the terrain of the ladder checks in 10.2 |
 | `ref/combine` | `r` = `b`, `a + b`, `a · b`, `max(a, b)` or `min(a, b)` by `mode`; `out = mix(a, r, strength · mask)`. Version 1 stored `amount` in percent; `migrate` turns it into `strength = amount / 100` |
 | `ref/autolevel` | remaps the input's measured minimum and maximum to 0 and 1 |
 | `ref/image` | the first channel of an 8- or 16-bit PNG as heights 0..1, resampled to the evaluation grid. Throws `No file selected` when `file` is empty. Its conformance call passes `params: { file: 'graphs/assets/heights-253.png' }` |
@@ -1826,7 +1865,7 @@ records the results in the release notes.
 | Acceptance graph 05 with build resolution 8129, built from the application | the build completes; no `device-lost` and no `engine-error` event; peak memory stays within the budget |
 | The same build a second time | every image and raw file is byte-identical to the first build's |
 | `orogen unreal-test`, and the output of graph 05, imported into Unreal Engine | the procedure of `export-unreal.md` section 7 succeeds and the checks of its section 9 give the expected results |
-| `orogen gallery` | every node renders; the integrator has looked at the page |
+| `orogen gallery` | every node renders; the integrator has looked at the pages |
 
 The development machine (Ubuntu, GTX 1660 Ti) runs the first three rows through
 Vulkan before every merge of a frozen-file change. That proves hardware

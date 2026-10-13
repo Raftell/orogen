@@ -61,17 +61,43 @@ fn bilinear2(t: texture_2d<f32>, uv: vec2f) -> vec2f { return bilinear4(t, uv).r
 fn bilinear(t: texture_2d<f32>, uv: vec2f) -> f32 { return bilinear4(t, uv).r; }
 
 // ---- terrain shape ----------------------------------------------------------
+// The derivative at a sample from itself (a) and the next two on one side (b, c), per
+// sample: the one-sided difference of second order.
+fn _oneSided(a: f32, b: f32, c: f32) -> f32 { return 0.5 * (4.0 * b - 3.0 * a - c); }
 // Gradient (dz/dx, dz/dy) of the height texture t at texel p, in metres per metre.
-// Central difference; one-sided on t's border. The cell size is taken from t's own
-// size, so t may have any resolution. Heights are multiplied by frame.heightRange.
+// Central difference; on t's border the one-sided difference of second order, so that
+// a paraboloid has its own slope up to the border, as it has inside. (The difference of
+// the border texel and its neighbour is wrong there by half a cell of the terrain's
+// bend, twice as much at one ladder level as at the next.) Along an axis on which t has
+// two texels it is their difference, and 0 where it has one. The cell size is taken
+// from t's own size, so t may have any resolution. Heights are multiplied by
+// frame.heightRange.
 fn slopeAt(t: texture_2d<f32>, p: vec2i) -> vec2f {
   let last = vec2i(textureDimensions(t)) - vec2i(1);
   let q = clamp(p, vec2i(0), last);
-  let lo = max(q - vec2i(1), vec2i(0));
-  let hi = min(q + vec2i(1), last);
-  let d = vec2f(ld(t, vec2i(hi.x, q.y)) - ld(t, vec2i(lo.x, q.y)), ld(t, vec2i(q.x, hi.y)) - ld(t, vec2i(q.x, lo.y)));
-  let run = vec2f(max(hi - lo, vec2i(1))) * (frame.terrainSize / vec2f(max(last, vec2i(1))));
-  return d * frame.heightRange / run;
+  let x = vec2i(1, 0);
+  let y = vec2i(0, 1);
+  let c = ld(t, q);
+  var d = vec2f(0.0);
+  if (last.x < 2) {
+    d.x = (ld(t, vec2i(last.x, q.y)) - ld(t, vec2i(0, q.y))) / f32(max(last.x, 1));
+  } else if (q.x == 0) {
+    d.x = _oneSided(c, ld(t, q + x), ld(t, q + 2 * x));
+  } else if (q.x == last.x) {
+    d.x = -_oneSided(c, ld(t, q - x), ld(t, q - 2 * x));
+  } else {
+    d.x = 0.5 * (ld(t, q + x) - ld(t, q - x));
+  }
+  if (last.y < 2) {
+    d.y = (ld(t, vec2i(q.x, last.y)) - ld(t, vec2i(q.x, 0))) / f32(max(last.y, 1));
+  } else if (q.y == 0) {
+    d.y = _oneSided(c, ld(t, q + y), ld(t, q + 2 * y));
+  } else if (q.y == last.y) {
+    d.y = -_oneSided(c, ld(t, q - y), ld(t, q - 2 * y));
+  } else {
+    d.y = 0.5 * (ld(t, q + y) - ld(t, q - y));
+  }
+  return d * frame.heightRange * vec2f(max(last, vec2i(1))) / frame.terrainSize;
 }
 // Unit surface normal, +Z up: normalize(vec3f(-dz/dx, -dz/dy, 1)).
 fn normalAt(t: texture_2d<f32>, p: vec2i) -> vec3f { let s = slopeAt(t, p); return normalize(vec3f(-s.x, -s.y, 1.0)); }

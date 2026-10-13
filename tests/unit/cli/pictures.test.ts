@@ -11,7 +11,7 @@ import { after, test } from 'node:test';
 
 import { decode } from 'fast-png';
 
-import { picturesOf, writePicture } from '../../../src/cli/pictures.ts';
+import { inputPicture, picturesOf, writePicture } from '../../../src/cli/pictures.ts';
 import type { Picture, Raster } from '../../../src/cli/preview.ts';
 import { describeError, exitCodeOf, HARD_CEILING_MS, overran, type RenderResult } from '../../../src/cli/result.ts';
 import { NodeFileSink } from '../../../src/platform/node/files.ts';
@@ -46,7 +46,7 @@ test('a field is a sheet, and with --crop also a hillshade of the centre window 
   assert.deepEqual(sizes(picturesOf({ role: 'mask' }, hills, hills, SCALE, 65)), [':1808x512', '-crop:65x65']);
 });
 
-test('a colour is a color picture, a 3d view over the height input when there is one, and with --crop the centre window', () => {
+test('a colour is a color picture, a 3d view over its terrain when there is one, and with --crop the centre window', () => {
   const paint = color((u, v) => [u, v, 0.25]);
   assert.deepEqual(sizes(picturesOf({}, paint, null, SCALE, null)), [':65x65']);
   assert.deepEqual(sizes(picturesOf({}, paint, hills, SCALE, null)), [':65x65', '-3d:768x512']);
@@ -66,7 +66,7 @@ test('a colour is a color picture, a 3d view over the height input when there is
   assert.ok(red > 20_000, `${red} of ${view.width * view.height} pixels show the colour`);
 });
 
-test('a data output is drawn with the range of its own values, a mask with 0..1, and both over the height input', () => {
+test('a data output is drawn with the range of its own values, a mask with 0..1, and both over the terrain they are given', () => {
   // What a simulation reports per texel: small numbers, far from 1.
   const moved = field((u) => 0.002 * u);
   const brightest = (picture: Picture): number => {
@@ -89,6 +89,26 @@ test('a data output is drawn with the range of its own values, a mask with 0..1,
   // Without a terrain the field itself is the surface: grey everywhere.
   const alone = picturesOf({ role: 'data' }, moved, null, SCALE, null)[0]!.draw();
   assert.deepEqual([pixel(alone, 512 + 8 + 500, 256)[0]! - pixel(alone, 512 + 8 + 500, 256)[2]!], [0]);
+});
+
+test('what an input was given is drawn at one pixel per texel: a terrain shaded, the mask black to white, a colouring as its colours', () => {
+  const terrain = inputPicture('terrain', hills, SCALE);
+  assert.deepEqual([terrain.width, terrain.height], [RES, RES]);
+  // Shaded: the slope that faces the light is brighter than the one that faces away, and no pixel is tinted.
+  const greys = new Set<number>();
+  for (let i = 0; i < terrain.rgb.length; i += 3) {
+    assert.ok(terrain.rgb[i] === terrain.rgb[i + 1] && terrain.rgb[i] === terrain.rgb[i + 2], 'a shaded terrain is grey');
+    greys.add(terrain.rgb[i]!);
+  }
+  assert.ok(greys.size > 20, `the relief shows in ${greys.size} shades`);
+
+  // The mask is its values, 0 black and 1 white: a picture of where a node is let act.
+  const mask = inputPicture('mask', field((u) => (u < 0.5 ? 0 : 1)), SCALE);
+  assert.deepEqual([pixel(mask, 4, 30), pixel(mask, 60, 30)], [[0, 0, 0], [255, 255, 255]]);
+  // A colouring is drawn as its colours, whatever kind of input it feeds.
+  const paint = inputPicture('color', color(() => [1, 0, 0]), SCALE);
+  assert.deepEqual(pixel(paint, 10, 10), [255, 0, 0]);
+  assert.deepEqual(pixel(inputPicture('terrain', color(() => [0, 0, 1]), SCALE), 10, 10), [0, 0, 255], 'a colour that feeds an input of either kind');
 });
 
 const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'orogen-cli-pictures-'));
@@ -123,7 +143,7 @@ test('a picture is written as an 8-bit RGB PNG that decodes to the same pixels, 
 
 const base: RenderResult = {
   type: 'ref/fbm', res: 513, status: 'ok', errors: [], wallMs: 3, gpuMs: 1, peakBytes: 1_052_676,
-  longestSliceMs: 12, longestSliceKernels: ['ref/fbm'], engineErrors: [], files: [], pictures: {}, views: {},
+  longestSliceMs: 12, longestSliceKernels: ['ref/fbm'], engineErrors: [], files: [], pictures: {}, views: {}, inputs: [],
 };
 
 test('the exit code of a rendered node: 0, 1 for a failed node or a slice above the hard ceiling or a stray GPU error, 3 for a lost device, 130 when cancelled', () => {

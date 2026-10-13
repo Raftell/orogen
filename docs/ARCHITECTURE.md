@@ -26,7 +26,8 @@ Exact versions are in `runtime.md` 8.9.
 ## 2. Verified platform facts
 
 Measured on the development machine (GTX 1660 Ti 6 GB, Linux, Vulkan), October
-2026. Nothing here is measured on the target machine or on D3D12 hardware.
+2026, and on GitHub's hosted runners where a paragraph says so. Nothing here is
+measured on the target machine or on D3D12 hardware.
 
 **Dawn in Node**
 
@@ -40,6 +41,14 @@ Measured on the development machine (GTX 1660 Ti 6 GB, Linux, Vulkan), October
 - While a GPU promise is pending, the process spins one CPU core.
 - `adapter.info.memoryHeaps` is absent, so the amount of video memory is unknown headless.
 - After a device is lost, `onSubmittedWorkDone()` still resolves and `popErrorScope()` returns `null`; only `mapAsync` rejects.
+- With `timestamp-query` the device's timer has steps of 65.536 µs on this card. A slice shorter than a step measures 0 or one step: a measured duration of 0 is the measurement of a short slice, not the sign of one that was not timed (`runtime.md` 3.5).
+
+**WGSL on the adapters**
+
+- A loop that indexes a function-local array is far slower on NVIDIA Vulkan than its texture loads suggest. Ranking 61 samples held in such an array took 779 ms for one 2049² field; the same ranking written out sample by sample, as values that stay in registers, takes 7.4 ms (`filter/median`). A kernel that sorts, ranks or selects among its samples keeps them in named values, and the arithmetic counts in its `cost` (`engine.md` 3.15 rule 4).
+- Float division is not exact: a number divided by itself is not 1 on every device. A weighted sum divided by its own weight does not return a constant field bit for bit, and `(s − lo) / (hi − lo)` at `s = hi` can come out just below 1. The shared ops therefore sum differences from an anchor texel (`ops.resample`, `ops.blur`, `ops.smooth`) and select the end of a span (`ops.remap`).
+- A builtin is not the function of its name at a large argument on every device. On `windows-latest` (WARP), `tanh(8.2)` returned 1.08, which took 0.0646 off a terrain where 0.06 was the most, and `tanh` of about 1e5 returned NaN (`generate/crater`, `generate/crater-field`); both are 1 on the NVIDIA driver and on lavapipe. Kernels write the hyperbolic tangent with `exp` of a number that is never above 0, and the lint refuses the builtin (`testing.md` section 4).
+- A device may reassociate and fuse arithmetic: `mix(a, b, t)` is evaluated as `a + t · (b − a)` on some, which is one ulp off `b` at `t = 1`. Every blend whose two ends must be exact selects them (`ops.blend`, the evaluator's mask blend, `adjust`'s blends): a mask of 0 leaves `a` and a mask of 1 gives `b`, bit for bit. On lavapipe `mix(a, a, t)` is not `a` to the last bit either: level ground interpolated between two of its own texels stood 1e-6 of a sun's disc in its own shadow. A kernel that compares an interpolated value with what it was interpolated from writes `a + t · (b − a)`, which is `a` when the two are equal (`ops.shadow`).
 
 **Electron 44**
 
@@ -51,6 +60,7 @@ Measured on the development machine (GTX 1660 Ti 6 GB, Linux, Vulkan), October
 **GitHub-hosted runners (no GPU)**
 
 - `windows-latest`: Dawn finds the software D3D12 adapter (WARP, "Microsoft Basic Render Driver") from a plain `requestAdapter()`. Compute shaders compile through the HLSL path and run. This is the Windows correctness check.
+- WARP does not set `isFallbackAdapter`: under Dawn it reports vendor `microsoft`, architecture `warp`, device `microsoft-basic-render-driver` and `isFallbackAdapter` false, where lavapipe reports architecture `software` and `isFallbackAdapter` true. Whether an adapter is a software one is decided by its name as well (`caps.software`, `runtime.md` 1.3).
 - `ubuntu-latest` with `mesa-vulkan-drivers`: Dawn runs on lavapipe (`llvmpipe`). Its `maxStorageBufferBindingSize` is the 128 MiB default.
 - A software adapter is selected by name (`llvmpipe`, `Microsoft`); `forceFallbackAdapter` does not select one under Dawn.
 - Both software adapters and the GTX 1660 Ti give the same value range for integer-hash noise at equal resolution. Values are not bit-identical across adapters: lavapipe and the NVIDIA driver differ by up to 4.6e-6. Runs on one adapter are bit-identical.

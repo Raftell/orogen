@@ -12,29 +12,52 @@ import { UsageError, type ParamArg } from './args.ts';
 /** The settings of a node type's document; the others keep the defaults of a new document. */
 export const RENDER_SETTINGS = { terrainSize: 4096, heightRange: 1024, seed: 1, seaLevel: 0.25 } as const satisfies Partial<ProjectSettings>;
 
-/** What feeds the inputs of a rendered node type: realistic fractal terrains, a mask of the first, a colouring of each. */
+/** What feeds the inputs of a rendered node type: realistic terrains, a mask of the first, a colouring of each. */
 const HEIGHTS = 'ref/fbm';
 const MASKS = 'ref/slope-mask';
 const COLORS = 'ref/colorize';
+/**
+ * The first terrain, where the registry has it: smooth valleys under rough crests. ref/fbm is rough everywhere,
+ * and a node that tells smooth ground from rough, or flattens the middle heights, has nothing to show on it.
+ */
+const FIRST_TERRAIN = 'generate/eroded-noise';
 
 /**
- * The feature sizes of the terrains that feed a node, in turn. The first terrain is ref/fbm at its defaults; each
- * further one has a seed and a size of its own, so that a node with two inputs is not shown its first input twice.
+ * The feature sizes of the terrains that feed a node, in turn. The first terrain is at the defaults of its type;
+ * each further one is a ref/fbm with a seed and a size of its own, so that a node with two inputs is not shown
+ * its first input twice.
  */
 const TERRAIN_SIZES: readonly number[] = [0.25, 0.1, 0.5, 0.05];
 
-/** The parameters of terrain `index` beside the defaults of ref/fbm: none for the first. */
+/** The node type of terrain `index`: the first is generate/eroded-noise where the registry holds it, every other one ref/fbm. */
+export function terrainType(registry: NodeRegistry, index: number): string {
+  return index === 0 && registry.get(FIRST_TERRAIN) ? FIRST_TERRAIN : HEIGHTS;
+}
+
+/** The parameters of terrain `index` beside the defaults of its type: none for the first. */
 export function terrainParams(index: number): Readonly<Record<string, ParamValue>> {
   return index === 0 ? {} : { seed: index, size: TERRAIN_SIZES[index % TERRAIN_SIZES.length]! };
 }
 
+/** The mask that feeds mask inputs: the parameters of the terrain it is a slope mask of, and of the slope mask. */
+export interface MaskFeed { readonly terrain: Readonly<Record<string, ParamValue>>; readonly slopes: Readonly<Record<string, ParamValue>> }
+
 /**
- * The mask that feeds mask inputs is a slope mask of the first terrain's broad shape: its first three octaves
- * alone, selected between these angles, which is about half the terrain, in regions. The slopes of all eight
- * octaves are speckle at the scale of a texel, and under a mask of speckle no picture shows what a node does.
+ * The mask is a slope mask of the first terrain's broad shape: its first octaves alone, selected between two
+ * angles, which is about half the terrain, in regions (0.43 of ref/fbm and 0.49 of generate/eroded-noise at 513).
+ * The slopes of all eight octaves are speckle at the scale of a texel, and under a mask of speckle no picture
+ * shows what a node does. The eroded noise has its broad shape in two octaves, the third already cuts gullies,
+ * and its slopes are steeper.
  */
-export const MASK_TERRAIN: Readonly<Record<string, ParamValue>> = { octaves: 3 };
-export const MASK_SLOPES: Readonly<Record<string, ParamValue>> = { slopeMin: 35, slopeMax: 50 };
+const MASK_FEEDS: Readonly<Record<string, MaskFeed>> = {
+  [HEIGHTS]: { terrain: { octaves: 3 }, slopes: { slopeMin: 35, slopeMax: 50 } },
+  [FIRST_TERRAIN]: { terrain: { octaves: 2 }, slopes: { slopeMin: 40, slopeMax: 55 } },
+};
+
+/** What makes the mask in a document of this registry. */
+export function maskFeed(registry: NodeRegistry): MaskFeed {
+  return MASK_FEEDS[terrainType(registry, 0)]!;
+}
 
 /** What feeds one input: terrain `index`, the mask of the first terrain, or the colouring of terrain `index`. */
 export type Feed =
@@ -42,36 +65,43 @@ export type Feed =
   | { readonly kind: 'mask' }
   | { readonly kind: 'color'; readonly index: number };
 
-/**
- * A mask that modifies what a node does: an input of role `mask` that is optional and not the node's first
- * input. The first input is the node's subject whatever its role (the `r` of a node that packs channels).
- */
-const isOptionalMask = (port: PortDef, index: number): boolean => index > 0 && port.type === 'field' && port.role === 'mask' && port.optional === true;
-
-/** Whether the node has a masked variant: an optional mask input of its own, or the one `maskable` gives it. */
-export function hasMaskedVariant(def: NodeDef): boolean {
-  return def.maskable === true || def.inputs.some(isOptionalMask);
+/** Whether the node has a connected variant: an optional input of its own, or the mask `maskable` gives it. */
+export function hasConnectedVariant(def: NodeDef): boolean {
+  return def.maskable === true || def.inputs.some((port) => port.optional === true);
 }
 
 /**
  * The feed of every input of `def`, by port name; null: left unconnected (testing.md 2.4).
  *
  * - The k-th input that takes a height, a data field or either kind gets terrain k: each a terrain of its own.
- * - A mask input gets the mask: a slope mask of the broad shape of the first terrain. An optional one that is
- *   not the node's first input is connected in the masked variant only, and so is the `mask` of a maskable
- *   node: the plain picture shows the node's full effect, the masked one the mask acting.
+ * - A mask input gets the mask: a slope mask of the broad shape of the first terrain.
  * - The k-th colour input gets the colouring of terrain k.
+ * - An optional input is connected in the connected variant only, and so is the `mask` of a maskable node: the
+ *   plain picture shows the node as a user sees it on dropping it into a graph, with its own defaults, and the
+ *   connected one what its optional inputs and a mask do to that. Inputs are counted whether or not they are
+ *   connected, so that an input has the same feed in both variants.
  */
-export function inputFeeds(def: NodeDef, masked: boolean): Readonly<Record<string, Feed | null>> {
+export function inputFeeds(def: NodeDef, connected: boolean): Readonly<Record<string, Feed | null>> {
   const feeds: Record<string, Feed | null> = {};
   let terrains = 0, colors = 0;
-  for (const [index, port] of def.inputs.entries()) {
-    if (port.type === 'color') feeds[port.name] = { kind: 'color', index: colors++ };
-    else if (port.type === 'field' && port.role === 'mask') feeds[port.name] = isOptionalMask(port, index) && !masked ? null : { kind: 'mask' };
-    else feeds[port.name] = { kind: 'terrain', index: terrains++ };
+  for (const port of def.inputs) {
+    const feed: Feed = port.type === 'color' ? { kind: 'color', index: colors++ }
+      : port.type === 'field' && port.role === 'mask' ? { kind: 'mask' }
+      : { kind: 'terrain', index: terrains++ };
+    feeds[port.name] = port.optional === true && !connected ? null : feed;
   }
-  if (def.maskable) feeds.mask = masked ? { kind: 'mask' } : null;
+  if (def.maskable) feeds.mask = connected ? { kind: 'mask' } : null;
   return feeds;
+}
+
+/** A connected input of a rendered node type, for the picture of what the node was given. */
+export interface PlannedInput {
+  /** The input port of the node. */
+  readonly port: string;
+  /** The output that feeds it. */
+  readonly from: PortRef;
+  /** What that output is: a terrain, the mask or a colouring. */
+  readonly kind: Feed['kind'];
 }
 
 export interface RenderPlan {
@@ -81,21 +111,27 @@ export interface RenderPlan {
   /** null: the registry has no such type. The evaluation reports it. */
   readonly def: NodeDef | null;
   /**
-   * The terrain a mask, a data field or a colour is drawn over: the output connected to the node's first height
-   * input, or, for a node without one, the terrain its mask or its colour was made of. null: every output is a
-   * height, or the node reads no terrain at all.
+   * The terrain a mask, a data field or a colour is drawn over when the node's first output is none: the output
+   * connected to the node's first height input, or, for a node without one, the terrain its mask or its colour
+   * was made of. null: the node's first output is a height, over which its other outputs are drawn, or the node
+   * reads no terrain at all.
    */
   readonly terrain: PortRef | null;
-  /** The document is the masked variant: optional mask inputs are connected (testing.md 2.4). */
-  readonly masked: boolean;
+  /** The document is the connected variant: optional inputs and the mask of a maskable node are connected (testing.md 2.4). */
+  readonly connected: boolean;
+  /** The connected inputs of a node type, in the order of its ports and with the mask of a maskable node last; none for a project file. */
+  readonly inputs: readonly PlannedInput[];
   /** What the project file's loader reported. */
   readonly warnings: readonly string[];
 }
 
 const isHeight = (port: PortDef): boolean => port.type === 'field' && (port.role ?? 'height') === 'height';
 
-/** Whether a picture of this output is drawn over a terrain: every output that is not itself a height. */
-const drawnOverTerrain = (port: PortDef): boolean => !isHeight(port);
+/**
+ * Whether the pictures of the node need a terrain beside its own outputs: some output is no height, and the
+ * first is none either. A node whose first output is a height has its other outputs drawn over that.
+ */
+const needsTerrain = (def: NodeDef): boolean => def.outputs.some((port) => !isHeight(port)) && !isHeight(def.outputs[0]!);
 
 function listed(names: readonly string[], limit = 24): string {
   return names.length <= limit ? names.join(', ') : `${names.slice(0, limit).join(', ')} and ${names.length - limit} more`;
@@ -117,22 +153,23 @@ function refusal(problem: string): string {
 
 /**
  * One instance of `type` at its defaults, then `maxParams` (every float, int and vec2 parameter at its max),
- * then each of `params`, then `seed`. Its inputs are fed as inputFeeds says: a terrain is a ref/fbm, the mask a
- * ref/slope-mask of the first terrain's broad shape and a colour a ref/colorize of its terrain; where the
- * registry lacks one of the two, the terrain itself is connected and the evaluator converts. With `masked`, the optional mask
- * inputs are connected too. Throws UsageError for what the arguments get wrong.
+ * then each of `params`, then `seed`. Its inputs are fed as inputFeeds says: the first terrain is a
+ * generate/eroded-noise where the registry has one and every other terrain a ref/fbm, the mask a ref/slope-mask
+ * of the first terrain's broad shape and a colour a ref/colorize of its terrain; where the registry lacks one of
+ * the two, the terrain itself is connected and the evaluator converts. With `connected`, the optional inputs
+ * and the mask of a maskable node are connected too. Throws UsageError for what the arguments get wrong.
  */
 export function typeDocument(
   registry: NodeRegistry, type: string,
-  opts: { readonly params?: readonly ParamArg[]; readonly maxParams?: boolean; readonly seed?: number | null; readonly masked?: boolean } = {},
+  opts: { readonly params?: readonly ParamArg[]; readonly maxParams?: boolean; readonly seed?: number | null; readonly connected?: boolean } = {},
 ): RenderPlan {
   const def = registry.get(type);
   if (!def) throw new UsageError(unknownType(registry, type), 'render');
   if (def.outputs.length === 0) throw new UsageError(`${type} has no outputs: there is nothing to draw`, 'render');
   if (!registry.get(HEIGHTS)) throw new Error(`The registry lacks ${HEIGHTS}, which feeds the inputs of a rendered node (testing.md 10.1)`);
-  const masked = opts.masked === true;
-  if (masked && !hasMaskedVariant(def)) {
-    throw new UsageError(`--masked connects the optional mask inputs of a node, and ${type} has none and is not maskable`, 'render');
+  const connected = opts.connected === true;
+  if (connected && !hasConnectedVariant(def)) {
+    throw new UsageError(`--connected connects the optional inputs of a node and the mask of a maskable one, and ${type} has no optional input and is not maskable`, 'render');
   }
 
   const draft = structuredClone(newDoc()) as DocDraft;
@@ -151,18 +188,22 @@ export function typeDocument(
     if (from !== null && input) connect(draft, registry, { node: from, port: 'out' }, { node: id, port: input.name });
     return id;
   };
-  const terrainOf = (index: number): string => feedNode(`terrain ${index}`, HEIGHTS, 0, terrainParams(index), null);
+  const mask = maskFeed(registry);
+  const terrainOf = (index: number): string => feedNode(`terrain ${index}`, terrainType(registry, index), 0, terrainParams(index), null);
   const sourceOf = (feed: Feed): string => {
     if (feed.kind === 'terrain') return terrainOf(feed.index);
-    if (feed.kind === 'mask') return registry.get(MASKS) ? feedNode('mask', MASKS, 1, MASK_SLOPES, feedNode('mask terrain', HEIGHTS, 0, MASK_TERRAIN, null)) : terrainOf(0);
+    if (feed.kind === 'mask') return registry.get(MASKS) ? feedNode('mask', MASKS, 1, mask.slopes, feedNode('mask terrain', terrainType(registry, 0), 0, mask.terrain, null)) : terrainOf(0);
     return registry.get(COLORS) ? feedNode(`color ${feed.index}`, COLORS, 1, {}, terrainOf(feed.index)) : terrainOf(feed.index);
   };
 
   let terrain: PortRef | null = null;
   let behind: PortRef | null = null;
-  for (const [port, feed] of Object.entries(inputFeeds(def, masked))) {
+  const inputs: PlannedInput[] = [];
+  for (const [port, feed] of Object.entries(inputFeeds(def, connected))) {
     if (feed === null) continue;
-    connect(draft, registry, { node: sourceOf(feed), port: 'out' }, { node: nodeId, port });
+    const from: PortRef = { node: sourceOf(feed), port: 'out' };
+    connect(draft, registry, from, { node: nodeId, port });
+    inputs.push({ port, from, kind: feed.kind });
     const declared = def.inputs.find((input) => input.name === port);
     if (terrain === null && declared && isHeight(declared)) terrain = { node: terrainOf(feed.kind === 'mask' ? 0 : feed.index), port: 'out' };
     // What a mask, a data field or a colour was made of, for a node without a height input.
@@ -191,7 +232,7 @@ export function typeDocument(
     setParam(draft, registry, nodeId, 'seed', opts.seed);
   }
 
-  return { doc: draft as GraphDoc, nodeId, type, def, terrain: def.outputs.some(drawnOverTerrain) ? terrain : null, masked, warnings: [] };
+  return { doc: draft as GraphDoc, nodeId, type, def, terrain: needsTerrain(def) ? terrain : null, connected, inputs, warnings: [] };
 }
 
 /**
@@ -216,7 +257,7 @@ export function projectDocument(registry: NodeRegistry, text: string, nodeId: st
   if (def && def.outputs.length === 0) throw new UsageError(`The node "${nodeId}" is a ${node.type}, which has no outputs: there is nothing to draw`, 'render');
 
   let terrain: PortRef | null = null;
-  const heightPort = def?.outputs.some(drawnOverTerrain) ? def.inputs.find(isHeight) : undefined;
+  const heightPort = def && needsTerrain(def) ? def.inputs.find(isHeight) : undefined;
   if (heightPort) {
     // Where an input has several edges the evaluator uses the first in record order (runtime.md 4.3 rule 5).
     const edge = Object.values(doc.edges).find((candidate) => candidate.to.node === nodeId && candidate.to.port === heightPort.name);
@@ -231,6 +272,6 @@ export function projectDocument(registry: NodeRegistry, text: string, nodeId: st
     const where = problem.nodeId !== undefined ? `node "${problem.nodeId}": ` : problem.edgeId !== undefined ? `edge "${problem.edgeId}": ` : '';
     return `${where}${problem.message}`;
   });
-  return { doc, nodeId, type: node.type, def, terrain, masked: false, warnings };
+  return { doc, nodeId, type: node.type, def, terrain, connected: false, inputs: [], warnings };
 }
 

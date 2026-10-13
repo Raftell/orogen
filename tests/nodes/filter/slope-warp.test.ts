@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { at, conformance, expectClose, expectIdentical, expectLadder, fixtures, renderLadder, renderNode, traceNode, type FieldData } from '../../helpers/index.ts';
 import def from '../../../src/core/nodes/filter/slope-warp.ts';
-import { cubicAt, gaussian, mapField, pathEnd } from './_reference.ts';
+import { cubicAt, mapField, pathEnd, smoothed } from './_reference.ts';
 
 conformance(def);
 
@@ -12,7 +12,7 @@ const L = N - 1;
 
 /** The node on the CPU: each texel reads the terrain where 11 steps up the slope of the smoothed terrain end, `reach` texels away on ground of 45 degrees. */
 function pushed(src: FieldData, reach: number, sigma: number): FieldData {
-  const shape = sigma > 0 ? gaussian(src, sigma) : src;
+  const shape = sigma > 0 ? smoothed(src, sigma) : src;
   return mapField(src, (x, y) => cubicAt(src, ...pathEnd(shape, x, y, reach, 11)));
 }
 
@@ -20,10 +20,12 @@ test('filter/slope-warp: each point takes the height found the distance along th
   // A distance of 0.03 is 7.68 texels at 257, a radius of 0.02 a Gaussian of 5.12 texels.
   const src = await fixtures.fbm(N);
   const down = await renderNode(def, { inputs: { in: src }, params: { distance: 0.03, radius: 0.02 } });
-  // The path is followed in float32 over a blur computed in float32, on a terrain that changes by up to 0.05 a texel.
-  expectClose(down.out, pushed(src, 7.68, 5.12), { max: 2e-3 });
+  // The path is followed in float32 over a terrain smoothed in float32, on a terrain that changes by up to 0.05
+  // a texel: the two agree to 1e-5 rms, and at a texel in 66049 whose path passes a crest, where the last bit of
+  // the smoothed terrain decides which way it goes on, by up to 0.003.
+  expectClose(down.out, pushed(src, 7.68, 5.12), { max: 4e-3, rms: 5e-5 });
   const up = await renderNode(def, { inputs: { in: src }, params: { distance: 0.03, radius: 0.02, mode: 'uphill' } });
-  expectClose(up.out, pushed(src, -7.68, 5.12), { max: 2e-3 });
+  expectClose(up.out, pushed(src, -7.68, 5.12), { max: 4e-3, rms: 5e-5 });
 });
 
 test('filter/slope-warp: downhill moves an even slope down itself, in proportion to its steepness, and uphill up it', async () => {
@@ -35,6 +37,13 @@ test('filter/slope-warp: downhill moves an even slope down itself, in proportion
     // What was at x + shift is now at x: the slope has moved towards -X, downhill, and is higher at every point.
     assert.ok(Math.abs(at(down.out, x, 100) - (x / L + shift)) < 1e-5, `downhill at ${x}: ${at(down.out, x, 100)}`);
     assert.ok(Math.abs(at(up.out, x, 100) - (x / L - shift)) < 1e-5, `uphill at ${x}: ${at(up.out, x, 100)}`);
+  }
+  // The smoothed slope is the slope up to the border, so the push is whole there too. (Smoothed by a blur that
+  // continues the terrain level beyond the border, the slope is 0.88 of itself three texels from it, and the
+  // terrain is pushed 0.0012 less there than inside: a frame.) A texel reads from inside the terrain here.
+  for (const y of [0, 100, L]) {
+    assert.ok(Math.abs(at(down.out, 3, y) - (3 / L + shift)) < 1e-5, `downhill three texels from the border, row ${y}: ${at(down.out, 3, y)}`);
+    assert.ok(Math.abs(at(up.out, L - 3, y) - ((L - 3) / L - shift)) < 1e-5, `uphill three texels from the border, row ${y}: ${at(up.out, L - 3, y)}`);
   }
 });
 

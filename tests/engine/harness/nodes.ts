@@ -89,6 +89,30 @@ export const either = defineNode({
   },
 });
 
+/** One of five colours and of three heights, passed on: which fixture an input was given shows in the output. */
+export const pick = defineNode({
+  type: 'ref/h-pick',
+  title: 'Pick (Reference)',
+  category: 'ref',
+  description: 'Passes one of its inputs on.',
+  inputs: [
+    { name: 'a', type: 'color' }, { name: 'x', type: 'field' }, { name: 'b', type: 'color' }, { name: 'y', type: 'any' }, { name: 'c', type: 'color' },
+    { name: 'd', type: 'color' }, { name: 'z', type: 'field', role: 'data' }, { name: 'e', type: 'color' }, { name: 'weights', type: 'field', role: 'mask' },
+  ],
+  outputs: [{ name: 'out', type: 'color' }, { name: 'height', type: 'field' }],
+  params: [
+    { kind: 'int', name: 'colorIndex', default: 0, min: 0, max: 4, help: 'The color input that is passed on.' },
+    { kind: 'int', name: 'heightIndex', default: 0, min: 0, max: 3, help: 'The height input that is passed on.' },
+  ],
+  kernels: [],
+  evaluate(ctx) {
+    ctx.output('out', ctx.input((['a', 'b', 'c', 'd', 'e'] as const)[ctx.params.colorIndex]!));
+    const height = ctx.input((['x', 'y', 'z', 'weights'] as const)[ctx.params.heightIndex]!);
+    if (height.kind !== 'field') throw new Error('The input y was given a color');
+    ctx.output('height', height);
+  },
+});
+
 /** Throws its message when it has one; otherwise passes its input on. */
 export const failing = defineNode({
   type: 'ref/h-fail',

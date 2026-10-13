@@ -42,7 +42,7 @@ async function normalOf(data: Float32Array, n: number, res = 65): Promise<Float3
   return out!;
 }
 
-test('slope is degrees(atan(|gradient|)) of the physical surface, central inside and one-sided on the border', async () => {
+test('slope is degrees(atan(|gradient|)) of the physical surface, central inside and of second order on the border', async () => {
   const n = 65;
   const heights = sampled(n, hills);
   const out = await slopeOf(heights, n);

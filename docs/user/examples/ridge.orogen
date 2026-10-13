@@ -1,0 +1,57 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 2000,
+    "heightRange": 500,
+    "seed": 7,
+    "buildResolution": 1009,
+    "previewLevel": 1,
+    "seaLevel": 0
+  },
+  "nodes": {
+    "range": {
+      "id": "range",
+      "type": "generate/mountain-range",
+      "version": 1,
+      "position": { "x": 0, "y": 0 },
+      "params": {}
+    },
+    "steep": {
+      "id": "steep",
+      "type": "select/slope",
+      "version": 1,
+      "position": { "x": 260, "y": 140 },
+      "params": { "slopeMin": 30, "slopeMax": 90 }
+    },
+    "landscape": {
+      "id": "landscape",
+      "type": "io/export-landscape",
+      "version": 1,
+      "position": { "x": 520, "y": 0 },
+      "params": { "name": "Ridge" }
+    },
+    "rock": {
+      "id": "rock",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": { "x": 520, "y": 140 },
+      "params": { "layer": "Rock" }
+    },
+    "normal": {
+      "id": "normal",
+      "type": "io/export-normal",
+      "version": 1,
+      "position": { "x": 520, "y": 280 },
+      "params": {}
+    }
+  },
+  "edges": {
+    "e-steep": { "id": "e-steep", "from": { "node": "range", "port": "out" }, "to": { "node": "steep", "port": "in" } },
+    "e-landscape": { "id": "e-landscape", "from": { "node": "range", "port": "out" }, "to": { "node": "landscape", "port": "in" } },
+    "e-rock": { "id": "e-rock", "from": { "node": "steep", "port": "out" }, "to": { "node": "rock", "port": "in" } },
+    "e-normal": { "id": "e-normal", "from": { "node": "range", "port": "out" }, "to": { "node": "normal", "port": "in" } }
+  },
+  "groups": {},
+  "ui": {}
+}

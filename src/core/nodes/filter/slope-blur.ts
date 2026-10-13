@@ -1,5 +1,5 @@
 // src/core/nodes/filter/slope-blur.ts
-import { defineKernel, defineNode, ops, param, type Field } from '../../api.ts';
+import { convert, defineKernel, defineNode, ops, param, type Field } from '../../api.ts';
 import { filterFlow } from './_flow.ts';
 
 /** The points of one pass along a path beside the texel itself: 6 readings between texels and up to 4 steps to each, 49 loads, within the 64 of engine.md 3.15. */
@@ -119,10 +119,11 @@ const brightness = defineKernel({
   name: 'filter/slope-blur.brightness',
   inputs: { src: 'color' },
   outputs: { out: 'field' },
+  includes: [convert],
   cost: 1,
   code: /* wgsl */ `
 fn compute(px: vec2i, uv: vec2f) -> f32 {
-  return dot(src_at(px).rgb, vec3f(0.2126, 0.7152, 0.0722));
+  return convert_luma(src_at(px));
 }`,
 });
 
@@ -198,10 +199,12 @@ export default defineNode({
       ctx.run(brightness, { in: { src }, out: { out: own } });
       guide = own;
     }
-    // The smoothed terrain is also what the gullies leave standing, when the terrain is its own guide.
+    // The smoothed terrain is also what the gullies leave standing, when the terrain is its own guide. It is
+    // smoothed without anything assumed beyond the border (ops.smooth): its slope steers and it is taken from the
+    // picture, and a blur that continues the terrain level there would turn the paths and cut a frame of gullies.
     let low: Field<Img> | null = null;
     if (smoothed) {
-      const smooth = ops.blur(ctx, guide, smoothing);
+      const smooth = ops.smooth(ctx, guide, smoothing);
       if (own) ctx.release(own);
       own = smooth;
       guide = smooth;
@@ -241,7 +244,7 @@ export default defineNode({
       // No gully is cut below the lowest ground on the path that leads down from it: the foot of a mountain,
       // a valley floor and a plain stay at their level.
       floor = await along(src, true, -1, true, false, [0, 0.5]);
-      low ??= ops.blur(ctx, src, smoothing);
+      low ??= ops.smooth(ctx, src, smoothing);
       const detail = ctx.alloc(kind);
       ctx.run(details[kind], { in: { src, low }, out: { out: detail } });
       part = await along(detail, false, 1, true, true, [0.5, 1]);

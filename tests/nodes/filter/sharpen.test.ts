@@ -3,14 +3,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { channelOf, conformance, expectClose, expectIdentical, fieldOf, fixtures, renderNode, traceNode } from '../../helpers/index.ts';
 import def from '../../../src/core/nodes/filter/sharpen.ts';
-import { gaussian, mapField, roughness } from './_reference.ts';
+import { mapField, roughness, smoothed } from './_reference.ts';
 
 conformance(def);
 
-test('filter/sharpen: at full strength the detail the blur removes is added once more, at half strength half of it', async () => {
+test('filter/sharpen: at full strength the detail that smoothing removes is added once more, at half strength half of it', async () => {
   // A radius of 0.02 is 5.12 texels at 257.
   const src = await fixtures.fbm(257);
-  const low = gaussian(src, 0.02 * 256);
+  const low = smoothed(src, 0.02 * 256);
   const { out } = await renderNode(def, { inputs: { in: src }, params: { radius: 0.02 } });
   expectClose(out, mapField(src, (x, y) => 2 * src.data[y * 257 + x]! - low.data[y * 257 + x]!), { max: 2e-5 });
   const half = await renderNode(def, { inputs: { in: src }, params: { radius: 0.02, strength: 0.5 } });
@@ -26,9 +26,13 @@ test('filter/sharpen: the terrain gets rougher with the strength, and a flat or 
 
   const flat = fieldOf(257, () => 0.3);
   expectClose((await renderNode(def, { inputs: { in: flat } })).out, flat, { max: 1e-6 });
-  // A blur leaves a plane a plane, away from the border it clamps at: there is no detail to add.
-  const ramp = await renderNode(def, { inputs: { in: 'rampX' }, params: { radius: 0.01 } });
-  for (let x = 16; x <= 240; x += 16) assert.ok(Math.abs(ramp.out.data[128 * 257 + x]! - x / 256) <= 1e-6);
+  // Smoothed, a plane is that plane up to the border: there is no detail to add anywhere, and no frame is
+  // sharpened into ground that slopes towards the border. (Less a blur that clamps, rampX would rise by 0.004 at
+  // the border it runs into, at a radius of 0.02.)
+  for (const radius of [0.01, 0.02, 0.1]) {
+    const ramp = await renderNode(def, { inputs: { in: 'rampX' }, params: { radius } });
+    expectClose(ramp.out, fixtures.rampX(257), { max: 2e-6 });
+  }
 });
 
 test('filter/sharpen: no strength, or a radius below a third of a texel, gives the input itself', async () => {

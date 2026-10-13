@@ -1,12 +1,14 @@
 // The standard library and the core libraries on the device (engine.md 3.8, 3.9, 4.8): the written grid, texture
 // reads and their clamping, vertex-centred bilinear interpolation, slopeAt and normalAt, seeds, the integer
-// hashes against their TypeScript twins, and the lattice noise against a reference built on those twins.
+// hashes against their TypeScript twins, the lattice noise against a reference built on those twins, and the
+// two conversions between a field and a colour.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { hashCell, hashU32, hashUnit, mixSeed } from '../../../src/core/gpu/hash.ts';
 import { defineKernel } from '../../../src/core/gpu/kernel.ts';
+import { convert } from '../../../src/core/wgsl/convert.ts';
 import { hash } from '../../../src/core/wgsl/hash.ts';
 import { noise } from '../../../src/core/wgsl/noise.ts';
 import { createRig, HEIGHT_RANGE, SEED, TERRAIN_SIZE, texel, texels } from './rig.ts';
@@ -127,8 +129,19 @@ fn compute(px: vec2i, uv: vec2f) -> Out {
 }`,
 });
 
+const conversions = defineKernel({
+  name: 'test/conversions',
+  inputs: { c: 'aux', s: 'field' },
+  outputs: { out: 'aux', grey: 'aux' },
+  includes: [convert],
+  code: /* wgsl */ `
+fn compute(px: vec2i, uv: vec2f) -> Out {
+  return Out(vec4f(convert_luma(c_at(px)), 0.0, 0.0, 0.0), convert_grey(s_at(px)));
+}`,
+});
+
 const rig = await createRig();
-await rig.compile(grid, loads, interpolate, shape, seeds, hashes, lattice);
+await rig.compile(grid, loads, interpolate, shape, seeds, hashes, lattice, conversions);
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(Math.max(v, lo), hi);
 const mix = (a: number, b: number, t: number): number => a * (1 - t) + b * t;
@@ -303,14 +316,24 @@ test('bilinear is vertex-centred: uv 0..1 spans the first to the last texel', as
 
 // ---- terrain shape ---------------------------------------------------------------------------------------------
 
-/** engine.md 3.8: central difference, one-sided on the border, in metres per metre, with the texture's own cell size. */
+/**
+ * The derivative along one axis at sample `i` of the `n` samples `at` reads, per sample (engine.md 3.8): the
+ * central difference inside, the one-sided difference of second order at the two ends, the difference of the
+ * two samples where there are only two, and 0 for one.
+ */
+function differenceRef(at: (i: number) => number, i: number, n: number): number {
+  if (n < 3) return n === 2 ? at(1) - at(0) : 0;
+  if (i === 0) return 0.5 * (4 * at(1) - 3 * at(0) - at(2));
+  if (i === n - 1) return -0.5 * (4 * at(n - 2) - 3 * at(n - 1) - at(n - 3));
+  return 0.5 * (at(i + 1) - at(i - 1));
+}
+
+/** engine.md 3.8: the gradient in metres per metre, with the texture's own cell size, at a texel that is clamped to the texture. */
 function slopeRef(data: Float32Array, w: number, h: number, x: number, y: number): [number, number] {
   const qx = clamp(x, 0, w - 1), qy = clamp(y, 0, h - 1);
-  const lox = Math.max(qx - 1, 0), hix = Math.min(qx + 1, w - 1), loy = Math.max(qy - 1, 0), hiy = Math.min(qy + 1, h - 1);
-  const at = (i: number, j: number): number => data[j * w + i]!;
-  const runX = Math.max(hix - lox, 1) * (TERRAIN_SIZE / Math.max(w - 1, 1));
-  const runY = Math.max(hiy - loy, 1) * (TERRAIN_SIZE / Math.max(h - 1, 1));
-  return [(at(hix, qy) - at(lox, qy)) * HEIGHT_RANGE / runX, (at(qx, hiy) - at(qx, loy)) * HEIGHT_RANGE / runY];
+  const dx = differenceRef((i) => data[qy * w + i]!, qx, w);
+  const dy = differenceRef((j) => data[j * w + qx]!, qy, h);
+  return [dx * HEIGHT_RANGE * Math.max(w - 1, 1) / TERRAIN_SIZE, dy * HEIGHT_RANGE * Math.max(h - 1, 1) / TERRAIN_SIZE];
 }
 
 test('slopeAt of a plane is its gradient in metres per metre, on the border too', async () => {
@@ -331,7 +354,7 @@ test('slopeAt of a plane is its gradient in metres per metre, on the border too'
   }
 });
 
-test('slopeAt is a central difference inside, one-sided on the border, and clamps its texel', async () => {
+test('slopeAt is a central difference inside, the one-sided difference of second order on the border, and clamps its texel', async () => {
   const w = 9, hgt = 6, n = 12;                                    // a texture of its own size, not square: its cells are 512 m by 819.2 m
   const data = texels(w, hgt, (x, y) => 0.001 * x * x + 0.002 * y * y * y + 0.0005 * x * y);
   const h = rig.field('field', [w, hgt], data);
@@ -350,14 +373,49 @@ test('slopeAt is a central difference inside, one-sided on the border, and clamp
     rig.release(slope);
     rig.release(normal);
   }
-  // The values that tell the three cases apart, for x * x along a row: 2x inside, 1 at the left edge, 2 * last - 1 at the right.
+  // For x * x along a row the slope is 2x at every texel, the two ends included: a difference of the border
+  // texel and its neighbour gives 1 at the left end and 2 * last - 1 at the right.
   const row = rig.field('field', [w, 1], texels(w, 1, (x) => x * x));
   const slope = rig.field('vec2', n), normal = rig.field('aux', n);
   rig.run(shape, { in: { h: row }, out: { slope, normal }, params: { offset: [0, 0] } });
   const got = await rig.read(slope);
   const scale = HEIGHT_RANGE / (TERRAIN_SIZE / (w - 1));
-  assert.ok(near([0, 1, 4, 8].map((x) => texel(got, n, x, 0, 2)[0]! / scale), [1, 2, 8, 15], 1e-4));
+  assert.ok(near([0, 1, 4, 7, 8].map((x) => texel(got, n, x, 0, 2)[0]! / scale), [0, 2, 8, 14, 16], 1e-4));
   assert.ok(texel(got, n, 4, 0, 2)[1] === 0, 'a texture one texel high has no slope along y');
+});
+
+test('slopeAt of a paraboloid is its gradient at every texel, the border and the corners included', async () => {
+  // z = a x^2 + b x y + c y^2 + d x + e y in texels: every difference slopeAt takes is exact for it.
+  const n = 17;
+  const [a, b, c, d, e] = [0.0011, -0.0007, 0.0016, 0.004, -0.009];
+  const h = rig.field('field', n, texels(n, n, (x, y) => 0.3 + a * x * x + b * x * y + c * y * y + d * x + e * y));
+  const slope = rig.field('vec2', n), normal = rig.field('aux', n);
+  rig.run(shape, { in: { h }, out: { slope, normal }, params: { offset: [0, 0] } });
+  const got = await rig.read(slope);
+  const perTexel = HEIGHT_RANGE / (TERRAIN_SIZE / (n - 1));
+  let worst = 0;
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const [sx, sy] = texel(got, n, x, y, 2);
+      worst = Math.max(worst, Math.abs(sx! - (2 * a * x + b * y + d) * perTexel), Math.abs(sy! - (b * x + 2 * c * y + e) * perTexel));
+    }
+  }
+  // Heights near 1 carry 6e-8, and a difference of them times 4 per texel that many times 8.
+  assert.ok(worst < 2e-5, `the worst slope is off by ${worst} m/m`);
+});
+
+test('slopeAt of a texture two texels wide is the difference of the two, and of one texel wide it is 0', async () => {
+  const n = 4;
+  const pair = rig.field('field', [2, 3], texels(2, 3, (x, y) => 0.25 * x + 0.1 * y * y));
+  const slope = rig.field('vec2', n), normal = rig.field('aux', n);
+  rig.run(shape, { in: { h: pair }, out: { slope, normal }, params: { offset: [0, 0] } });
+  const got = await rig.read(slope);
+  // Along x the two texels span the terrain: 0.25 of the height range over all of it. Along y, 0.1 y^2 on cells of half the terrain.
+  for (let y = 0; y < 3; y++) {
+    for (let x = 0; x < 2; x++) {
+      assert.ok(near(texel(got, n, x, y, 2), [0.25 * HEIGHT_RANGE / TERRAIN_SIZE, 0.2 * y * HEIGHT_RANGE * 2 / TERRAIN_SIZE], 1e-6), `texel (${x}, ${y}): ${texel(got, n, x, y, 2)}`);
+    }
+  }
 });
 
 test('slopeAt of a constant is zero and its normal points up', async () => {
@@ -370,6 +428,26 @@ test('slopeAt of a constant is zero and its normal points up', async () => {
     // -0 is a correct x and y of normalize(vec3f(-0, -0, 1)).
     assert.deepEqual(texel(await rig.read(normal), n, 3, 3, 4).map((v) => v + 0), [0, 0, 1, 1]);
   }
+});
+
+// ---- conversions -----------------------------------------------------------------------------------------------
+
+test('convert_luma and convert_grey are the two conversions of runtime.md 5.6', async () => {
+  const n = 16;
+  const colors = texels(n, n, (x, y) => [rough(x, y, 1), rough(x, y, 2), rough(x, y, 3), rough(x, y, 4)]);
+  const values = texels(n, n, (x, y) => rough(x, y));
+  const out = rig.field('aux', n), grey = rig.field('aux', n);
+  rig.run(conversions, { in: { c: rig.field('aux', n, colors), s: rig.field('field', n, values) }, out: { out, grey } });
+  const [gotLuma, gotGrey] = [await rig.read(out), await rig.read(grey)];
+  for (let i = 0; i < n * n; i++) {
+    // Alpha, which is as rough as the other channels here, does not enter the luma.
+    const luma = 0.2126 * colors[i * 4]! + 0.7152 * colors[i * 4 + 1]! + 0.0722 * colors[i * 4 + 2]!;
+    assert.ok(Math.abs(gotLuma[i * 4]! - luma) <= 1e-6, `luma of texel ${i}: ${gotLuma[i * 4]} against ${luma}`);
+    const v = values[i]!;
+    assert.deepEqual([...gotGrey.subarray(i * 4, i * 4 + 4)], [v, v, v, 1], `grey of texel ${i}`);
+  }
+  // The luma of a grey is the grey: the three weights add up to 1.
+  assert.ok(Math.abs(0.2126 + 0.7152 + 0.0722 - 1) < 1e-12);
 });
 
 // ---- seeds and hashes ------------------------------------------------------------------------------------------

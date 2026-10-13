@@ -1,0 +1,25 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "Orogen Bridge (experimental, never compiled)",
+	"Description": "Creates a Landscape from the manifest of an Orogen build in one call. Experimental: this source has never been compiled or run. Read the plugin's README.md first.",
+	"Category": "Importers",
+	"CreatedBy": "Orogen",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EngineVersion": "5.8.0",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "OrogenBridge",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}

@@ -82,6 +82,8 @@ const BROKEN: Readonly<Record<string, Expectation>> = {
     says: { deterministic: /^output "out", the second run at 257 against the first \(the first runs on new textures, the second on recycled ones\): 66049 of 66049 values are not bit-identical/ },
   },
   'bad-px': { fails: ['resolution'], says: { resolution: /^output "out", 513 against 257 at shared vertices: max difference 0\.\d+; a generator is a function of uv, allowed 1e-6$/ } },
+  // In the field variant the stripes follow uv and agree: the failure is that of the colour variant, which two different colours show.
+  'bad-color-pair': { fails: ['resolution'], says: { resolution: /^output "out", 513 against 257 at shared vertices \(color variant\): rms difference \S+ is \S+ of the standard deviation \S+; allowed 0\.01 of it/ } },
   'bad-tolerance': { fails: ['resolution'], says: { resolution: /^output "out", 513 against 257 at shared vertices: rms difference \S+ is 0\.0[23]\d* of the standard deviation \S+; allowed 0\.01 of it/ } },
   'bad-divide': { fails: ['params'], says: { params: /^at 129 with \{"size":0\}: the node failed \([a-z-]+\): .*Infinity/ } },
   'bad-optional': { fails: ['optional-unbound'], says: { 'optional-unbound': /^at 129 with the optional inputs guide unconnected: the node failed \(binding\): kernel "ref\/bad-optional" \(node node, ref\/bad-optional\): .*guide/ } },

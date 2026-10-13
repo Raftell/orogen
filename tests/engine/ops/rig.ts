@@ -232,6 +232,73 @@ export function gaussianReference(data: Float32Array, n: number, channels: numbe
   return axis(axis(data, 1, 0), 0, 1);
 }
 
+export interface FitReference { readonly value: Float64Array; readonly slope: Float64Array; readonly bend: Float64Array }
+
+/**
+ * engine.md section 5, one pass of ops.fit on its own grid: along `axis` (0: x, 1: y) the line and the parabola
+ * through the samples the field has within 4 sigma (30 texels at the most), weighted by the Gaussian; the value
+ * of the line at the texel, or with `mean` the weighted mean of the samples, and the slope and the bend of the
+ * parabola per texel and per texel squared. `sigma` is in texels and is at least a quarter of one, or 0.7 with
+ * `derivative`, which is how a pass that is asked for a slope or a bend is fitted. `skip` leaves out the samples
+ * that near to the two ends of the axis, in texels. `channels` floats per texel.
+ */
+export function fitReference(
+  data: ArrayLike<number>, n: number, channels: number, sigma: number, axis: 0 | 1,
+  opts: { readonly derivative?: boolean; readonly mean?: boolean; readonly skip?: number } = {},
+): FitReference {
+  const derivative = opts.derivative === true;
+  const s = Math.max(sigma, derivative ? 0.7 : 0.25);
+  const taps = Math.min(Math.max(Math.ceil(4 * s), derivative ? 2 : 0), 30);
+  const skip = opts.skip ?? 0;
+  const gone = Math.max(Math.ceil(skip - 0.5), 0);
+  const lo = Math.min(gone, n - 1), hi = Math.max(n - 1 - gone, lo);
+  const out = { value: new Float64Array(n * n * channels), slope: new Float64Array(n * n * channels), bend: new Float64Array(n * n * channels) };
+  const index = (along: number, across: number, c: number): number => ((axis === 0 ? across * n + along : along * n + across) * channels + c);
+  for (let across = 0; across < n; across++) {
+    for (let at = 0; at < n; at++) {
+      for (let c = 0; c < channels; c++) {
+        const base = data[index(clampIndex(Math.min(Math.max(at, lo), hi), n), across, c)]!;
+        let m0 = 0, m1 = 0, m2 = 0, m3 = 0, m4 = 0, t0 = 0, t1 = 0, t2 = 0;
+        for (let i = -taps; i <= taps; i++) {
+          const j = at + i;
+          if (j < lo || j > hi) continue;
+          const x = i / s;
+          let w = Math.exp(-0.5 * x * x);
+          if (skip > 0) w *= Math.min(Math.max(Math.min(j, n - 1 - j) + 0.5 - skip, 0), 1);
+          const d = data[index(j, across, c)]! - base;
+          m0 += w; m1 += w * x; m2 += w * x * x; m3 += w * x ** 3; m4 += w * x ** 4;
+          t0 += w * d; t1 += w * x * d; t2 += w * x * x * d;
+        }
+        const spread = m0 * m2 - m1 * m1;
+        const line = spread > 1e-4 * m0 * m2;
+        let value = base, slope = 0, bend = 0;
+        if (line && !opts.mean) value = base + (m2 * t0 - m1 * t1) / spread;
+        else if (m0 > 0) value = base + t0 / m0;
+        if (line) slope = (m0 * t1 - m1 * t0) / spread;
+        const a = m2 * m4 - m3 * m3, b = m1 * m4 - m2 * m3, cc = m1 * m3 - m2 * m2;
+        const det = m0 * a - m1 * b + m2 * cc;
+        if (line && det > 1e-4 * m0 * m2 * m4) {
+          slope = (m0 * (t1 * m4 - m3 * t2) - t0 * b + m2 * (m1 * t2 - m2 * t1)) / det;
+          bend = (2 * (m0 * (m2 * t2 - m3 * t1) - m1 * (m1 * t2 - m2 * t1) + t0 * cc)) / det;
+        }
+        const k = index(at, across, c);
+        out.value[k] = value;
+        out.slope[k] = slope / s;
+        out.bend[k] = bend / (s * s);
+      }
+    }
+  }
+  return out;
+}
+
+/** engine.md section 5, ops.smooth on the field's own grid: the value of ops.fit along x, then along y. Below a quarter of a texel, the field. */
+export function smoothReference(
+  data: ArrayLike<number>, n: number, channels: number, sigma: number, opts: { readonly mean?: boolean; readonly skip?: number } = {},
+): Float64Array {
+  if (sigma < 0.25) return Float64Array.from(data as ArrayLike<number>);
+  return fitReference(fitReference(data, n, channels, sigma, 0, opts).value, n, channels, sigma, 1, opts).value;
+}
+
 export type ReferenceFilter = 'nearest' | 'bilinear' | 'tent' | 'bspline';
 
 /** The weight of a source texel at distance `d` from the mapped position, for a filter of scale `w` source texels. */
@@ -293,15 +360,22 @@ export function resampleReference(
   return out;
 }
 
-/** engine.md 3.8, slopeAt: the gradient in metres per metre, central and one-sided on the border, of an n x n height grid. */
+/** The derivative per sample at sample `i` of `n`: central inside, the one-sided difference of second order at the two ends (engine.md 3.8). */
+function difference(at: (i: number) => number, i: number, n: number): number {
+  if (n < 3) return n === 2 ? at(1) - at(0) : 0;
+  if (i === 0) return 0.5 * (4 * at(1) - 3 * at(0) - at(2));
+  if (i === n - 1) return -0.5 * (4 * at(n - 2) - 3 * at(n - 1) - at(n - 3));
+  return 0.5 * (at(i + 1) - at(i - 1));
+}
+
+/** engine.md 3.8, slopeAt: the gradient in metres per metre of an n x n height grid, central inside and of second order on the border. */
 export function slopeReference(heights: ArrayLike<number>, n: number, terrainSize: number, heightRange: number): { readonly dx: Float64Array; readonly dy: Float64Array } {
   const dx = new Float64Array(n * n), dy = new Float64Array(n * n);
   const cell = terrainSize / Math.max(n - 1, 1);
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
-      const x0 = Math.max(x - 1, 0), x1 = Math.min(x + 1, n - 1), y0 = Math.max(y - 1, 0), y1 = Math.min(y + 1, n - 1);
-      dx[y * n + x] = ((heights[y * n + x1]! - heights[y * n + x0]!) * heightRange) / (Math.max(x1 - x0, 1) * cell);
-      dy[y * n + x] = ((heights[y1 * n + x]! - heights[y0 * n + x]!) * heightRange) / (Math.max(y1 - y0, 1) * cell);
+      dx[y * n + x] = (difference((i) => heights[y * n + i]!, x, n) * heightRange) / cell;
+      dy[y * n + x] = (difference((j) => heights[j * n + x]!, y, n) * heightRange) / cell;
     }
   }
   return { dx, dy };

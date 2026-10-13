@@ -40,12 +40,20 @@ fn generateLandCrater_mound(r: f32, peak: f32) -> f32 { return peak * exp(-r * r
 // way outside it.
 fn generateLandCrater_keep(r: f32) -> f32 { return smoothstep(0.9, 1.6, r); }
 
+// The hyperbolic tangent of x, from the exponential of a number that is never above 0: it cannot overflow, and
+// from 20 on it is 1 exactly. The builtin is not held to that: on Microsoft's software adapter it gives 1.08 at
+// 8.2 and no number at 1e5, which a crater of no depth on a connected terrain asks for.
+fn generateLandCrater_tanh(x: f32) -> f32 {
+  let e = exp(-2.0 * min(abs(x), 20.0));
+  return sign(x) * (1.0 - e) / (1.0 + e);
+}
+
 // The old terrain after an impact of the given depth, where keep of it is left: inside the rim it gives way to
 // plane, the ground the impact struck, as far as flatten says. An impact moves the ground by a few of its own
 // depths at the most: what stood higher above the plane than that, or lay deeper below it, is still there.
 fn generateLandCrater_strike(old: f32, plane: f32, depth: f32, keep: f32, flatten: f32) -> f32 {
   let most = max(generateLandCrater_MOVES * depth, 1.0e-6);
-  return old - most * tanh((old - plane) * flatten * (1.0 - keep) / most);
+  return old - most * generateLandCrater_tanh((old - plane) * flatten * (1.0 - keep) / most);
 }
 `;
 

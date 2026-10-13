@@ -1,4 +1,4 @@
-// registryDoc (testing.md 2.4): one instance of every node, its inputs wired by port as the masked variant of
+// registryDoc (testing.md 2.4): one instance of every node, its inputs wired by port as the connected variant of
 // `orogen render` wires them (each height from a ref/fbm of its own, masks from a ref/slope-mask of the first,
 // colours from a ref/colorize of their terrain), a chain of ref/combine nodes over every first output with the
 // nodes that read a file last, and the view at the end of the chain. Evaluating the view evaluates every node.

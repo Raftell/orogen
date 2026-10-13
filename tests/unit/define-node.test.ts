@@ -203,6 +203,7 @@ test('3: visibleWhen names another bool, enum or int param and a value it can ha
   rejected(withParam(float({ visibleWhen: { param: 'mode', equals: 'c' } }), [mode]), 'param "reach": visibleWhen compares "mode" with "c", a value it never has');
   rejected(withParam(float({ visibleWhen: { param: 'invert', equals: 'yes' } }), [flag]), 'param "reach": visibleWhen compares "invert" with "yes", a value it never has');
   rejected(withParam(float({ visibleWhen: { param: 'count', equals: 1.5 } }), [count]), 'param "reach": visibleWhen compares "count" with 1.5, a value it never has');
+  rejected(withParam(float({ visibleWhen: { param: 'count', equals: 5 } }), [count]), 'param "reach": visibleWhen compares "count" with 5, a value it never has');
   assert.ok(define(base({
     params: [
       float({ visibleWhen: { param: 'mode', equals: 'b' } }), mode, flag, count,
@@ -210,6 +211,27 @@ test('3: visibleWhen names another bool, enum or int param and a value it can ha
       float({ name: 'width', visibleWhen: { param: 'count', equals: 2 } }),
     ],
   })));
+});
+
+test('3: visibleWhen takes a list of values: every one possible, none twice, and at least one', () => {
+  const mode = {
+    kind: 'enum', name: 'mode', help: 'A choice.', default: 'a',
+    options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }, { value: 'c', label: 'C' }],
+  };
+  const count = { kind: 'int', name: 'count', help: 'A count.', default: 1, min: 0, max: 4 };
+  rejected(withParam(float({ visibleWhen: { param: 'mode', equals: [] } }), [mode]), 'param "reach": visibleWhen compares "mode" with an empty list, which never shows the control');
+  rejected(withParam(float({ visibleWhen: { param: 'mode', equals: ['a', 'd'] } }), [mode]), 'param "reach": visibleWhen compares "mode" with "d", a value it never has');
+  rejected(withParam(float({ visibleWhen: { param: 'mode', equals: ['b', 'c', 'b'] } }), [mode]), 'param "reach": visibleWhen lists a value of "mode" twice');
+  rejected(withParam(float({ visibleWhen: { param: 'count', equals: [1, 2.5] } }), [count]), 'param "reach": visibleWhen compares "count" with 2.5, a value it never has');
+  const made = define(base({
+    params: [
+      float({ visibleWhen: { param: 'mode', equals: ['b', 'c'] } }), mode, count,
+      float({ name: 'depth', visibleWhen: { param: 'count', equals: [0, 4] } }),
+      float({ name: 'width', visibleWhen: { param: 'mode', equals: ['a'] } }),
+    ],
+  }));
+  // The definition keeps the list as it was written: the inspector reads it from there.
+  assert.deepEqual(made.params[0]!.visibleWhen, { param: 'mode', equals: ['b', 'c'] });
 });
 
 test('3: defaults of the other kinds obey the table of 4.3', () => {

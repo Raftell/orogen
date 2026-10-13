@@ -244,7 +244,7 @@ function literalName(text: string, from: number): string | null {
 
 /**
  * The rules decided by the text of a node file or private module of a category: no-clock, no-catch,
- * no-float-hash, stats-flag, lib-name, and of kernel-name that a kernel or task defined in `<name>.ts` or
+ * no-float-hash, no-tanh, stats-flag, lib-name, and of kernel-name that a kernel or task defined in `<name>.ts` or
  * `_<name>.ts` is named `<category>/<name>`, with an optional `.pass` and `#variant`. `path` is relative to
  * the repository root.
  */
@@ -263,6 +263,10 @@ export function lintNodeSource(path: string, text: string): LintProblem[] {
     fail('no-catch', m.index, `${m[1] ? '.catch(' : 'a catch clause'}: a node lets cancellation, budget and device errors propagate`);
   }
   for (const m of text.matchAll(/\bfract\s*\(\s*sin\s*\(/g)) fail('no-float-hash', m.index, 'fract(sin( differs between GPU drivers; use the hash library');
+  // Math.tanh on the CPU is exact enough and is not meant: only the call of the WGSL builtin.
+  for (const m of text.matchAll(/(?<![.\w])tanh\s*\(/g)) {
+    fail('no-tanh', m.index, 'tanh( is not the hyperbolic tangent of a large argument on every device; write (1 - e) / (1 + e) with e = exp(-2 |x|)');
+  }
 
   const source = NODE_SOURCE.exec(path);
   if (!source) return out;

@@ -109,7 +109,7 @@ test('nesting: what is cut leaves its object and is null in its array; the value
 test('serializeDoc: JSON.stringify(doc, null, 2) and a newline', () => {
   const doc = newDoc();
   assert.equal(serializeDoc(doc), `${JSON.stringify(doc, null, 2)}\n`);
-  assert.ok(serializeDoc(doc).startsWith('{\n  "format": "orogen",\n  "version": 1,\n  "settings": {\n    "terrainSize": 5000,'));
+  assert.ok(serializeDoc(doc).startsWith('{\n  "format": "orogen",\n  "version": 1,\n  "settings": {\n    "terrainSize": 4032,'));
   assert.ok(serializeDoc(doc).endsWith('}\n'));
 });
 
@@ -155,7 +155,7 @@ test('a setting missing or invalid: the default, or the value clamped, with a pr
   assert.ok(parsed.problems.every((p) => p.nodeId === undefined && p.edgeId === undefined));
 
   const none = parse(file({ settings: undefined }));
-  assert.deepEqual(none.doc.settings, { terrainSize: 5000, heightRange: 2500, seed: 0, buildResolution: 4033, previewLevel: 2, seaLevel: 0 });
+  assert.deepEqual(none.doc.settings, { terrainSize: 4032, heightRange: 1008, seed: 0, buildResolution: 4033, previewLevel: 2, seaLevel: 0 });
   assert.equal(none.problems.length, 6);
   assert.deepEqual(parse(file({ settings: [1, 2] })).doc.settings, none.doc.settings);
 });

@@ -272,6 +272,7 @@ export const visible = defineNode({
   params: [
     { kind: 'enum', name: 'rangeMode', help: 'h', default: 'fixed', options: [{ value: 'fixed', label: 'Fixed' }, { value: 'auto', label: 'Auto' }] },
     param.height({ name: 'heightMax', visibleWhen: { param: 'rangeMode', equals: 'fixed' } }),
+    param.height({ name: 'heightMid', visibleWhen: { param: 'rangeMode', equals: ['fixed', 'auto'] } }),
     // @ts-expect-error  a predicate is not accepted
     { kind: 'float', name: 'heightMin', unit: 'height', help: 'h', default: 0, min: 0, max: 1, visibleWhen: (p: Record<string, unknown>) => p.rangeMode === 'fixed' },
   ],

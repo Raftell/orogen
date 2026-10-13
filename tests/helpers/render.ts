@@ -35,17 +35,19 @@ export class NodeFailure extends Error {
 }
 
 const HEIGHT_FIXTURES: readonly FixtureName[] = ['terrain', 'cone', 'rampX', 'basin'];
+const COLOR_FIXTURES: readonly FixtureName[] = ['color', 'color2', 'color3', 'color4'];
 
 /**
  * The default fixture of every declared input (testing.md 3.1). `variant` is what an input of type `any` is
  * given. The inputs that take a field which is no mask are counted together and each gets the next height
- * fixture: a node with two of them is never checked on one field met with itself.
+ * fixture, and the inputs that take a colour the next colour fixture: a node with two of either is never
+ * checked on one field met with itself.
  */
 export function defaultFixtures(def: NodeDef, variant: 'field' | 'color' = 'field'): Record<string, FixtureName> {
   const out: Record<string, FixtureName> = {};
-  let heights = 0;
+  let heights = 0, colors = 0;
   for (const port of def.inputs) {
-    if (port.type === 'color' || (port.type === 'any' && variant === 'color')) out[port.name] = 'color';
+    if (port.type === 'color' || (port.type === 'any' && variant === 'color')) out[port.name] = COLOR_FIXTURES[colors++ % COLOR_FIXTURES.length]!;
     else if (port.type === 'field' && port.role === 'mask') out[port.name] = 'mask';
     else out[port.name] = HEIGHT_FIXTURES[heights++ % HEIGHT_FIXTURES.length]!;
   }

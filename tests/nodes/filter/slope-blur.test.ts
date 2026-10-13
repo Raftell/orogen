@@ -6,7 +6,7 @@ import {
   type FieldData,
 } from '../../helpers/index.ts';
 import def from '../../../src/core/nodes/filter/slope-blur.ts';
-import { bilinearAt, gaussian, mapField, mountain, range, stepAt, stepBetween, stepLength } from './_reference.ts';
+import { bilinearAt, mapField, mountain, range, smoothed, stepAt, stepBetween, stepLength } from './_reference.ts';
 
 conformance(def);
 
@@ -160,7 +160,7 @@ test('filter/slope-blur: gullies lower each point by what the lowest detail on t
   // A smoothing of 0.02 is a Gaussian of 5.12 texels, and a radius of 0.02 one pass of six points.
   const src = await fixtures.fbm(N);
   const { out } = await renderNode(def, { inputs: { in: src, guide: null }, params: { radius: 0.02, guideRadius: 0.02 } });
-  const low = gaussian(src, 5.12);
+  const low = smoothed(src, 5.12);
   const flow = flowOf(low);
   const stride = 5.12 / 7;
   const base = pass(src, flow, { stride, way: -1, substeps: 1, fade: 0, lowest: true });

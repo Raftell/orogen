@@ -67,7 +67,8 @@ export default defineNode({
       return;
     }
     const radius = Math.min(Math.max(ctx.params.radius, 0), 4);
-    const smooth = Math.floor(3 * ctx.lengthToPx(radius)) >= 1 ? ops.blur(ctx, src, radius) : null;
+    // Its slope is what pushes: smoothed as ops.smooth does it, the terrain keeps its slope up to the border.
+    const smooth = Math.floor(3 * ctx.lengthToPx(radius)) >= 1 ? ops.smooth(ctx, src, radius) : null;
     const out = ctx.alloc('field');
     ctx.run(push, { in: { src, shape: smooth ?? src }, out: { out }, params: { reach: ctx.params.mode === 'downhill' ? reach : -reach } });
     if (smooth) ctx.release(smooth);

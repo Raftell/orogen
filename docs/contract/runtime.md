@@ -756,8 +756,8 @@ post-process stack. Nothing reads or writes it in this version.
 
 | Setting | Default | Valid | Enters cache keys |
 | --- | --- | --- | --- |
-| `terrainSize` | 5000 | 1 .. 1 000 000 | every node |
-| `heightRange` | 2500 | 1 .. 100 000 | every node |
+| `terrainSize` | 4032 | 1 .. 1 000 000 | every node |
+| `heightRange` | 1008 | 1 .. 100 000 | every node |
 | `seed` | 0 | integer 0 .. 2^32 − 1 | nodes with a `seed` param |
 | `buildResolution` | 4033 | 1009, 2017, 4033, 8129, or a custom value valid by `engine.md` 1.5 | never |
 | `previewLevel` | 2 | integer `k ≥ 0` for which level `k` of `buildResolution` is defined | never |
@@ -766,6 +766,13 @@ post-process stack. Nothing reads or writes it in this version.
 ```
 previewResolution = (buildResolution − 1) / 2^previewLevel + 1
 ```
+
+The default project is one metre per vertex at its build resolution
+(`terrainSize = buildResolution − 1`), which is Unreal's 100 cm per quad
+(`export-unreal.md` 5.5), and a quarter as high as it is wide: the proportion
+of the test settings (`testing.md` 2.1), on which the defaults of every node
+are tuned and judged. A project twice as steep shows the same graph with every
+slope-driven node acting twice as hard.
 
 When `buildResolution` changes and `previewLevel` is no longer a defined level,
 `setSettings` (4.6) lowers `previewLevel` to the largest defined one. Resolution

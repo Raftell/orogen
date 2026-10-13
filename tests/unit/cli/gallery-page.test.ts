@@ -1,21 +1,24 @@
-// gallery/index.html (testing.md 8.6): that the page holds, per node, what a reviewer reads, that a failed node
-// is listed with its error, that nothing a node or a file says is taken for markup, and which failures make
-// `gallery` exit with 1. The page is text; nothing is rendered.
+// gallery/<category>.html and gallery/index.html (testing.md 8.6): that a page holds, per node, what a reviewer
+// reads, that a failed node is listed with its error, that nothing a node or a file says is taken for markup,
+// which failures make `gallery` exit with 1, and that the index links every page it is told of. The pages are
+// text; nothing is rendered.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { countsAsFailure, galleryPage, mib, ms, type GalleryEntry, type GalleryInfo } from '../../../src/cli/gallery-page.ts';
+import {
+  countsAsFailure, galleryIndex, galleryPage, gallerySummary, mib, ms, readGallerySummary, type GalleryEntry, type GalleryInfo, type GallerySummary,
+} from '../../../src/cli/gallery-page.ts';
 import type { RenderResult } from '../../../src/cli/result.ts';
 import { colorize, combine, gen, node, soften } from '../graph-fixtures.ts';
 
-const INFO: GalleryInfo = { res: 513, category: null, device: { adapter: 'NVIDIA <GTX>', software: false, profile: 'max' } };
+const INFO: GalleryInfo = { res: 513, category: 'ref', device: { adapter: 'NVIDIA <GTX>', software: false, profile: 'max' } };
 
 function rendered(type: string, outputs: readonly string[], more: Partial<RenderResult> = {}): RenderResult {
   const pictures = Object.fromEntries(outputs.map((name) => [name, { file: `nodes/${type}/${name}-513.png`, width: 1808, height: 512 }]));
   return {
     type, res: 513, status: 'ok', errors: [], wallMs: 3.456, gpuMs: 0.5, peakBytes: 3 * 2 ** 20, longestSliceMs: 0.25, longestSliceKernels: [],
-    engineErrors: [], files: Object.values(pictures).map((picture) => picture.file), pictures, views: {}, ...more,
+    engineErrors: [], files: Object.values(pictures).map((picture) => picture.file), pictures, views: {}, inputs: [], ...more,
   };
 }
 function failed(type: string, message: string): RenderResult {
@@ -46,11 +49,11 @@ const twoOutputs = node({
 const importer = node({ type: 'io/import', title: 'Import', category: 'io', params: [{ kind: 'file', name: 'file', help: 'The image.', default: '', filters: ['png', 'r16'] }] });
 
 const ENTRIES: readonly GalleryEntry[] = [
-  { def: importer, result: failed('io/import', 'No file selected'), masked: null, conformance: null },
-  { def: colorize, result: rendered('ref/colorize', ['out'], { pictures: { out: { file: 'nodes/ref/colorize/out-513.png', width: 513, height: 513 } }, views: { out: { file: 'nodes/ref/colorize/out-513-3d.png', width: 768, height: 512 } } }), masked: null, conformance: 'not json {' },
-  { def: gen, result: rendered('ref/gen', ['out']), masked: null, conformance: REPORT },
-  { def: twoOutputs, result: rendered('ref/select', ['out', 'flow'], { longestSliceMs: 812, longestSliceKernels: ['ref/select.pass'], gpuMs: null, engineErrors: ['Validation <error>'] }), masked: null, conformance: null },
-  { def: soften, result: failed('ref/soften', 'kernel "<script>alert(1)</script>" failed'), masked: null, conformance: null },
+  { def: importer, result: failed('io/import', 'No file selected'), connected: null, conformance: null },
+  { def: colorize, result: rendered('ref/colorize', ['out'], { pictures: { out: { file: 'nodes/ref/colorize/out-513.png', width: 513, height: 513 } }, views: { out: { file: 'nodes/ref/colorize/out-513-3d.png', width: 768, height: 512 } } }), connected: null, conformance: 'not json {' },
+  { def: gen, result: rendered('ref/gen', ['out']), connected: null, conformance: REPORT },
+  { def: twoOutputs, result: rendered('ref/select', ['out', 'flow'], { longestSliceMs: 812, longestSliceKernels: ['ref/select.pass'], gpuMs: null, engineErrors: ['Validation <error>'] }), connected: null, conformance: null },
+  { def: soften, result: failed('ref/soften', 'kernel "<script>alert(1)</script>" failed'), connected: null, conformance: null },
 ];
 
 const page = galleryPage(INFO, ENTRIES);
@@ -61,16 +64,43 @@ function article(type: string): string {
   return page.slice(start, page.indexOf('</article>', start));
 }
 
-test('the page is one HTML document that names what was rendered and on what', () => {
+test('the page of a category is one HTML document that names what was rendered and on what, and links the index', () => {
   assert.ok(page.startsWith('<!doctype html>\n<html lang="en">'));
   assert.ok(page.trimEnd().endsWith('</html>'));
-  assert.match(page, /<title>Orogen node gallery<\/title>/);
-  assert.match(page, /<p class="quiet">5 nodes at 513 × 513 · <span class="failed">2 not rendered<\/span> · NVIDIA &lt;GTX&gt; · profile max<\/p>/);
+  assert.match(page, /<title>Orogen node gallery: ref<\/title>/);
+  assert.match(page, /<p class="quiet">5 nodes of the category ref at 513 × 513 · <span class="failed">2 not rendered<\/span> · NVIDIA &lt;GTX&gt; · profile max · <a href="index\.html">all categories<\/a><\/p>/);
   assert.equal(page.split('<article ').length - 1, 5);
-  // Nodes are grouped by category, each with a link at the top.
-  assert.deepEqual([...page.matchAll(/<h2 id="([a-z]+)">/g)].map((found) => found[1]), ['io', 'ref']);
+  // Every node has a link at the top.
   for (const type of ['io/import', 'ref/colorize', 'ref/gen', 'ref/select', 'ref/soften']) assert.ok(page.includes(`<a href="#${type.replace('/', '-')}"`), type);
-  assert.match(galleryPage({ ...INFO, category: 'ref', device: { adapter: 'llvmpipe', software: true, profile: 'core' } }, ENTRIES.slice(2, 3)), /1 node of the category ref at 513 × 513 · llvmpipe \(a software adapter\) · profile core/);
+  assert.match(galleryPage({ ...INFO, device: { adapter: 'llvmpipe', software: true, profile: 'core' } }, ENTRIES.slice(2, 3)), /1 node of the category ref at 513 × 513 · llvmpipe \(a software adapter\) · profile core/);
+});
+
+test('a page carries what the index says of it, and the index links every page it is told of, in the order given', () => {
+  // Two of the five failed; the importer's failure is the documented one and does not count.
+  const summary = gallerySummary(INFO, ENTRIES);
+  assert.deepEqual(summary, { category: 'ref', nodes: 5, failed: 1, res: 513, adapter: 'NVIDIA <GTX>', software: false, profile: 'max' });
+  assert.deepEqual(readGallerySummary(page), summary, 'read back from the page, with the characters HTML escapes');
+  assert.equal(readGallerySummary('<!doctype html><html><head><title>Something else</title></head></html>'), null);
+  assert.equal(readGallerySummary('<meta name="orogen-gallery" content="{not json">'), null);
+  assert.equal(readGallerySummary('<meta name="orogen-gallery" content="{&quot;category&quot;:&quot;../x&quot;,&quot;nodes&quot;:1,&quot;failed&quot;:0,&quot;res&quot;:513,&quot;adapter&quot;:&quot;a&quot;,&quot;software&quot;:false,&quot;profile&quot;:&quot;max&quot;}">'), null, 'a category is a word');
+  assert.equal(readGallerySummary('<meta name="orogen-gallery" content="{&quot;category&quot;:&quot;ref&quot;,&quot;nodes&quot;:-1}">'), null);
+
+  const filter: GallerySummary = { category: 'filter', nodes: 14, failed: 0, res: 513, adapter: 'llvmpipe', software: true, profile: 'core' };
+  const one: GallerySummary = { category: 'generate', nodes: 1, failed: 0, res: 257, adapter: 'NVIDIA <GTX>', software: false, profile: 'max' };
+  const index = galleryIndex([one, filter, summary]);
+  assert.ok(index.startsWith('<!doctype html>\n<html lang="en">') && index.trimEnd().endsWith('</html>'));
+  assert.match(index, /<title>Orogen node gallery<\/title>/);
+  assert.match(index, /<p class="quiet">3 categories, 20 nodes\. Each page is as its category was last drawn\.<\/p>/);
+  assert.deepEqual([...index.matchAll(/<a href="([a-z]+)\.html">([a-z]+)<\/a>/g)].map((found) => `${found[1]}:${found[2]}`), ['generate:generate', 'filter:filter', 'ref:ref']);
+  assert.ok(index.includes('<li><a href="generate.html">generate</a><p>1 node at 257 × 257</p><p>NVIDIA &lt;GTX&gt; · profile max</p></li>'));
+  assert.ok(index.includes('<li><a href="filter.html">filter</a><p>14 nodes at 513 × 513</p><p>llvmpipe (a software adapter) · profile core</p></li>'));
+  assert.ok(index.includes('<li class="broken"><a href="ref.html">ref</a><p>5 nodes at 513 × 513 · <span class="failed">1 failed</span></p>'));
+  assert.ok(!index.includes('<article'), 'the index holds no node');
+  assert.equal(readGallerySummary(index), null, 'the index is no category page');
+
+  const empty = galleryIndex([]);
+  assert.match(empty, /<p class="quiet">0 categories, 0 nodes\./);
+  assert.ok(empty.includes('<p>No category has been drawn into this folder.</p>'));
 });
 
 test('a node: title, type, description, keywords, flags, the picture of outputs[0] and what was measured', () => {
@@ -93,7 +123,7 @@ test('a node: title, type, description, keywords, flags, the picture of outputs[
   // A colour output shows its 3d view beside the colour picture.
   const colored = article('ref/colorize');
   assert.ok(colored.includes('<img src="../nodes/ref/colorize/out-513.png" width="513" height="513"'));
-  assert.ok(colored.includes('<img src="../nodes/ref/colorize/out-513-3d.png" width="768" height="512" alt="out of ref/colorize over its height input"'));
+  assert.ok(colored.includes('<img src="../nodes/ref/colorize/out-513-3d.png" width="768" height="512" alt="out of ref/colorize over its terrain"'));
 });
 
 test('a node: its ports, with the pictures of the outputs linked', () => {
@@ -169,40 +199,67 @@ test('a node that fails is listed with its error, and nothing it says is markup'
 test('gallery exits with 1 for a node that fails, unless the node reads a file its defaults do not select', () => {
   assert.deepEqual(ENTRIES.map(countsAsFailure), [false, false, false, false, true]);
   // An import node that fails for another reason still has a file parameter: the page shows the error, a person judges it.
-  assert.equal(countsAsFailure({ def: importer, result: failed('io/import', 'Out of GPU memory'), masked: null, conformance: null }), false);
-  assert.equal(countsAsFailure({ def: gen, result: failed('ref/gen', 'No file selected'), masked: null, conformance: null }), false, 'ref/gen of the fixtures has a file parameter');
-  assert.equal(countsAsFailure({ def: colorize, result: { ...rendered('ref/colorize', []), status: 'errors' }, masked: null, conformance: null }), true);
+  assert.equal(countsAsFailure({ def: importer, result: failed('io/import', 'Out of GPU memory'), connected: null, conformance: null }), false);
+  assert.equal(countsAsFailure({ def: gen, result: failed('ref/gen', 'No file selected'), connected: null, conformance: null }), false, 'ref/gen of the fixtures has a file parameter');
+  assert.equal(countsAsFailure({ def: colorize, result: { ...rendered('ref/colorize', []), status: 'errors' }, connected: null, conformance: null }), true);
 });
 
-test('a node with a masked variant shows outputs[0] a second time, with its optional mask inputs connected', () => {
-  const masked = rendered('ref/combine', ['out'], { pictures: { out: { file: 'nodes/ref/combine/out-513-masked.png', width: 1808, height: 512 } } });
+test('a node with a connected variant shows outputs[0] a second time, with its optional inputs and its mask connected', () => {
+  const connected = rendered('ref/combine', ['out'], { pictures: { out: { file: 'nodes/ref/combine/out-513-connected.png', width: 1808, height: 512 } } });
   const entries: GalleryEntry[] = [
-    { def: combine, result: rendered('ref/combine', ['out']), masked, conformance: null },
-    { def: soften, result: rendered('ref/soften', ['out']), masked: failed('ref/soften', 'The <mask> broke it'), conformance: null },
-    { def: gen, result: rendered('ref/gen', ['out']), masked: null, conformance: null },
+    { def: combine, result: rendered('ref/combine', ['out']), connected, conformance: null },
+    { def: soften, result: rendered('ref/soften', ['out']), connected: failed('ref/soften', 'The <mask> broke it'), conformance: null },
+    { def: gen, result: rendered('ref/gen', ['out']), connected: null, conformance: null },
   ];
   const text = galleryPage(INFO, entries);
   const of = (type: string): string => text.slice(text.indexOf(`id="${type.replace('/', '-')}"`), text.indexOf('</article>', text.indexOf(`id="${type.replace('/', '-')}"`)));
   const both = of('ref/combine');
   assert.ok(both.includes('<img src="../nodes/ref/combine/out-513.png"'), 'the plain picture');
-  assert.ok(both.includes('<figure class="masked"><a href="../nodes/ref/combine/out-513-masked.png"><img src="../nodes/ref/combine/out-513-masked.png" width="1808" height="512" alt="out of ref/combine under a mask"'));
-  assert.ok(both.includes("<figcaption>out with <code>mask</code> connected to a slope mask of the first terrain's broad shape</figcaption>"));
-  assert.ok(both.indexOf('out-513.png') < both.indexOf('out-513-masked.png'), 'after the plain one');
-  // A node that fails only with its mask connected is broken, and says how.
+  assert.ok(both.includes('<figure class="connected"><a href="../nodes/ref/combine/out-513-connected.png"><img src="../nodes/ref/combine/out-513-connected.png" width="1808" height="512" alt="out of ref/combine with its optional inputs connected"'));
+  assert.ok(both.includes('<figcaption>out with <code>mask</code> connected</figcaption>'));
+  assert.ok(both.indexOf('out-513.png') < both.indexOf('out-513-connected.png'), 'after the plain one');
+  // A node that fails only with its optional inputs connected is broken, and says how.
   const broken = of('ref/soften');
   assert.ok(text.includes('<article class="node broken" id="ref-soften">'));
   assert.ok(broken.includes('<img src="../nodes/ref/soften/out-513.png"'));
-  assert.ok(broken.includes('<p>Not rendered with its mask connected.</p><pre>ref/soften failed, node-exception: The &lt;mask&gt; broke it'));
-  assert.ok(!of('ref/gen').includes('class="masked"'));
+  assert.ok(broken.includes('<p>Not rendered with its optional inputs connected.</p><pre>ref/soften failed, node-exception: The &lt;mask&gt; broke it'));
+  assert.ok(!of('ref/gen').includes('class="connected"'));
   // ref/gen of the fixtures has a file parameter, so its failures never count; the two others do.
   assert.deepEqual(entries.map(countsAsFailure), [false, true, false]);
+
+  // An optional input that is no mask is named with the mask of a maskable node.
+  const guided = node({
+    type: 'filter/guided', title: 'Guided', category: 'filter', maskable: true,
+    inputs: [{ name: 'in', type: 'any' }, { name: 'guide', type: 'field', optional: true }], outputs: [{ name: 'out', type: { sameAs: 'in' } }],
+  });
+  const page = galleryPage({ ...INFO, category: 'filter' }, [{ def: guided, result: rendered('filter/guided', ['out']), connected: rendered('filter/guided', ['out']), conformance: null }]);
+  assert.ok(page.includes('<figcaption>out with <code>guide</code>, <code>mask</code> connected</figcaption>'));
 });
 
-test('a gallery without nodes says so, and names no device', () => {
-  const empty = galleryPage({ res: 257, category: 'surface', device: null }, []);
-  assert.match(empty, /<p class="quiet">0 nodes of the category surface at 257 × 257<\/p>/);
-  assert.ok(empty.includes('<p>The registry has no node with outputs in this selection.</p>'));
-  assert.ok(!empty.includes('<article'));
+test('a node with two or more connected inputs shows what each was given, beside what it made of them', () => {
+  const given = (suffix: string, ports: readonly (readonly [string, 'terrain' | 'mask' | 'color'])[]) =>
+    ports.map(([port, kind]) => ({ port, kind, file: `nodes/ref/combine/input-${port}-513${suffix}.png`, width: 513, height: 513 }));
+  const entry: GalleryEntry = {
+    def: combine,
+    result: rendered('ref/combine', ['out'], { inputs: given('', [['a', 'terrain'], ['b', 'terrain']]) }),
+    connected: rendered('ref/combine', ['out'], { inputs: given('-connected', [['a', 'terrain'], ['b', 'color'], ['mask', 'mask']]) }),
+    conformance: null,
+  };
+  const text = galleryPage(INFO, [entry, { def: gen, result: rendered('ref/gen', ['out']), connected: null, conformance: null }]);
+  const of = (type: string): string => text.slice(text.indexOf(`id="${type.replace('/', '-')}"`), text.indexOf('</article>', text.indexOf(`id="${type.replace('/', '-')}"`)));
+  const combined = of('ref/combine');
+  // Before the picture of the output, in the order of the ports, each linked to its file and named.
+  assert.ok(combined.includes(
+    '<figure><div class="inputs">'
+    + '<a class="given" href="../nodes/ref/combine/input-a-513.png"><img src="../nodes/ref/combine/input-a-513.png" width="513" height="513" alt="what the input a of ref/combine was given" loading="lazy"><span><code>a</code>: a terrain</span></a>'
+    + '<a class="given" href="../nodes/ref/combine/input-b-513.png"><img src="../nodes/ref/combine/input-b-513.png" width="513" height="513" alt="what the input b of ref/combine was given" loading="lazy"><span><code>b</code>: a terrain</span></a>'
+    + '</div><a href="../nodes/ref/combine/out-513.png">',
+  ));
+  const second = combined.slice(combined.indexOf('<figure class="connected">'));
+  assert.deepEqual([...second.matchAll(/<span><code>([a-z]+)<\/code>: ([a-z ]+)<\/span>/g)].map((found) => `${found[1]}: ${found[2]}`), ['a: a terrain', 'b: a coloring', 'mask: the mask']);
+  assert.ok(second.indexOf('input-mask-513-connected.png') < second.indexOf('out-513.png'), 'the inputs come first');
+  // A node that was given one terrain, or none, shows no inputs.
+  assert.ok(!of('ref/gen').includes('class="inputs"'));
 });
 
 test('times and sizes are written for a person', () => {

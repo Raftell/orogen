@@ -9,7 +9,7 @@ import type { NodeDef } from '../../../src/core/api.ts';
 import { createRegistry, newDoc, previewResolution, serializeDoc, type GraphDoc, type NodeRegistry } from '../../../src/core/runtime.ts';
 import { UsageError } from '../../../src/cli/args.ts';
 import {
-  hasMaskedVariant, inputFeeds, MASK_SLOPES, MASK_TERRAIN, projectDocument, RENDER_SETTINGS, terrainParams, typeDocument, type RenderPlan,
+  hasConnectedVariant, inputFeeds, maskFeed, projectDocument, RENDER_SETTINGS, terrainParams, terrainType, typeDocument, type RenderPlan,
 } from '../../../src/cli/document.ts';
 import { colorize, combine, everyKind, gen, node, select, sink, soften } from '../graph-fixtures.ts';
 
@@ -78,10 +78,11 @@ function usage(run: () => unknown, message: RegExp): void {
 }
 
 test('a node type: each height, data and `any` input takes a terrain of its own; a mask comes from a slope mask of the first, a colour from a colouring of its terrain', () => {
-  const plan = typeDocument(full, 'filter/subject');
+  // The connected variant: the optional colour input is connected too.
+  const plan = typeDocument(full, 'filter/subject', { connected: true });
   assert.equal(plan.type, 'filter/subject');
   assert.equal(plan.def, subject);
-  assert.equal(plan.masked, false);
+  assert.equal(plan.connected, true);
   assert.equal(plan.doc.nodes[plan.nodeId]!.type, 'filter/subject');
   assert.deepEqual(
     ['in', 'flow', 'either', 'weights', 'tint'].map((port) => sourceOf(plan, port)),
@@ -100,10 +101,14 @@ test('a node type: each height, data and `any` input takes a terrain of its own;
   assert.deepEqual(mask.params, { slopeMin: 35, slopeMax: 50 });
   const beneath = Object.values(plan.doc.edges).filter((edge) => edge.to.node === mask.id).map((edge) => plan.doc.nodes[edge.from.node]!.params);
   assert.deepEqual(beneath, [BROAD]);
-  assert.deepEqual([MASK_TERRAIN, MASK_SLOPES], [{ octaves: 3 }, { slopeMin: 35, slopeMax: 50 }]);
+  assert.deepEqual(maskFeed(full), { terrain: { octaves: 3 }, slopes: { slopeMin: 35, slopeMax: 50 } });
   assert.deepEqual(plan.warnings, []);
+  // What the node was given, in the order of its ports: the pictures of the inputs are drawn from this.
+  assert.deepEqual(plan.inputs.map((input) => `${input.port}: ${input.kind} ${plan.doc.nodes[input.from.node]!.type}.${input.from.port}`), [
+    'in: terrain ref/fbm.out', 'flow: terrain ref/fbm.out', 'either: terrain ref/fbm.out', 'weights: mask ref/slope-mask.out', 'tint: color ref/colorize.out',
+  ]);
 
-  assert.deepEqual(inputFeeds(subject, false), {
+  assert.deepEqual(inputFeeds(subject, true), {
     in: { kind: 'terrain', index: 0 }, flow: { kind: 'terrain', index: 1 }, either: { kind: 'terrain', index: 2 }, weights: { kind: 'mask' }, tint: { kind: 'color', index: 0 },
   });
   // A second colour input is the colouring of the second terrain.
@@ -113,41 +118,98 @@ test('a node type: each height, data and `any` input takes a terrain of its own;
   assert.deepEqual([under('a'), under('b')], [[FIRST], [{ ...FIRST, seed: 1, size: 0.1 }]]);
 });
 
-test('a node type: an optional mask input, and the mask of a maskable node, are connected in the masked variant only', () => {
+test('a node type: the plain variant is the node as it is dropped into a graph: required inputs connected, optional ones and the mask of a maskable node not', () => {
+  assert.deepEqual([hasConnectedVariant(combine), hasConnectedVariant(soften), hasConnectedVariant(subject), hasConnectedVariant(fbm), hasConnectedVariant(select)], [true, true, true, false, false]);
+
+  // An optional input of any type: the colour of the subject.
+  const dropped = typeDocument(full, 'filter/subject');
+  assert.equal(dropped.connected, false);
+  assert.deepEqual(['in', 'flow', 'either', 'weights', 'tint'].map((port) => sourceOf(dropped, port)), ['ref/fbm.out', 'ref/fbm.out', 'ref/fbm.out', 'ref/slope-mask.out', null]);
+  assert.deepEqual(typesOf(dropped.doc), ['filter/subject', 'ref/fbm', 'ref/fbm', 'ref/fbm', 'ref/fbm', 'ref/slope-mask'], 'no colouring is made for an input that is not connected');
+  assert.deepEqual(inputFeeds(subject, false), {
+    in: { kind: 'terrain', index: 0 }, flow: { kind: 'terrain', index: 1 }, either: { kind: 'terrain', index: 2 }, weights: { kind: 'mask' }, tint: null,
+  });
+  assert.deepEqual(dropped.inputs.map((input) => input.port), ['in', 'flow', 'either', 'weights']);
+
   // A node's own optional mask.
-  assert.deepEqual([hasMaskedVariant(combine), hasMaskedVariant(soften), hasMaskedVariant(subject), hasMaskedVariant(fbm)], [true, true, false, false]);
   const plain = typeDocument(masks, 'ref/combine');
   assert.deepEqual(['a', 'b', 'mask'].map((port) => sourceOf(plain, port)), ['ref/fbm.out', 'ref/fbm.out', null], 'the plain picture shows the full effect');
   assert.deepEqual(['a', 'b'].map((port) => feedOf(plain, port)!.params), [FIRST, { ...FIRST, seed: 1, size: 0.1 }], 'two inputs, two terrains');
-  const masked = typeDocument(masks, 'ref/combine', { masked: true });
-  assert.equal(masked.masked, true);
-  assert.deepEqual(['a', 'b', 'mask'].map((port) => sourceOf(masked, port)), ['ref/fbm.out', 'ref/fbm.out', 'ref/slope-mask.out']);
-  const steep = feedOf(masked, 'mask')!.id;
-  assert.deepEqual(Object.values(masked.doc.edges).filter((edge) => edge.to.node === steep).map((edge) => masked.doc.nodes[edge.from.node]!.params), [BROAD], 'the mask is a slope mask of the broad shape of the first terrain');
+  const connected = typeDocument(masks, 'ref/combine', { connected: true });
+  assert.equal(connected.connected, true);
+  assert.deepEqual(['a', 'b', 'mask'].map((port) => sourceOf(connected, port)), ['ref/fbm.out', 'ref/fbm.out', 'ref/slope-mask.out']);
+  const steep = feedOf(connected, 'mask')!.id;
+  assert.deepEqual(Object.values(connected.doc.edges).filter((edge) => edge.to.node === steep).map((edge) => connected.doc.nodes[edge.from.node]!.params), [BROAD], 'the mask is a slope mask of the broad shape of the first terrain');
 
   // The mask the evaluator adds to a maskable node.
   assert.deepEqual(['in', 'mask'].map((port) => sourceOf(typeDocument(masks, 'ref/soften'), port)), ['ref/fbm.out', null]);
-  assert.deepEqual(['in', 'mask'].map((port) => sourceOf(typeDocument(masks, 'ref/soften', { masked: true }), port)), ['ref/fbm.out', 'ref/slope-mask.out']);
+  const softened = typeDocument(masks, 'ref/soften', { connected: true });
+  assert.deepEqual(['in', 'mask'].map((port) => sourceOf(softened, port)), ['ref/fbm.out', 'ref/slope-mask.out']);
+  assert.deepEqual(softened.inputs.map((input) => `${input.port}: ${input.kind}`), ['in: terrain', 'mask: mask'], 'the mask of a maskable node comes last');
   assert.deepEqual(inputFeeds(soften, true), { in: { kind: 'terrain', index: 0 }, mask: { kind: 'mask' } });
   assert.deepEqual(inputFeeds(soften, false), { in: { kind: 'terrain', index: 0 }, mask: null });
 
-  // An optional mask that is the first input is the node's subject, not a modifier: connected in both variants.
+  // An optional first input is no exception: a crater dropped into a graph sits on level ground, and a node
+  // that packs four optional channels shows nothing until one is connected.
+  const crater = node({ type: 'generate/crater', title: 'Crater', category: 'generate', inputs: [{ name: 'in', type: 'field', optional: true }] });
+  assert.deepEqual([inputFeeds(crater, false), inputFeeds(crater, true)], [{ in: null }, { in: { kind: 'terrain', index: 0 } }]);
+  assert.equal(hasConnectedVariant(crater), true);
+  const alone = typeDocument(createRegistry([fbm, crater]), 'generate/crater');
+  assert.deepEqual([typesOf(alone.doc), Object.keys(alone.doc.edges), alone.inputs], [['generate/crater'], [], []]);
   const pack = node({
     type: 'color/pack', title: 'Pack', category: 'color',
     inputs: ['r', 'g', 'b', 'a'].map((name) => ({ name, type: 'field' as const, role: 'mask' as const, optional: true })), outputs: [{ name: 'out', type: 'color' }],
   });
-  assert.deepEqual(inputFeeds(pack, false), { r: { kind: 'mask' }, g: null, b: null, a: null });
+  assert.deepEqual(inputFeeds(pack, false), { r: null, g: null, b: null, a: null });
   assert.deepEqual(inputFeeds(pack, true), { r: { kind: 'mask' }, g: { kind: 'mask' }, b: { kind: 'mask' }, a: { kind: 'mask' } });
-  assert.equal(hasMaskedVariant(pack), true);
-  assert.equal(hasMaskedVariant(node({ type: 'select/grown', title: 'Grown', category: 'select', inputs: [{ name: 'in', type: 'field', role: 'mask', optional: true }] })), false);
 
-  // A required mask is connected in both; a node without an optional mask has no masked variant.
+  // An input has the same feed in both variants: an optional one that is left out still counts.
+  const guided = node({
+    type: 'filter/guided', title: 'Guided', category: 'filter',
+    inputs: [{ name: 'in', type: 'field' }, { name: 'guide', type: 'field', optional: true }, { name: 'detail', type: 'field', optional: true }],
+  });
+  assert.deepEqual(inputFeeds(guided, false), { in: { kind: 'terrain', index: 0 }, guide: null, detail: null });
+  assert.deepEqual(inputFeeds(guided, true), { in: { kind: 'terrain', index: 0 }, guide: { kind: 'terrain', index: 1 }, detail: { kind: 'terrain', index: 2 } });
+
+  // A required mask is connected in both; a node without an optional input that is not maskable has no connected variant.
   assert.equal(sourceOf(typeDocument(masks, 'filter/subject'), 'weights'), 'ref/slope-mask.out');
-  usage(() => typeDocument(masks, 'filter/subject', { masked: true }), /^--masked connects the optional mask inputs of a node, and filter\/subject has none and is not maskable$/);
+  usage(() => typeDocument(masks, 'ref/fbm', { connected: true }), /^--connected connects the optional inputs of a node and the mask of a maskable one, and ref\/fbm has no optional input and is not maskable$/);
+});
+
+test('a node type: the first terrain is generate/eroded-noise where the registry holds it, and the mask is a slope mask of its broad shape', () => {
+  const eroded = node({
+    type: 'generate/eroded-noise', title: 'Eroded Noise', category: 'generate',
+    params: [
+      { kind: 'float', name: 'size', unit: 'length', help: 'A size.', default: 0.25, min: 0.001, max: 4, soft: true, scale: 'log' },
+      { kind: 'int', name: 'octaves', help: 'Octaves.', default: 8, min: 1, max: 16 },
+      { kind: 'seed', name: 'seed', help: 'A seed.', default: 0 },
+    ],
+  });
+  const product = createRegistry([fbm, slopeMask, colorize, subject, eroded]);
+  assert.deepEqual([0, 1, 2].map((index) => terrainType(product, index)), ['generate/eroded-noise', 'ref/fbm', 'ref/fbm']);
+  assert.deepEqual([0, 1].map((index) => terrainType(full, index)), ['ref/fbm', 'ref/fbm'], 'a registry without it falls back to ref/fbm');
+
+  const plan = typeDocument(product, 'filter/subject', { connected: true });
+  // Terrain 0 at the defaults of its type; every further terrain is a ref/fbm with a seed and a size of its own.
+  assert.deepEqual(['in', 'flow', 'either'].map((port) => `${feedOf(plan, port)!.type} ${JSON.stringify(feedOf(plan, port)!.params)}`), [
+    'generate/eroded-noise {"size":0.25,"octaves":8,"seed":0}', 'ref/fbm {"seed":1,"size":0.1,"octaves":8}', 'ref/fbm {"seed":2,"size":0.5,"octaves":8}',
+  ]);
+  // The colouring is of terrain 0. The mask is of its broad shape, which the eroded noise has in two octaves,
+  // between steeper angles than select half of ref/fbm.
+  assert.deepEqual(maskFeed(product), { terrain: { octaves: 2 }, slopes: { slopeMin: 40, slopeMax: 55 } });
+  assert.deepEqual(feedOf(plan, 'weights')!.params, { slopeMin: 40, slopeMax: 55 });
+  const sourceTypes = (port: string): string[] => Object.values(plan.doc.edges).filter((edge) => edge.to.node === feedOf(plan, port)!.id).map((edge) => {
+    const from = plan.doc.nodes[edge.from.node]!;
+    return `${from.type} ${JSON.stringify(from.params)}`;
+  });
+  assert.deepEqual(sourceTypes('tint'), ['generate/eroded-noise {"size":0.25,"octaves":8,"seed":0}']);
+  assert.deepEqual(sourceTypes('weights'), ['generate/eroded-noise {"size":0.25,"octaves":2,"seed":0}']);
+  // The node itself, rendered alone, is not its own input.
+  assert.deepEqual(typesOf(typeDocument(product, 'generate/eroded-noise').doc), ['generate/eroded-noise']);
 });
 
 test('a node type: where the registry lacks ref/slope-mask or ref/colorize, the terrain itself is connected', () => {
-  const plan = typeDocument(bare, 'filter/subject');
+  const plan = typeDocument(bare, 'filter/subject', { connected: true });
   assert.deepEqual(['in', 'flow', 'either', 'weights', 'tint'].map((port) => sourceOf(plan, port)), Array<string>(5).fill('ref/fbm.out'));
   assert.deepEqual(typesOf(plan.doc), ['filter/subject', 'ref/fbm', 'ref/fbm', 'ref/fbm']);
   assert.deepEqual(['weights', 'tint'].map((port) => feedOf(plan, port)!.id), [feedOf(plan, 'in')!.id, feedOf(plan, 'in')!.id], 'the first terrain stands in for its mask and its colouring');
@@ -170,7 +232,15 @@ test('a node type: the terrain a picture is drawn over is what feeds the first h
   // A colour output.
   const colored = typeDocument(full, 'ref/colorize');
   assert.deepEqual(colored.terrain && [colored.doc.nodes[colored.terrain.node]!.type, colored.terrain.port], ['ref/fbm', 'out']);
-  assert.equal(sourceOf(colored, 'base'), 'ref/colorize.out', 'its colour input takes another ref/colorize');
+  assert.equal(sourceOf(colored, 'base'), null, 'its optional colour input is unconnected in the plain variant');
+  assert.equal(sourceOf(typeDocument(full, 'ref/colorize', { connected: true }), 'base'), 'ref/colorize.out', 'and takes another ref/colorize in the connected one');
+  // A node whose first output is a height has its mask and data outputs drawn over that height: no terrain is
+  // read back for them, whatever the node was given.
+  const blend = node({
+    type: 'adjust/height-blend', title: 'Height Blend', category: 'adjust',
+    inputs: [{ name: 'a', type: 'field' }, { name: 'b', type: 'field' }], outputs: [{ name: 'out', type: 'field' }, { name: 'weight', type: 'field', role: 'mask' }],
+  });
+  assert.equal(typeDocument(createRegistry([fbm, blend]), 'adjust/height-blend').terrain, null);
   // The first height input is not the first input.
   const grown = typeDocument(full, 'select/grow');
   assert.equal(sourceOf(grown, 'in'), 'ref/slope-mask.out');

@@ -169,7 +169,7 @@ export function conformance(def: NodeDef, opts: ConformanceOptions = {}): void {
     if (!isFixtureName(fixture) || fixture === 'fbm' || fixture === 'impulse') {
       throw new TypeError(`${where}: the input "${name}" takes a fixture name other than "fbm" and "impulse", not ${describeValue(fixture)}`);
     }
-    // An input of type `any` is given a field here; its colour variant always takes the fixture "color".
+    // An input of type `any` is given a field here; in the colour variant it takes its colour fixture in turn.
     const wanted = port.type === 'color' ? 'color' : 'field';
     if (fixtureKind(fixture) !== wanted) throw new TypeError(`${where}: the input "${name}" takes a ${wanted}; the fixture "${fixture}" is a ${fixtureKind(fixture)}`);
   }
@@ -299,10 +299,12 @@ export function conformance(def: NodeDef, opts: ConformanceOptions = {}): void {
     async finite() {
       for (const variant of variants) {
         const { outputs } = await reference(257, variant);
-        // The terrain a mask or a data output is drawn over: the node's first height input, an `any` input given a field included.
+        // The terrain a mask or a data output is drawn over: the node's first output where that is a height, as the
+        // command line draws it (8.6), else its first height input, an `any` input given a field included.
         const heightPort = def.inputs.find((port) => (port.type === 'field' && (port.role ?? 'height') === 'height') || (port.type === 'any' && variant === 'field'));
         const heightName = heightPort ? inputsOf(variant)[heightPort.name] : undefined;
-        const terrain = heightName ? await fixtures.byName(heightName, 257) : undefined;
+        const made = primary && outputs[primary.name]?.kind === 'field' && (primary.role ?? 'height') === 'height' ? outputs[primary.name] : undefined;
+        const terrain = made ?? (heightName ? await fixtures.byName(heightName, 257) : undefined);
         for (const output of def.outputs) {
           const field = outputs[output.name]!;
           const name = `nodes/${def.type}/${output.name}${variant === 'color' ? '-color' : ''}`;

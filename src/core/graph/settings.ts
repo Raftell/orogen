@@ -3,8 +3,8 @@ import { isBuildResolution, ladderLevel, MAX_LEVEL } from './ladder.ts';
 
 /** The defaults of runtime.md 4.2. */
 export const DEFAULT_SETTINGS: ProjectSettings = {
-  terrainSize: 5000,
-  heightRange: 2500,
+  terrainSize: 4032,
+  heightRange: 1008,
   seed: 0,
   buildResolution: 4033,
   previewLevel: 2,

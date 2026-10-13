@@ -1,0 +1,189 @@
+{
+  "schema": "orogen.unreal.landscape/1",
+  "status": "complete",
+  "generator": {
+    "name": "Orogen",
+    "version": "0.1.0"
+  },
+  "targetEngine": "5.8",
+  "project": {
+    "seed": 1234
+  },
+  "terrain": {
+    "sizeM": 8000,
+    "heightRangeM": 3000,
+    "seaLevel": 0.1
+  },
+  "resolution": {
+    "x": 8129,
+    "y": 8129
+  },
+  "landscape": {
+    "layout": {
+      "quadsPerSection": 127,
+      "sectionsPerComponent": 2,
+      "components": {
+        "x": 32,
+        "y": 32
+      }
+    },
+    "heightmap": {
+      "r16": "AlpsHeight.r16",
+      "png": "AlpsHeight.png",
+      "rangeMode": "measured",
+      "valueMin": 0.05,
+      "valueMax": 0.85,
+      "heightMinM": -150,
+      "heightMaxM": 2250,
+      "measuredMin": 0.05,
+      "measuredMax": 0.85,
+      "clippedSamples": 0,
+      "zScaleFormula": "range_cm*128/65535",
+      "dither": "tpdf-1lsb"
+    },
+    "transform": {
+      "scaleCm": {
+        "x": 98.4251968503937,
+        "y": 98.4251968503937,
+        "z": 468.75715266651406
+      },
+      "actorLocationCm": {
+        "x": -400000,
+        "y": -400000,
+        "z": 105001.8310826276
+      },
+      "uiLocationCm": {
+        "x": 0,
+        "y": 0,
+        "z": 105001.8310826276
+      },
+      "rotationDeg": {
+        "pitch": 0,
+        "yaw": 0,
+        "roll": 0
+      }
+    },
+    "orientation": {
+      "pixel00": "minX_minY",
+      "imageX": "+X",
+      "imageY": "+Y",
+      "flipYAxis": false
+    },
+    "seaLevelZCm": 0,
+    "worldPartition": {
+      "enabled": true,
+      "gridSize": 4,
+      "regionSize": 32
+    },
+    "alphamapType": "Additive",
+    "layers": [
+      {
+        "name": "Base",
+        "r8": "LayerBase.r8",
+        "png": "LayerBase.png",
+        "blend": "advanced",
+        "base": true,
+        "meanWeight": 0.52
+      },
+      {
+        "name": "Grass",
+        "r8": "LayerGrass.r8",
+        "png": "LayerGrass.png",
+        "blend": "advanced",
+        "base": false,
+        "meanWeight": 0.31
+      },
+      {
+        "name": "Rock",
+        "r8": "LayerRock.r8",
+        "png": "LayerRock.png",
+        "blend": "advanced",
+        "base": false,
+        "meanWeight": 0.17
+      },
+      {
+        "name": "Flow",
+        "r8": "LayerFlow.r8",
+        "png": "LayerFlow.png",
+        "blend": "none",
+        "base": false,
+        "meanWeight": 0.04
+      }
+    ]
+  },
+  "textures": [
+    {
+      "content": "color",
+      "file": "T_Color_8192.png",
+      "size": 8192,
+      "channels": 3,
+      "bits": 8,
+      "srgb": true,
+      "covers": "landscapeExtent",
+      "sampling": "texel-center"
+    },
+    {
+      "content": "normal",
+      "file": "T_Normal_8192.png",
+      "size": 8192,
+      "channels": 3,
+      "bits": 8,
+      "srgb": false,
+      "covers": "landscapeExtent",
+      "sampling": "texel-center",
+      "normalEncoding": "xyz-landscape-axes"
+    }
+  ],
+  "images": [],
+  "splines": null,
+  "files": [
+    {
+      "path": "AlpsHeight.png",
+      "bytes": 90000000
+    },
+    {
+      "path": "AlpsHeight.r16",
+      "bytes": 132161282
+    },
+    {
+      "path": "LayerBase.png",
+      "bytes": 20000000
+    },
+    {
+      "path": "LayerBase.r8",
+      "bytes": 66080641
+    },
+    {
+      "path": "LayerGrass.png",
+      "bytes": 20000000
+    },
+    {
+      "path": "LayerGrass.r8",
+      "bytes": 66080641
+    },
+    {
+      "path": "LayerRock.png",
+      "bytes": 20000000
+    },
+    {
+      "path": "LayerRock.r8",
+      "bytes": 66080641
+    },
+    {
+      "path": "LayerFlow.png",
+      "bytes": 20000000
+    },
+    {
+      "path": "LayerFlow.r8",
+      "bytes": 66080641
+    },
+    {
+      "path": "T_Color_8192.png",
+      "bytes": 100000000
+    },
+    {
+      "path": "T_Normal_8192.png",
+      "bytes": 100000000
+    }
+  ]
+}

@@ -1,8 +1,7 @@
 // src/core/nodes/select/aspect.ts
-import { defineKernel, defineNode, param } from '../../api.ts';
+import { defineKernel, defineNode, ops, param } from '../../api.ts';
 import { invert } from './_params.ts';
-import { scaleKernels, smoothed } from './_scale.ts';
-import { selectShape, selectTerrain } from './_wgsl.ts';
+import { selectShape } from './_wgsl.ts';
 
 /** A tangent no slope reaches, for a threshold at or beyond 90 degrees: finite, as a kernel param has to be. */
 const NEVER = 1e30;
@@ -14,11 +13,11 @@ const facing = defineKernel({
   // dir: the unit vector of the direction. spread, lo and feather in radians; tanLo and tanFull are the slopes
   // at which a slope begins to count and counts in full (engine.md 4.5 rule 2).
   params: { dir: 'vec2f', spread: 'f32', tanLo: 'f32', tanFull: 'f32', lo: 'f32', feather: 'f32', invert: 'u32' },
-  includes: [selectShape, selectTerrain],
+  includes: [selectShape],
   cost: 5,
   code: /* wgsl */ `
 fn compute(px: vec2i, uv: vec2f) -> f32 {
-  let gradient = selectTerrain_gradient(height, height_res(), px);
+  let gradient = slopeAt(height, px);
   let slope = length(gradient);
   var v = 0.0;
   // Level ground faces nowhere, and neither does ground no steeper than the lower slope.
@@ -62,16 +61,16 @@ export default defineNode({
     param.radius({ help: 'Smooths the terrain before its slopes are measured: larger values follow the broad shape and ignore small detail.' }),
     invert,
   ],
-  kernels: [facing, ...scaleKernels],
+  kernels: [facing],
   evaluate(ctx) {
     const { angle, spread, slopeMin, feather, radius } = ctx.params;
     const direction = radians(angle);
     const lo = radians(slopeMin);
     const soft = radians(feather);
-    const src = smoothed(ctx, ctx.input('in'), radius);
+    const height = ops.smooth(ctx, ctx.input('in'), Math.max(radius, 0));   // soft: any finite number can arrive
     const out = ctx.alloc('field');
     ctx.run(facing, {
-      in: { height: src.field },
+      in: { height },
       out: { out },
       params: {
         dir: [Math.cos(direction), Math.sin(direction)],
@@ -81,7 +80,7 @@ export default defineNode({
         lo, feather: soft, invert: ctx.params.invert,
       },
     });
-    if (src.owned) ctx.release(src.field);
+    ctx.release(height);
     ctx.output('out', out);
   },
 });

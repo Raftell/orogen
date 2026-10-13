@@ -42,6 +42,14 @@ test('adjust/combine: the modes of the node are the eleven of this test, and it 
   assert.deepEqual(Object.fromEntries(def.params.map((param) => [param.name, param.default])), { mode: 'mix', strength: 0.5, smoothness: 0.1 });
 });
 
+test('adjust/combine: the smoothness is shown for the two smooth modes and for no other', () => {
+  const smoothness = def.params.find((param) => param.name === 'smoothness');
+  assert.deepEqual(smoothness?.visibleWhen, { param: 'mode', equals: ['smooth-maximum', 'smooth-minimum'] });
+  // The modes whose result the smoothness changes are exactly those two.
+  const shown = Object.keys(MODES).filter((mode) => MODES[mode]!(0.4, 0.5, 0) !== MODES[mode]!(0.4, 0.5, K));
+  assert.deepEqual(shown, ['smooth-maximum', 'smooth-minimum']);
+});
+
 for (const [mode, combined] of Object.entries(MODES)) {
   test(`adjust/combine: mode ${mode}: every pair of values from -1 to 2 gives the reference at full strength, and its mean with \`a\` at half`, async () => {
     const full = await combine(PAIR_A, PAIR_B, { mode, strength: 1 });

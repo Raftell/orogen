@@ -1,17 +1,16 @@
 // src/core/nodes/adjust/switch.ts
-import { defineKernel, defineNode } from '../../api.ts';
-import { adjust } from './_wgsl.ts';
+import { convert, defineKernel, defineNode } from '../../api.ts';
 
 // The output has the kind of `a`. A chosen input of the other kind is read as the evaluator would convert it.
 const grey = defineKernel({
   name: 'adjust/switch#grey',
   inputs: { src: 'field' },
   outputs: { out: 'color' },
-  includes: [adjust],
+  includes: [convert],
   cost: 1,
   code: /* wgsl */ `
 fn compute(px: vec2i, uv: vec2f) -> vec4f {
-  return adjust_grey(src_at(px));
+  return convert_grey(src_at(px));
 }`,
 });
 
@@ -19,11 +18,11 @@ const luma = defineKernel({
   name: 'adjust/switch#luma',
   inputs: { src: 'color' },
   outputs: { out: 'field' },
-  includes: [adjust],
+  includes: [convert],
   cost: 1,
   code: /* wgsl */ `
 fn compute(px: vec2i, uv: vec2f) -> f32 {
-  return adjust_luma(src_at(px));
+  return convert_luma(src_at(px));
 }`,
 });
 

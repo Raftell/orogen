@@ -46,8 +46,8 @@ export interface RenderCommand {
   readonly maxParams: boolean;
   readonly seed: number | null;
   readonly crop: number | null;
-  /** The masked variant of a node type: its optional mask inputs connected (testing.md 2.4). */
-  readonly masked: boolean;
+  /** The connected variant of a node type: its optional inputs and the mask of a maskable node connected (testing.md 2.4). */
+  readonly connected: boolean;
 }
 
 export interface GalleryCommand {
@@ -66,7 +66,8 @@ export type Command = ProbeCommand | RenderCommand | GalleryCommand | ExportComm
 
 const SUBCOMMANDS: readonly Subcommand[] = ['probe', 'render', 'gallery', 'build', 'unreal-test'];
 
-const CATEGORIES = ['generate', 'adjust', 'filter', 'simulate', 'select', 'color', 'surface', 'io', 'ref'] as const satisfies readonly Category[];
+/** The categories of engine.md 4.1, in the order the gallery lists them. */
+export const CATEGORIES = ['generate', 'adjust', 'filter', 'simulate', 'select', 'color', 'surface', 'io', 'ref'] as const satisfies readonly Category[];
 // A category added to engine.md 4.1 and not to the list above fails the type check here.
 const everyCategory: Exclude<Category, (typeof CATEGORIES)[number]> extends never ? true : never = true;
 void everyCategory;
@@ -80,7 +81,7 @@ export const DEFAULT_RES = 513;
 const SYNOPSIS: Readonly<Record<Subcommand, string>> = {
   probe: 'orogen probe [--profile <core|max>] [--adapter <substring>]',
   render: [
-    'orogen render <type> [--res <n>] [--param <name>=<json>]... [--max-params] [--seed <n>] [--masked] [--crop <size>]',
+    'orogen render <type> [--res <n>] [--param <name>=<json>]... [--max-params] [--seed <n>] [--connected] [--crop <size>]',
     'orogen render <project.orogen> --node <id> [--res <n>] [--crop <size>]',
     '              [--out <dir>] [--budget-mb <n>] [--profile <core|max>] [--adapter <substring>]',
   ].join('\n'),
@@ -112,7 +113,7 @@ export function usageOf(subcommand: Subcommand | null): string {
     '',
     '  probe        print the capabilities of the GPU device as JSON',
     '  render       draw the outputs of one node to PNG files',
-    '  gallery      draw every node and write gallery/index.html',
+    '  gallery      draw every node and write a page per category under gallery/',
     '  build        build a project into the files Unreal Engine imports',
     '  unreal-test  write or check the acceptance pattern for Unreal Engine',
     '',
@@ -263,7 +264,7 @@ function parseParam(text: string, fail: (message: string) => never): ParamArg {
 function parseRender(args: readonly string[], env: Environment, cwd: string): RenderCommand {
   const scanned = scan('render', args, {
     ...DEVICE_OPTIONS, ...OUTPUT_OPTIONS,
-    '--res': 'value', '--param': 'list', '--max-params': 'flag', '--seed': 'value', '--masked': 'flag', '--crop': 'value', '--node': 'value',
+    '--res': 'value', '--param': 'list', '--max-params': 'flag', '--seed': 'value', '--connected': 'flag', '--crop': 'value', '--node': 'value',
   });
   const p = parser('render', scanned, env, cwd);
   if (scanned.positionals.length !== 1) {
@@ -277,14 +278,14 @@ function parseRender(args: readonly string[], env: Environment, cwd: string): Re
 
   const params = (scanned.values.get('--param') ?? []).map((text) => parseParam(text, p.fail));
   const maxParams = scanned.flags.has('--max-params');
-  const masked = scanned.flags.has('--masked');
+  const connected = scanned.flags.has('--connected');
   const seed = p.integer('--seed', 0, SEED_MAX, `an integer in 0..${SEED_MAX}`);
   const node = p.one('--node');
   let source: RenderCommand['source'];
   if (isProject) {
     const refused = params.length > 0 ? '--param' : maxParams ? '--max-params' : seed !== null ? '--seed' : null;
     if (refused !== null) p.fail(`${refused} applies to a node type; the nodes of a project file are rendered with the parameters it stores`);
-    if (masked) p.fail('--masked applies to a node type; the nodes of a project file are rendered with the connections it stores');
+    if (connected) p.fail('--connected applies to a node type; the nodes of a project file are rendered with the connections it stores');
     if (node === undefined || node === '') p.fail('--node <id> names the node of the project file to render');
     source = { kind: 'project', file: path.resolve(cwd, subject), node: node! };
   } else {
@@ -295,7 +296,7 @@ function parseRender(args: readonly string[], env: Environment, cwd: string): Re
   const res = p.res() ?? (isProject ? null : DEFAULT_RES);
   const crop = p.integer('--crop', 1, 8192, 'a window size in texels, an integer of at least 1');
   if (crop !== null && res !== null && crop > res) p.fail(`--crop ${crop} is larger than the resolution ${res}`);
-  return { command: 'render', device: p.device(), out: p.out(), budgetBytes: p.budgetBytes(), source, res, params, maxParams, seed, crop, masked };
+  return { command: 'render', device: p.device(), out: p.out(), budgetBytes: p.budgetBytes(), source, res, params, maxParams, seed, crop, connected };
 }
 
 function parseGallery(args: readonly string[], env: Environment, cwd: string): GalleryCommand {

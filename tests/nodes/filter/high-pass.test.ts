@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { channelOf, conformance, expectClose, expectIdentical, expectLadder, expectStats, fieldOf, fixtures, renderLadder, renderNode, stats } from '../../helpers/index.ts';
 import def from '../../../src/core/nodes/filter/high-pass.ts';
-import { gaussian, mapField } from './_reference.ts';
+import { gaussian, inner, mapField, smoothed } from './_reference.ts';
 
 conformance(def, {
   resolutionTol: {
@@ -12,12 +12,37 @@ conformance(def, {
   },
 });
 
-test('filter/high-pass: the output is the input less its blur, around 0.5', async () => {
+test('filter/high-pass: the output is the input less its smoothed surface, around 0.5', async () => {
   // A radius of 0.02 is 5.12 texels at 257.
   const src = await fixtures.fbm(257);
-  const low = gaussian(src, 0.02 * 256);
+  const low = smoothed(src, 0.02 * 256);
   const { out } = await renderNode(def, { inputs: { in: src }, params: { radius: 0.02 } });
   expectClose(out, mapField(src, (x, y) => 0.5 + src.data[y * 257 + x]! - low.data[y * 257 + x]!), { max: 1e-5 });
+  // Inside, the smoothed surface is the Gaussian of the radius: cut at 4 standard deviations where the reference
+  // of filter/blur is cut at 3, which is 0.3 % of the weight, on a terrain that spans 0.8.
+  const blurred = gaussian(src, 0.02 * 256);
+  expectClose(inner(out, 24), inner(mapField(src, (x, y) => 0.5 + src.data[y * 257 + x]! - blurred.data[y * 257 + x]!), 24), { max: 0.003 * 0.8 });
+});
+
+test('filter/high-pass: ground that slopes towards the border leaves no frame: a plane is flattened to 0.5 up to the border', async () => {
+  // rampX rises towards +X and a blur that clamps continues it level there: less such a blur, the two borders
+  // it runs into stand 0.004 above and below the level at this radius, a frame. Smoothed as ops.smooth does it,
+  // a plane is the plane, at a radius of a few texels and at one that is evaluated on a coarser grid.
+  for (const radius of [0.02, 0.06, 0.25]) {
+    const ramp = await renderNode(def, { inputs: { in: 'rampX' }, params: { radius } });
+    expectClose(ramp.out, fieldOf(257, () => 0.5), { max: 2e-6 });
+  }
+  const tilted = fieldOf(257, (u, v) => 0.2 + 0.4 * u + 0.3 * v);
+  expectClose((await renderNode(def, { inputs: { in: tilted }, params: { radius: 0.03 } })).out, fieldOf(257, () => 0.5), { max: 2e-6 });
+  // On rough ground the detail along the border is of the size it has inside.
+  const src = await fixtures.fbm(257);
+  const { out } = await renderNode(def, { inputs: { in: src }, params: { radius: 0.02 } });
+  const spread = (texels: readonly number[]): number => Math.sqrt(texels.reduce((sum, v) => sum + (v - 0.5) ** 2, 0) / texels.length);
+  const border: number[] = [], inside: number[] = [];
+  for (let y = 0; y < 257; y++) {
+    for (let x = 0; x < 257; x++) (Math.min(x, y, 256 - x, 256 - y) < 2 ? border : inside).push(out.data[y * 257 + x]!);
+  }
+  assert.ok(spread(border) < 1.5 * spread(inside), `the detail has a standard deviation of ${spread(border)} along the border and ${spread(inside)} inside`);
 });
 
 test('filter/high-pass: the broad shape goes and the detail stays: a larger radius keeps more', async () => {

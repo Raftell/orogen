@@ -36,12 +36,18 @@ test('build resolutions: the Unreal sizes, or 129..8192 with (B - 1) divisible b
 });
 
 test('the defaults are those of runtime.md 4.2 and valid', () => {
-  assert.deepEqual(DEFAULT_SETTINGS, { terrainSize: 5000, heightRange: 2500, seed: 0, buildResolution: 4033, previewLevel: 2, seaLevel: 0 });
+  assert.deepEqual(DEFAULT_SETTINGS, { terrainSize: 4032, heightRange: 1008, seed: 0, buildResolution: 4033, previewLevel: 2, seaLevel: 0 });
   const result = normalizeSettings(DEFAULT_SETTINGS as unknown as Record<string, unknown>);
   assert.equal(result.settings, DEFAULT_SETTINGS);
   assert.deepEqual(result.problems, []);
   assert.equal(previewResolution(DEFAULT_SETTINGS), 1009);
   assert.equal(previewResolution({ ...DEFAULT_SETTINGS, buildResolution: 513, previewLevel: 1 }), 257);
+});
+
+test('the default project is one metre per vertex at its build and as steep as the test settings', () => {
+  // Unreal's 100 cm per quad, and the 4 : 1 of the 4096 by 1024 every node's defaults are judged on (testing.md 2.1).
+  assert.equal(DEFAULT_SETTINGS.terrainSize / (DEFAULT_SETTINGS.buildResolution - 1), 1);
+  assert.equal(DEFAULT_SETTINGS.terrainSize / DEFAULT_SETTINGS.heightRange, 4096 / 1024);
 });
 
 test('valid settings come back as the same object, with their order and extra members', () => {
@@ -55,17 +61,17 @@ test('a missing setting takes its default and is reported', () => {
   const result = normalizeSettings({});
   assert.deepEqual(result.settings, DEFAULT_SETTINGS);
   assert.equal(result.problems.length, 6);
-  assert.equal(result.problems[0], 'setting "terrainSize" is missing; the default 5000 is used');
+  assert.equal(result.problems[0], 'setting "terrainSize" is missing; the default 4032 is used');
 });
 
 test('an invalid setting takes its default or is clamped, one sentence each', () => {
   const stored = { terrainSize: 0, heightRange: 'tall', seed: -3.5, buildResolution: 4033, previewLevel: 2, seaLevel: null, note: 'kept' };
   const result = normalizeSettings(stored);
-  assert.deepEqual(result.settings, { terrainSize: 1, heightRange: 2500, seed: 0, buildResolution: 4033, previewLevel: 2, seaLevel: 0, note: 'kept' });
+  assert.deepEqual(result.settings, { terrainSize: 1, heightRange: 1008, seed: 0, buildResolution: 4033, previewLevel: 2, seaLevel: 0, note: 'kept' });
   assert.deepEqual(Object.keys(result.settings), Object.keys(stored));
   assert.deepEqual(result.problems, [
     'setting "terrainSize": 0 is not in 1..1000000; 1 is used',
-    'setting "heightRange": "tall" is not a finite number; the default 2500 is used',
+    'setting "heightRange": "tall" is not a finite number; the default 1008 is used',
     'setting "seed": -3.5 is not an integer in 0..4294967295; 0 is used',
     'setting "seaLevel": null is not a finite number; the default 0 is used',
   ]);

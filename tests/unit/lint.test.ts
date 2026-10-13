@@ -427,6 +427,15 @@ test('no-float-hash: no fract(sin( in WGSL', () => {
   assert.deepEqual(sourceRules('const code = `return fract(x) * sin(y);`;'), []);
 });
 
+test('no-tanh: no call of the WGSL builtin tanh', () => {
+  assert.deepEqual(sourceMessages('const code = `fn soft(x: f32) -> f32 {\n  return tanh(x);\n}`;'), [
+    `no-tanh ${FILE}:2: tanh( is not the hyperbolic tangent of a large argument on every device; write (1 - e) / (1 + e) with e = exp(-2 |x|)`,
+  ]);
+  assert.deepEqual(sourceRules('const code = `return 0.5 * tanh (2.0 * x);`;'), ['no-tanh']);
+  // A function of the category's own that is named for it, and the exact one of the CPU, are not the builtin.
+  assert.deepEqual(sourceRules('const code = `return filterShape_tanh(x) + softtanh(x);`; const y = Math.tanh(2);'), []);
+});
+
 test('stats-flag: a node file that reads statistics declares resolutionDependent', () => {
   const stats = 'export default defineNode({ async evaluate(ctx) { const s = await ctx.stats(f); } });';
   const minMax = 'export default defineNode({ async evaluate(ctx) { const r = await ops.minMax(ctx, f); } });';

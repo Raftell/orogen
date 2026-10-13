@@ -7,7 +7,7 @@ import {
 } from '../../helpers/index.ts';
 import type { ParamValue } from '../../../src/core/api.ts';
 import def from '../../../src/core/nodes/filter/warp.ts';
-import { cubicAt, gaussian, inner, mapField, pathEnd, roughness } from './_reference.ts';
+import { cubicAt, inner, mapField, pathEnd, roughness, smoothed } from './_reference.ts';
 
 conformance(def, {
   skip: { seed: 'The suite connects every input, and with a guide connected the noise and its seed play no part. The test of the noise below changes the seed without a guide.' },
@@ -89,7 +89,7 @@ test('filter/warp: with a guide the picture is read up the guide\'s slope, in pr
   const src = await fixtures.fbm(N);
   const guide = await fixtures.fbm(N, 3);
   const { out } = await renderNode(def, { inputs: { in: src, guide }, params: { distance: 0.03, guideRadius: 0.02 } });
-  const smooth = gaussian(guide, 0.02 * L);
+  const smooth = smoothed(guide, 0.02 * L);
   // The path is followed in float32 over a blur computed in float32, on a terrain that changes by up to 0.05 a texel.
   expectClose(out, mapField(src, (x, y) => cubicAt(src, ...pathEnd(smooth, x, y, 0.03 * L, 11))), { max: 2e-3 });
 

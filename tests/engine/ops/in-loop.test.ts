@@ -1,4 +1,5 @@
-// engine.md section 5: all operations but coarseToFine are synchronous and may be called inside a ctx.loop body.
+// engine.md section 5: all operations but shadow, occlusion and coarseToFine are synchronous and may be called
+// inside a ctx.loop body.
 // Every one of them is called there, and gives what it gives outside a loop.
 //
 // Sizes: fields of 65 x 65 texels. No list is handed to an assertion.
@@ -18,10 +19,15 @@ function chain(ctx: EvalContext, src: Field<'field'>): { height: Field<'field'>;
   const small = ops.resample(ctx, src, { size: 33 });
   const back = ops.resample(ctx, small, { size: 65, filter: 'bspline' });
   ctx.release(small);
-  const soft = ops.blur(ctx, back, 0.03);
-  const mixed = ops.blend(ctx, src, soft, 0.5);
-  ctx.release(back);
-  ctx.release(soft);
+  const blurred = ops.blur(ctx, back, 0.03);
+  // ops.smooth on the field's own grid and on a coarser one, and its three steps.
+  const near = ops.smooth(ctx, blurred, 0.03);
+  const soft = ops.smooth(ctx, near, 0.3, { skip: 0.01 });
+  const scale = ops.scale(ctx, soft, 0.02);
+  const rows = ops.fit(ctx, scale, scale.field, 0, { value: true }).value!;
+  const fitted = ops.restore(ctx, scale, rows);
+  const mixed = ops.blend(ctx, src, fitted, 0.5);
+  for (const field of [back, blurred, near, soft, fitted]) ctx.release(field);
   const slope = ops.slope(ctx, mixed);
   const range = ops.minMax(ctx, slope);
   const mask = ops.remap(ctx, slope, { from: range, clamp: true });

@@ -6,12 +6,15 @@ export type ParamValue =
   | readonly [number, number] | readonly [number, number, number]
   | readonly CurvePoint[] | readonly GradientStop[];
 
+/** A value a `visibleWhen` compares with: one a bool, an enum or an int param holds. */
+export type VisibleValue = string | number | boolean;
+
 export interface ParamCommon {
   readonly name: string;
   readonly label?: string;
   readonly help: string;
   readonly group?: string;
-  readonly visibleWhen?: { readonly param: string; readonly equals: string | number | boolean };
+  readonly visibleWhen?: { readonly param: string; readonly equals: VisibleValue | readonly VisibleValue[] };
 }
 
 export interface FloatParam extends ParamCommon {

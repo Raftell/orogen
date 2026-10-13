@@ -81,7 +81,7 @@ test('fieldOf and colorOf call fn with uv = px / (res - 1) and store the float32
 
 // ---- fixtures ------------------------------------------------------------------------------------------------------
 
-const COMPUTED: readonly Exclude<FixtureName, 'fbm'>[] = ['terrain', 'rampX', 'rampY', 'cone', 'basin', 'bowl', 'notch', 'mask', 'zero', 'one', 'impulse', 'color'];
+const COMPUTED: readonly Exclude<FixtureName, 'fbm'>[] = ['terrain', 'rampX', 'rampY', 'cone', 'basin', 'bowl', 'notch', 'mask', 'zero', 'one', 'impulse', 'color', 'color2', 'color3', 'color4'];
 
 test('every fixture but fbm is a function of uv: a coarser level is the decimation of a finer one, bit for bit', async () => {
   for (const name of COMPUTED) {
@@ -89,9 +89,25 @@ test('every fixture but fbm is a function of uv: a coarser level is the decimati
     expectIdentical(fixtures[name](257), decimate(fine));
     expectIdentical(fixtures[name](129), decimate(fine, 2));
     expectIdentical(await fixtures.byName(name, 257), fixtures[name](257));
-    assert.equal(fine.kind, name === 'color' ? 'color' : 'field');
+    assert.equal(fine.kind, name.startsWith('color') ? 'color' : 'field');
   }
   await assert.rejects(fixtures.byName('granite' as FixtureName, 129), /not a fixture/);
+});
+
+test('the four colour fixtures are opaque, within 0..1, and no channel of one is the same channel of another', () => {
+  const names = ['color', 'color2', 'color3', 'color4'] as const;
+  const colors = names.map((name) => fixtures[name](129));
+  for (const [i, color] of colors.entries()) {
+    expectIdentical(channelOf(color, 3), fixtures.one(129));
+    for (const channel of [0, 1, 2] as const) {
+      const s = stats(color, channel);
+      assert.ok(s.min >= 0 && s.max <= 1 && s.std > 0.05, `${names[i]}, channel ${channel}: ${s.min}..${s.max}, standard deviation ${s.std}`);
+      for (let j = 0; j < i; j++) {
+        const d = diff(channelOf(color, channel), channelOf(colors[j]!, channel));
+        assert.ok(d.rms > 0.1, `channel ${channel} of ${names[i]} and of ${names[j]} differ by ${d.rms} rms`);
+      }
+    }
+  }
 });
 
 test('terrain: the formula of the table, within 0.105..0.895, with 41 interior minima and slopes up to 55 degrees', () => {

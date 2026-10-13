@@ -13,19 +13,23 @@ import { NodeFileSink, NodeFileSource } from '../platform/node/files.ts';
 import { UsageError, type RenderCommand } from './args.ts';
 import { projectDocument, typeDocument, type RenderPlan } from './document.ts';
 import type { CliEngine, RunLog } from './engine.ts';
-import { picturesOf, writePicture } from './pictures.ts';
+import { inputPicture, picturesOf, writePicture } from './pictures.ts';
 import type { Raster } from './preview.ts';
-import { describeError, exitCodeOf, HARD_CEILING_MS, overran, type RenderResult, type WrittenPicture } from './result.ts';
+import { describeError, exitCodeOf, HARD_CEILING_MS, overran, type RenderResult, type WrittenInput, type WrittenPicture } from './result.ts';
+
+/** The file name of the picture of what the input `port` was given: no output is named so, since a port name has no hyphen. */
+const inputFile = (port: string): string => `input-${port}`;
 
 /**
  * Evaluates the plan's node at `res` in build mode with every output as a target, and writes the pictures of
- * each output as soon as it is delivered: `nodes/<category>/<name>/<output>-<res>[-masked][-3d|-crop].png` in
- * the sink, with `-masked` for the masked variant of a node type. Resolves whatever the status; rejects when a
- * picture cannot be written, and for a malformed plan.
+ * each output as soon as it is delivered: `nodes/<category>/<name>/<output>-<res>[-connected][-3d|-crop].png` in
+ * the sink, with `-connected` for the connected variant of a node type. With `inputs`, a node type with two or
+ * more connected inputs also gets a picture of what each was given, `input-<port>-<res>[-connected].png`.
+ * Resolves whatever the status; rejects when a picture cannot be written, and for a malformed plan.
  */
 export async function renderPlan(
   cli: CliEngine, sink: FileSink, plan: RenderPlan,
-  opts: { readonly res: number; readonly crop: number | null; readonly signal: AbortSignal },
+  opts: { readonly res: number; readonly crop: number | null; readonly signal: AbortSignal; readonly inputs?: boolean },
 ): Promise<RenderResult> {
   const { engine } = cli;
   const { doc, nodeId } = plan;
@@ -37,9 +41,15 @@ export async function renderPlan(
     // The node reads its height input as a field; a colour connected there is converted for it, and for the picture.
     targets.push(outputKind(doc, engine.registry, plan.terrain) === 'color' ? { ref: plan.terrain, as: 'field' } : { ref: plan.terrain });
   }
+  // What the node was given, where that is more than the one terrain every reader of the page knows.
+  const shown = opts.inputs && plan.inputs.length >= 2 ? plan.inputs : [];
+  const firstInput = targets.length;
+  for (const input of shown) targets.push({ ref: input.from });
   const first = targets.length;
   if (outputs.length === 0) targets.push({ node: nodeId });
   for (const port of outputs) targets.push({ ref: { node: nodeId, port: port.name } });
+  const variant = plan.connected ? '-connected' : '';
+  const primaryIsHeight = outputs[0] !== undefined && outputs[0].type === 'field' && (outputs[0].role ?? 'height') === 'height';
 
   const read = async (handle: AnyFieldHandle): Promise<Raster> => ({
     kind: handle.kind, width: handle.width, height: handle.height, channels: handle.kind === 'color' ? 4 : 1, data: await engine.read(handle),
@@ -49,6 +59,7 @@ export async function renderPlan(
   const files: string[] = [];
   const pictures: Record<string, WrittenPicture> = {};
   const views: Record<string, WrittenPicture> = {};
+  const given: WrittenInput[] = [];
   let terrain: Raster | null = null;
 
   const stop = cli.record();
@@ -68,14 +79,25 @@ export async function renderPlan(
       async onTarget(index, handle) {
         if (!handle) return;
         const field = await read(handle);
-        if (index < first) {
+        if (index < firstInput) {
           // A terrain is a field. An upstream output whose kind the document does not determine may arrive as a colour: no terrain then.
           terrain = field.kind === 'field' ? field : null;
           return;
         }
+        if (index < first) {
+          const input = shown[index - firstInput]!;
+          const file = `nodes/${plan.type}/${inputFile(input.port)}-${opts.res}${variant}.png`;
+          const picture = inputPicture(input.kind, field, scale);
+          await writePicture(sink, file, picture);
+          files.push(file);
+          given.push({ port: input.port, kind: input.kind, file, width: picture.width, height: picture.height });
+          return;
+        }
         const port = outputs[index - first]!;
+        // The node's own terrain: its other outputs are drawn over the height it made, not over the one it was given.
+        if (index === first && primaryIsHeight && field.kind === 'field' && outputs.length > 1) terrain = field;
         for (const { suffix, draw } of picturesOf(port, field, terrain, scale, opts.crop)) {
-          const file = `nodes/${plan.type}/${port.name}-${opts.res}${plan.masked ? '-masked' : ''}${suffix}.png`;
+          const file = `nodes/${plan.type}/${port.name}-${opts.res}${variant}${suffix}.png`;
           const picture = draw();
           await writePicture(sink, file, picture);
           files.push(file);
@@ -93,7 +115,7 @@ export async function renderPlan(
     type: plan.type, res: opts.res, status: result.status, errors: result.errors,
     ...measured,
     longestSliceMs: log.longestSliceMs, longestSliceKernels: log.longestSliceKernels, engineErrors: log.engineErrors,
-    files, pictures, views,
+    files, pictures, views, inputs: given,
   };
 }
 
@@ -105,7 +127,7 @@ export async function render(command: RenderCommand, signal: AbortSignal): Promi
   let plan: RenderPlan;
   let source: FileSource;
   if (command.source.kind === 'type') {
-    plan = typeDocument(registry, command.source.type, { params: command.params, maxParams: command.maxParams, seed: command.seed, masked: command.masked });
+    plan = typeDocument(registry, command.source.type, { params: command.params, maxParams: command.maxParams, seed: command.seed, connected: command.connected });
     // A relative `file` parameter given with --param is taken from the working directory.
     source = NodeFileSource(process.cwd());
   } else {

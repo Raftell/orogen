@@ -1,6 +1,5 @@
 // src/core/nodes/adjust/_wgsl.ts
-// What the kernels of this category share: the limits a stored value keeps, the blend whose two ends are exact,
-// and the two conversions between a height and a color.
+// What the kernels of this category share: the limits a stored value keeps and the blend whose two ends are exact.
 import { defineLib } from '../../api.ts';
 
 /** The kinds a node of type `any` serves: one kernel variant for each. */
@@ -23,10 +22,6 @@ fn adjust_color(rgb: vec3f, alpha: f32) -> vec4f {
 // t = 1. No strength leaves a and full strength gives r, bit for bit.
 fn adjust_blend(a: f32, r: f32, t: f32) -> f32 { return select(select(mix(a, r, t), r, t >= 1.0), a, t <= 0.0); }
 fn adjust_blend3(a: vec3f, r: vec3f, t: f32) -> vec3f { return select(select(mix(a, r, vec3f(t)), r, t >= 1.0), a, t <= 0.0); }
-
-// A color read as a height and a height read as a color, as the evaluator converts a connection (runtime.md 5.6).
-fn adjust_luma(c: vec4f) -> f32 { return dot(c.rgb, vec3f(0.2126, 0.7152, 0.0722)); }
-fn adjust_grey(v: f32) -> vec4f { return vec4f(v, v, v, 1.0); }
 `,
 });
 

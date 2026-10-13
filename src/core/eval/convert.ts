@@ -1,5 +1,6 @@
 import { defineKernel, MASK_INPUT, type AnyKernel } from '../gpu/kernel.ts';
 import type { PoolTexture } from '../gpu/pool.ts';
+import { convert as conversions } from '../wgsl/convert.ts';
 import type { EngineParts } from './parts.ts';
 import { produce, runKernel } from './service.ts';
 
@@ -11,11 +12,11 @@ const grey = defineKernel({
   name: 'core/convert#grey',
   inputs: { src: 'field' },
   outputs: { out: 'color' },
+  includes: [conversions],
   cost: 1,
   code: /* wgsl */ `
 fn compute(px: vec2i, uv: vec2f) -> vec4f {
-  let v = src_at(px);
-  return vec4f(v, v, v, 1.0);
+  return convert_grey(src_at(px));
 }`,
 });
 
@@ -23,10 +24,11 @@ const luma = defineKernel({
   name: 'core/convert#luma',
   inputs: { src: 'color' },
   outputs: { out: 'field' },
+  includes: [conversions],
   cost: 1,
   code: /* wgsl */ `
 fn compute(px: vec2i, uv: vec2f) -> f32 {
-  return dot(src_at(px).rgb, vec3f(0.2126, 0.7152, 0.0722));
+  return convert_luma(src_at(px));
 }`,
 });
 

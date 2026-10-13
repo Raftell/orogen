@@ -7,7 +7,7 @@ import {
   addNode, connect, newDoc, newId, parseDoc, setNodeFlags, setParam, setSettings, setView,
   type DocDraft, type FileSource, type GraphDoc, type PortRef, type ProjectSettings,
 } from '../../src/core/runtime.ts';
-import { inputFeeds, MASK_SLOPES, MASK_TERRAIN, terrainParams, type Feed } from '../../src/cli/document.ts';
+import { inputFeeds, maskFeed, terrainParams, terrainType, type Feed } from '../../src/cli/document.ts';
 import { NodeFileSource } from '../../src/platform/node/files.ts';
 import { currentRegistry, exclusive, liveEngine, REPOSITORY, TEST_SETTINGS, useNodes, type Slices } from './engine.ts';
 import { evaluate, identityIds, sessionClosed, sessionOpened, sessionsOpen, type EvalReport, type IdMap, type SliceListener } from './evaluate.ts';
@@ -137,7 +137,7 @@ export function makeDoc(spec: GraphSpec): GraphDoc {
 }
 
 /**
- * A document with one instance of every given node, for whole-registry tests (8.4), each wired as the masked
+ * A document with one instance of every given node, for whole-registry tests (8.4), each wired as the connected
  * variant of `orogen render` wires it (inputFeeds): every input connected, each height from a terrain of its
  * own. A wiring type the registry lacks is left out: its inputs take the terrain itself, and without
  * `ref/combine` there is no chain and no view.
@@ -158,9 +158,10 @@ export function registryDoc(defs: readonly NodeDef[]): GraphDoc {
   let wiringRows = 0;
   const made = new Map<string, string>();
   /**
-   * The node behind one feed. The instance of the wiring type stands in for the feed it equals: ref/fbm at its
-   * defaults is the first terrain, and a type whose one input the rule below wires from that terrain is the feed
-   * made of it. A second node there would have the instance's key: one result, and the second a cache hit.
+   * The node behind one feed. The instance of the wiring type stands in for the feed it equals: the type of the
+   * first terrain at its defaults is that terrain, and a type whose one input the rule below wires from that
+   * terrain is the feed made of it. A second node there would have the instance's key: one result, and the
+   * second a cache hit.
    */
   const feedNode = (key: string, type: string, params: Readonly<Record<string, ParamValue>>, from: string | null): string => {
     let id = made.get(key);
@@ -180,11 +181,12 @@ export function registryDoc(defs: readonly NodeDef[]): GraphDoc {
     made.set(key, id);
     return id;
   };
-  const terrainOf = (index: number): string => feedNode(`terrain ${index}`, 'ref/fbm', terrainParams(index), null);
+  const mask = maskFeed(registry);
+  const terrainOf = (index: number): string => feedNode(`terrain ${index}`, terrainType(registry, index), terrainParams(index), null);
   const sourceOf = (feed: Feed): string => {
     if (feed.kind === 'terrain') return terrainOf(feed.index);
     if (feed.kind === 'mask') {
-      return registry.get('ref/slope-mask') ? feedNode('mask', 'ref/slope-mask', MASK_SLOPES, feedNode('mask terrain', 'ref/fbm', MASK_TERRAIN, null)) : terrainOf(0);
+      return registry.get('ref/slope-mask') ? feedNode('mask', 'ref/slope-mask', mask.slopes, feedNode('mask terrain', terrainType(registry, 0), mask.terrain, null)) : terrainOf(0);
     }
     return registry.get('ref/colorize') ? feedNode(`color ${feed.index}`, 'ref/colorize', {}, terrainOf(feed.index)) : terrainOf(feed.index);
   };

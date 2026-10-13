@@ -5,7 +5,7 @@ import { renderNode } from './render.ts';
 
 export type FixtureName =
   | 'terrain' | 'rampX' | 'rampY' | 'cone' | 'basin' | 'bowl' | 'notch'
-  | 'mask' | 'zero' | 'one' | 'impulse' | 'color' | 'fbm';
+  | 'mask' | 'zero' | 'one' | 'impulse' | 'color' | 'color2' | 'color3' | 'color4' | 'fbm';
 
 const TAU = 2 * Math.PI;
 const saturate = (v: number): number => Math.min(1, Math.max(0, v));
@@ -42,6 +42,10 @@ const computed: Readonly<Record<Exclude<FixtureName, 'fbm'>, (res: number) => Fi
   one: (res) => fieldOf(res, () => 1),
   impulse,
   color: (res) => colorOf(res, (u, v) => [u, v, terrainAt(u, v), 1]),
+  // No channel of one is the same channel of another: a node given two of them is not given one colour twice.
+  color2: (res) => colorOf(res, (u, v) => [coneAt(u, v), 1 - u, basinAt(u, v), 1]),
+  color3: (res) => colorOf(res, (u, v) => [1 - v, bowlAt(u, v), u, 1]),
+  color4: (res) => colorOf(res, (u, v) => [notchAt(u, v), coneAt(u, v), 1 - v, 1]),
 };
 
 export const FIXTURE_NAMES: readonly FixtureName[] = [...(Object.keys(computed) as FixtureName[]), 'fbm'];
@@ -52,7 +56,7 @@ export function isFixtureName(value: unknown): value is FixtureName {
 
 /** 'field' or 'color': what a fixture is, without making it. */
 export function fixtureKind(name: FixtureName): 'field' | 'color' {
-  return name === 'color' ? 'color' : 'field';
+  return name === 'color' || name === 'color2' || name === 'color3' || name === 'color4' ? 'color' : 'field';
 }
 
 export const fixtures: {
@@ -68,6 +72,9 @@ export const fixtures: {
   one(res: number): FieldData;
   impulse(res: number): FieldData;
   color(res: number): FieldData;
+  color2(res: number): FieldData;
+  color3(res: number): FieldData;
+  color4(res: number): FieldData;
   fbm(res: number, seed?: number): Promise<FieldData>;     // seed defaults to 0
   byName(name: FixtureName, res: number): Promise<FieldData>;
 } = {

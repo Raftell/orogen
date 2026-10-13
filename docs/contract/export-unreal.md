@@ -45,7 +45,7 @@ each.
 | `tests/export/`, `tests/export/unit/` | Tests (section 10) | |
 | `tests/nodes/io/export-*.test.ts` | `conformance(def)` and nothing else (`testing.md` 5.2) | |
 | `unreal/OrogenBridge/` | The editor plugin, C++ source (section 8) | |
-| `docs/user/unreal-import.md` | The user documentation of section 7, reproduced without change | |
+| `docs/user/unreal-import.md` | The user documentation of section 7: every statement and its mark unchanged, with the headings and the references between them numbered for that document. It adds a worked example from a real build, the acceptance test of section 9 and how the plugin of section 8 is used | |
 
 `src/export/` is not part of `src/core/` and is imported neither by `src/core/`
 nor by `src/app/` (`runtime.md` 8.4). The session, which is core code, receives
@@ -431,7 +431,7 @@ engine.evaluate(opts.doc, targets, {
 });
 ```
 
-1. **Targets.** For plan target `{ node, input }` the pipeline takes the edge into that input (the first edge of `doc.edges`, in record order, whose `to` is `{ node, port: input }`) and passes `{ ref: edge.from, as: T }`, where `T` is the type of the input port, `'field'` or `'color'`. Targets are in plan order.
+1. **Targets.** For plan target `{ node, input }` the pipeline takes the edge the evaluator uses for that input (`runtime.md` 4.3 rule 5: the first edge of `doc.edges`, in record order, whose `to` is `{ node, port: input }` and whose `from` names an output of an existing node of a known type; `edgeInto` of `src/export/plan.ts`) and passes `{ ref: edge.from, as: T }`, where `T` is the type of the input port, `'field'` or `'color'`. Targets are in plan order. An input without such an edge is unconnected for the plan as it is for the evaluator, so no target names a node or an output the document lacks.
 2. **Delivery.** `onTarget(i, handle)` is the stage of target `i`. The evaluator delivers targets one at a time, runs no node while the stage is pending, and releases the handle when the stage's promise settles. Each target is therefore evaluated, measured, read, converted and encoded, and its handle released, before the next node runs; its texture is freed as soon as no later node reads it (`runtime.md` 2.8).
 3. **Access.** A stage uses `engine.stats(handle)` and `engine.read(handle, [y0, y1])` only. It never touches `handle.texture`, never retains the handle and never uses it after its promise has settled.
 4. **First error stops the build.** The pipeline's controller aborts when `opts.signal` aborts and when the first `node-error` event arrives. A stage that fails rejects its promise, which stops the evaluation (`runtime.md` 5.2).
@@ -501,7 +501,7 @@ A plan is plain data. `planBuild` proceeds in this order and collects every
 problem it finds; it does not stop at the first:
 
 1. The resolution is `opts.resolution`, else `doc.settings.buildResolution`. A value that is not a build resolution (`engine.md` 1.5) is `E_RESOLUTION`.
-2. Node instances whose type the registry knows and whose definition has `export` are visited in ascending order of node id. Parameters are normalised with `normalizeParams` (`runtime.md` 4.4); an `error` from it is `E_HOOK_FAILED` with that message. An instance whose `enabled` is false is skipped. An `in` input without an edge is `E_INPUT_MISSING`. Otherwise the hook is called. The instance's `bypass` flag is ignored.
+2. Node instances whose type the registry knows and whose definition has `export` are visited in ascending order of node id. Parameters are normalised with `normalizeParams` (`runtime.md` 4.4); an `error` from it is `E_HOOK_FAILED` with that message. An instance whose `enabled` is false is skipped. A definition that breaks a rule of 2.3 (`checkExportNode`) is `E_HOOK_FAILED` with the first rule it breaks. An `in` input without an edge the evaluator uses (3.2) is `E_INPUT_MISSING`. Otherwise the hook is called. The instance's `bypass` flag is ignored.
 3. Each item is checked against 2.2 and the cross-item rules of 2.5.
 4. Items are put in processing order: the landscape item; weight-blended layer items by `layer.toLowerCase()` ascending in UTF-16 code unit order; other layer items likewise; texture items by file name; image items by file name.
 5. Files are derived (2.6) and checked for collisions. `files` lists the heightmap PNG and `.r16`; then, for each layer in the order of step 6, its PNG and its `.r8`; then the textures; then the images; then the manifest.
@@ -511,7 +511,7 @@ Plan problems:
 
 | Code | Severity | Condition |
 | --- | --- | --- |
-| `E_NOTHING_TO_EXPORT` | error | no item |
+| `E_NOTHING_TO_EXPORT` | error | no item, whatever else the plan reports |
 | `E_INPUT_MISSING` | error | an enabled export node has no connection on `in` |
 | `E_HOOK_FAILED` | error | 2.1 rule 5; step 2 |
 | `E_RESOLUTION` | error | step 1 |
@@ -523,7 +523,7 @@ Plan problems:
 | `E_TOO_MANY_LAYERS` | error | more than 15 weight-blended layer items |
 | `E_RANGE_INVALID` | error | a `HeightRange` breaks 2.2 |
 | `E_FORMAT_INVALID` | error | any other member of an item breaks its rule in 2.2 |
-| `E_FILE_COLLISION` | error | 2.6 rule 2 |
+| `E_FILE_COLLISION` | error | 2.6 rule 2, once for every path that is taken: two layers of one file name collide in their PNG and in their raw file. The name of the report counts as taken |
 | `W_MANY_LAYERS` | warning | more than 12 layers in all, the base layer included (5.8) |
 | `W_GRID_SIZE` | warning | `layout.components` is not a multiple of `gridSize` |
 | `W_REGION_SIZE` | warning | `regionSize` is 4 (7.4) |
@@ -536,7 +536,7 @@ has ended without error.
 | Phase | Work |
 | --- | --- |
 | 1. Plan | `planBuild`. With an error: status `'errors'`, nothing evaluated, no file |
-| 2. Targets | `engine.evaluate` (3.2). One stage per target, in plan order |
+| 2. Targets | `engine.evaluate` (3.2). One stage per target, in the order the evaluator delivers them: each as soon as the node that makes it has run (`runtime.md` 5.2). Where one node feeds several items their stages follow each other, whatever lies between them in the plan; nothing in the pipeline depends on the order |
 | 3. Weights | Only with weight-blended layer items: the joint quantisation of 5.8, from the planes kept in phase 2 |
 | 4. Commit | Every open `FileWriter` is closed, in the order of `plan.files`; then the manifest is written with `sink.write` |
 | 5. Report | The report is written with `sink.write`, whatever the status, unless the plan had an error |
@@ -614,9 +614,9 @@ pipeline itself allocates no GPU memory.** On the CPU a stage holds:
 | image | one band and its converted samples |
 | phase 3, `L` weight-blended layer items | `L` planes of 132.2 MB and `L + 1` bands of bytes (4.2 MB each) |
 
-The resampler's window is `2ρ + 2` rows of `S × channels` floats, with `ρ` of
-5.9: 0.4 MB for a colour texture of side 8192 from 8129, and less for a
-smaller side.
+The resampler's window is at most `2ρ + 2` rows of `S × channels` `float64`
+values, with `ρ` of 5.9: 0.8 MB for a colour texture of side 8192 from 8129,
+and less for a smaller side.
 
 Bounds, which the implementation must keep:
 
@@ -643,17 +643,17 @@ staging  = outDir + '.partial'
 previous = outDir + '.previous'
 ```
 
-1. `outDir` is acceptable when it does not exist, is empty, or contains a file `*.orogen.json` whose `schema` begins with `orogen.unreal.landscape/`. Anything else is `E_OUT_DIR` with status `'errors'`: Orogen replaces a folder only when it is a previous Orogen build.
-2. A leftover `staging` or `previous` folder is deleted. `staging` is created empty.
+1. `outDir` is acceptable when it does not exist, is empty, or holds a previous build and nothing else: a file `*.orogen.json` whose `schema` begins with `orogen.unreal.landscape/`, the files that manifest lists under `files`, and reports (`*.report.json` whose `schema` begins with `orogen.build-report/`). `Thumbs.db`, `desktop.ini` and `.DS_Store` do not count. Anything else is `E_OUT_DIR` with status `'errors'`, and the message names the first entry that is not the build's: Orogen replaces a folder only when it is a previous Orogen build, and a build folder into which somebody has put a file of their own (the project file, for one) is refused, not emptied. A path that is a file, the root of a drive, or a folder that cannot be read is `E_OUT_DIR` as well, and so is a staging folder that cannot be made. Nothing is planned then: the listener receives the problem and the result.
+2. A leftover `staging` or `previous` folder is deleted when it is Orogen's, and is `E_OUT_DIR` otherwise: nothing is deleted because of its name alone. `previous` is Orogen's by the test of step 1. `staging` is Orogen's by that test (a complete build whose swap failed), when it holds reports and nothing else (a build that did not succeed), or when it holds the marker file `.orogen-staging` (a build that was interrupted). `staging` is then created empty but for that marker, which `buildToFolder` writes before the build and deletes when `buildProject` has returned. A folder of Orogen's is deleted with its manifest last, so that an interrupted deletion leaves a folder the next build still knows.
 3. `buildProject` runs with `sink = createSink(staging)`. When the plan has an error, `staging` is deleted.
-4. Status `'ok'`: `outDir`, when it exists, is renamed to `previous`; `staging` is renamed to `outDir`; `previous` is deleted with everything in it. `result.outDir` is `outDir`.
-5. A rename that fails in step 4 is `E_COMMIT_FAILED` with status `'errors'`. The complete build stays in `staging`, `result.outDir` is `staging`, and the message says so.
+4. Status `'ok'`: `outDir` is tested once more as in step 1, and what it holds by now that is not the build's is a failed rename of step 5 (a file saved into it while the build ran is not deleted). Then `outDir`, when it exists, is renamed to `previous`; `staging` is renamed to `outDir`; `previous` is deleted with everything in it. `result.outDir` is `outDir`.
+5. A rename that fails in step 4 is `E_COMMIT_FAILED` with status `'errors'`. The complete build stays in `staging`, `result.outDir` is `staging`, and the message says so; when `outDir` had already been renamed to `previous` it is renamed back. A `previous` that cannot be deleted after the swap leaves the build in place with status `'ok'` and a problem of severity `'warning'` with the code `E_COMMIT_FAILED`.
 6. Any other status: `staging` holds the report and nothing else. `result.outDir` is `staging`. The next build removes it.
 
 Consequences of `buildToFolder`:
 
 - The output folder holds one complete build with its manifest, or is untouched. A file left over from an earlier build with other layer names cannot survive.
-- A folder that the user shares with their own files is refused, not cleaned. The user documentation says that the output folder belongs to Orogen.
+- A folder that the user shares with their own files is refused, not cleaned, also when it holds a build. The user documentation says that the output folder belongs to Orogen.
 - While a build runs, the disk holds the previous build and the new one.
 
 ### 3.9 Progress, cancellation and failure
@@ -676,7 +676,7 @@ type BuildEvent =
 | `'build-target'` | The stage of target `index` begins. `label` is the export node's title and the first file of the item |
 | `'build-progress'` | `fraction` is the export work done: rows converted so far divided by all rows the build converts (the output rows of every target, plus `resolution` rows for phase 3). Non-decreasing, at most 10 events per second, 1 when phase 4 begins |
 | `'build-problem'` | A problem found after the plan |
-| `'build-result'` | Once, last |
+| `'build-result'` | Once, last. From `buildToFolder` it carries the folder's result, with `outDir`; the pipeline's own is not emitted beside it |
 
 Every event is plain data and can be structured-cloned. `'build-progress'`
 measures the export work only; how far the evaluation has come is in the
@@ -744,6 +744,12 @@ interface BuildReport {
 
 `meanWeight` is the mean of the layer's bytes divided by 255. Per-node timings
 are not in the report; they are in the `node-done` events (`runtime.md` 5.10).
+`layers` lists the layers whose bytes were written: all of them in a build that
+succeeded.
+
+A report that cannot be written does not change what a build is: its status
+stays, `result.report` is `null`, and a problem of severity `'warning'` with the
+code `E_WRITE_FAILED` names the report.
 
 ### 3.11 The command line
 
@@ -786,9 +792,12 @@ and, on success, the path of the manifest on standard output. Problems that
 | 3 | No usable GPU device (`GpuUnavailableError`), or status `'device-lost'` |
 | 130 | Cancelled by SIGINT or SIGTERM: status `'aborted'`. A second signal exits at once with the same code |
 
-The exit code is 0 only when a manifest was written. The `unreal-test` forms
-are defined in section 9; they need no GPU and exit with 0, 1 (the check found
-a difference) or 2.
+The exit code is 0 only when a manifest was written. Without `--json` and
+`--quiet` the last progress line of a build that succeeded states its duration,
+the number and size of its files, the most the pool's ledger held and the peak
+resident memory of the process. The `unreal-test` forms are defined in section
+9; they need no GPU and exit with 0, 1 (the check found a difference, the file
+is no heightmap of the pattern's size, or the output folder was refused) or 2.
 
 ---
 
@@ -924,9 +933,11 @@ before the first row.
 
 No compression is the choice because the offset table precedes the pixel
 data and a `FileWriter` only appends: with ZIP the chunk sizes are not known in
-advance. Compression code 0 is a standard mode of the format. The header layout
-has been checked against a file-type probe only; reading a written file with an
-independent EXR reader is part of this encoder's tests.
+advance. Compression code 0 is a standard mode of the format. A file this
+encoder wrote (4033 × 4033) has been read with the OpenEXR reference library
+(libOpenEXR 3.1): its C core returns every scan line as it was written, and
+its `RgbaInputFile`, which checks the header, the samples as halves. The
+encoder's test file records the check and how to repeat it (10.2).
 
 ### 4.6 TIFF, and image formats by item
 
@@ -1496,12 +1507,20 @@ interface TexelGridResampler {
   /** Returns the output rows not yet returned. */
   finish(): Float32Array;
 }
-declare function createTexelGridResampler(o: { srcSize: number; dstSize: number; channels: 1 | 3 }): TexelGridResampler;
+declare function createTexelGridResampler(o: { srcSize: number; dstSize: number; channels: 1 | 3; stride?: number }): TexelGridResampler;
 ```
 
 The resampler is streaming: it keeps the horizontally resampled rows inside
 its vertical support, `2ρ + 2` rows at most, and its output does not depend on
-how the source rows are cut into `push` calls.
+how the source rows are cut into `push` calls. `stride` is the number of floats
+a source texel has, of which the first `channels` are resampled; it defaults to
+`channels`, and is 4 for a `color`, whose alpha is dropped without a copy of the
+band. Each sum is taken over differences from its first sample, which is the
+weighted mean above and returns a constant field bit for bit. A whole reduction
+keeps a ramp exactly where the tent is not cut by the border; for another one
+the weights at the vertices are not even about the texel centre, and a ramp is
+off by a small part of a source cell (under 0.01 of one for 101 vertices onto 7
+texels).
 
 **Conversion by content.**
 
@@ -1523,11 +1542,14 @@ for (let i = 0; i < 65536; i++) {
 ```
 
 The vertex normal at `(x, y)` is that of `normalAt` (`engine.md` 3.8), computed
-on the CPU from the height rows `y − 1`, `y` and `y + 1`:
+on the CPU from the height rows `y − 1`, `y` and `y + 1`, and for the first and
+the last row from that row and the two next to it:
 
 ```
-lo = max(x − 1, 0)      hi = min(x + 1, N − 1)                               likewise for y
-sx = (h(hi, y) − h(lo, y)) · heightRange / ((hi − lo) · terrainSize / (N − 1))      metres per metre
+dx = (h(x + 1, y) − h(x − 1, y)) / 2                          inside
+     (4 · h(1, y) − 3 · h(0, y) − h(2, y)) / 2                at x = 0: the one-sided difference of second order
+     −(4 · h(N − 2, y) − 3 · h(N − 1, y) − h(N − 3, y)) / 2   at x = N − 1
+sx = dx · heightRange · (N − 1) / terrainSize                 metres per metre
 sy = the same along y
 n  = normalize(−sx, −sy, 1)
 ```
@@ -1859,9 +1881,9 @@ illustrative, not measurements.
 
 ## 7. Importing a build into Unreal Engine 5.8 by hand
 
-This section is the text of `docs/user/unreal-import.md`. Importing by hand is
-the supported route. Each statement about Unreal says how far it has been
-checked:
+This section is the text of the manual import in `docs/user/unreal-import.md`
+(section 1 says what that file adds). Importing by hand is the supported
+route. Each statement about Unreal says how far it has been checked:
 
 - **confirmed**: read in Epic's documentation or API reference for 5.8.
 - **third party**: confirmed only by someone other than Epic.
@@ -1873,7 +1895,7 @@ test (section 9) once on your engine version before you trust an import.
 
 ### 7.1 Before you start
 
-1. Build the project in Orogen into a folder of its own. The folder belongs to Orogen: each build replaces everything in it. You need `<Name>.orogen.json` (the manifest), `<Name>Height.png`, one `Layer<X>.png` per layer, and the `T_*.png` textures.
+1. Build the project in Orogen into a folder of its own. The folder belongs to Orogen: each build replaces everything in it, and Orogen refuses to build into a folder that holds anything but an earlier build, so keep the project file and your own files elsewhere. You need `<Name>.orogen.json` (the manifest), `<Name>Height.png`, one `Layer<X>.png` per layer, and the `T_*.png` textures.
 2. Do not rename the heightmap or layer files and do not copy other images into the folder. Their names are letters only on purpose (7.4, item 3).
 3. Use Unreal Engine 5.8.3 or later. 5.8.2 fixed a crash when editing landscape layers in Landscape Mode (confirmed, hotfix notes). Earlier 5.8 versions have the material problem of 7.4, item 2; whether 5.8.3 is free of it is unconfirmed.
 4. Open the manifest in a text editor. Every number below is copied from it with all its digits. A horizontal scale shortened to two decimals moves the far edge of an 8 km terrain by about 40 cm (derived).
@@ -2017,10 +2039,10 @@ passed explicitly.
 
 1. **Read and check the manifest** (`Json` only). Reject unless `schema` is `orogen.unreal.landscape/1`, `status` is `complete` and `landscape` is not null. Compute `SizeX = components.x · quadsPerSection · sectionsPerComponent + 1` (likewise `SizeY`) and reject unless it equals `resolution`. Reject unless the `.r16` file is `SizeX · SizeY · 2` bytes and every `.r8` file `SizeX · SizeY` bytes.
 2. **Heights.** `FFileHelper::LoadFileToArray`, then a copy into `TArray<uint16>` (the host is little-endian). Index `X + Y · SizeX`.
-3. **Layers.** For each manifest layer: an `FLandscapeImportLayerInfo(FName)` with `LayerData` from the `.r8`, `SourceFilePath`, and `LayerInfo` set to a `ULandscapeLayerInfoObject` asset created in `LayerInfoFolder` through the asset tools, then `SetLayerName(Name, true)` and `SetBlendMethod(Method, true)` with `None`, `FinalWeightBlending` or `PremultipliedAlphaBlending` for `none`, `final`, `advanced`. The public properties of the layer info are announced to become private in 5.9 `[E]`; only the setters are used. No blend group is set.
+3. **Layers.** For each manifest layer: an `FLandscapeImportLayerInfo(FName)` with `LayerData` from the `.r8`, `SourceFilePath`, and `LayerInfo` set to a `ULandscapeLayerInfoObject` asset named `<Layer>_LayerInfo`, created in `LayerInfoFolder` through the asset tools (an asset of that name that already is a layer info is reused), then `SetLayerName(Name, true)` and `SetBlendMethod(Method, true)` with `None`, `FinalWeightBlending` or `PremultipliedAlphaBlending` for `none`, `final`, `advanced`. The public properties of the layer info are announced to become private in 5.9 `[E]`; only the setters are used. No blend group is set.
 4. **Actor.** `World->SpawnActor<ALandscape>(actorLocationCm, rotation)`; assign `LandscapeMaterial`; `SetActorRelativeScale3D(scaleCm)`; set `StaticLightingLOD` to `DivideAndRoundUp(CeilLogTwo(SizeX · SizeY / (2048 · 2048) + 1), 2)`, as Gaea2Unreal does.
 5. **Import.** `Landscape->Import(FGuid::NewGuid(), 0, 0, SizeX − 1, SizeY − 1, sectionsPerComponent, quadsPerSection, Heights, HeightFileName, Layers, ELandscapeImportAlphamapType::Additive, TArrayView<const FLandscapeLayer>())`, with the heights and the layers each in a map keyed by a default `FGuid()`.
-6. **Target layers.** `GetLandscapeInfo()`, `UpdateLayerInfoMap(Landscape, false)`, then `AddTargetLayer(Name, FLandscapeTargetLayerSettings(LayerInfo, SourceFile), true)` for each layer.
+6. **Target layers.** `GetLandscapeInfo()`, `UpdateLayerInfoMap(Landscape, false)`, `RegisterAllComponents()` as Gaea2Unreal calls it at this point (`[U]`: `Import` may already have registered them), then `AddTargetLayer(Name, FLandscapeTargetLayerSettings(LayerInfo, SourceFile), true)` for each layer. The plugin then writes a warning to the log, and does not fail, when `GetEditLayer(0)` returns null or `GetLandscapeExtent` reports another extent than the one imported; both declarations are `[E]`.
 7. **World Partition.** When `worldPartition.enabled` and the world's `ULandscapeSubsystem` reports `IsGridBased()`: `ChangeGridSize(LandscapeInfo, gridSize)`. The whole landscape is imported first and partitioned afterwards.
 8. Label the actor `Orogen_<Name>` and return it.
 
@@ -2040,7 +2062,7 @@ confines the damage to one file.
 | `Private/OrogenManifest.h`, `.cpp` | `FOrogenManifest`, a plain struct mirroring the manifest; parsing and step 1 | `Core`, `Json` |
 | `Private/OrogenLandscapeCompat.h` | `struct FOrogenLandscapeDesc` (sizes, layout, transform, heights, per layer: name, blend, bytes, source path; material path; layer info folder; grid size) and `ALandscape* OrogenCreateLandscape(UWorld*, const FOrogenLandscapeDesc&, FString& OutError)`. No landscape type other than the forward-declared `ALandscape` appears in it | `Core` |
 | `Private/OrogenLandscapeCompat.cpp` | Steps 3 to 8. Every include of a `Landscape` or `AssetTools` header and every use of `ENGINE_MAJOR_VERSION` / `ENGINE_MINOR_VERSION` in the plugin | all |
-| `Private/OrogenImportLibrary.cpp` | `ImportTerrain`: steps 1 and 2, fills the description, calls `OrogenCreateLandscape` | `Core`, `Engine` |
+| `Private/OrogenImportLibrary.cpp` | `ImportTerrain`: steps 1 and 2, fills the description, calls `OrogenCreateLandscape` with the editor's world; the module's `IMPLEMENT_MODULE` | `Core`, `Engine`, `UnrealEd` (`GEditor`) |
 
 - `OrogenLandscapeCompat.cpp` begins with a guard that stops compilation with a clear message on any engine version other than 5.8, so that building against an unverified engine is a deliberate edit, not an accident.
 - Supporting another engine version means editing that one file.

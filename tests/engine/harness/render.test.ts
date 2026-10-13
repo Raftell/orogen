@@ -11,10 +11,10 @@ import { adapterNamed } from '../../../src/core/gpu/caps.ts';
 import fbm from '../../../src/core/nodes/ref/fbm.ts';
 import { DeviceLostError } from '../../../src/core/runtime.ts';
 import {
-  at, buildGraph, channelOf, expectClose, expectIdentical, expectNoLeaks, expectStats, fieldOf, fixtures, getEngine, launchApp, makeDoc,
+  at, channelOf, diff, expectClose, expectIdentical, expectNoLeaks, expectStats, fieldOf, fixtures, getEngine, launchApp, makeDoc,
   NodeFailure, renderLadder, renderNode, TEST_SETTINGS, traceNode, useNodes, type FieldData,
 } from '../../helpers/index.ts';
-import { climb, dim, either, failing, harnessNodes, probe, scale, split, splitCalls } from './nodes.ts';
+import { climb, dim, either, failing, harnessNodes, pick, probe, scale, split, splitCalls } from './nodes.ts';
 
 useNodes(harnessNodes);
 
@@ -73,6 +73,24 @@ test('renderNode: the outputs by port name, at 257, from the default fixtures', 
   expectClose(channelOf(dimmed.out!, 2), times(fixtures.terrain(129), 0.5), { max: 2e-3 });
   expectStats(dimmed.out!, { min: 1, max: 1 }, 3);
   expectIdentical((await renderNode(either, { res: 129 })).out!, fixtures.terrain(129));
+});
+
+test('renderNode: the default fixtures are a height fixture for each height input and a colour fixture for each colour input, in turn', async () => {
+  // Five colour inputs, among inputs of other kinds: color, color2, color3, color4, and color again (testing.md 3.1).
+  const colors = ['color', 'color2', 'color3', 'color4', 'color'] as const;
+  for (const [index, name] of colors.entries()) {
+    const { out } = await renderNode(pick, { res: 129, params: { colorIndex: index }, wants: ['out'] });
+    // A colour is stored in 11 significant bits.
+    expectClose(out!, fixtures[name](129), { max: 2e-3 });
+    for (const other of ['color', 'color2', 'color3', 'color4'] as const) {
+      if (other !== name) assert.ok(diff(out!, fixtures[other](129)).rms > 0.1, `colour input ${index} was given ${name}, not ${other}`);
+    }
+  }
+  // The inputs that take a height, a data field or either kind: terrain, cone, rampX, counted apart from the colours; the mask is the mask.
+  for (const [index, name] of (['terrain', 'cone', 'rampX', 'mask'] as const).entries()) {
+    const { height } = await renderNode(pick, { res: 129, params: { heightIndex: index }, wants: ['height'] });
+    expectIdentical(height!, fixtures[name](129));
+  }
 });
 
 test('renderNode: params are merged over the defaults and normalised; an unknown name rejects before anything runs', async () => {
@@ -301,8 +319,7 @@ test('expectNoLeaks fails while a handle of a result is held, with the MemoryRep
 
 // ---- later stages --------------------------------------------------------------------------------------------------
 
-test('buildGraph and launchApp belong to later stages, and say which', async () => {
-  await assert.rejects(buildGraph({ nodes: {} }), /buildGraph belongs to the export stage/);
+test('launchApp belongs to a later stage, and says which', async () => {
   await assert.rejects(launchApp(), /launchApp and its AppDriver belong to the application stage/);
   assert.ok(new DeviceLostError('x') instanceof Error);
 });

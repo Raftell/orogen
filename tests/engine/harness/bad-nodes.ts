@@ -343,6 +343,42 @@ conformance(defineNode({
   },
 }));
 
+// Two inputs of either kind, mixed by a weight that is positioned by px in the colour variant alone. Given one
+// colour twice the mix is that colour at every level, and the mistake is not seen: the suite gives the two
+// inputs two colours (testing.md 3.1).
+const weave = (kind: 'field' | 'color') => defineKernel({
+  name: `ref/bad-color-pair#${kind}`,
+  inputs: { a: kind, b: kind },
+  outputs: { out: kind },
+  code: kind === 'field'
+    ? 'fn compute(px: vec2i, uv: vec2f) -> f32 { return mix(a_at(px), b_at(px), 0.5 + 0.5 * sin(uv.x * 20.0)); }'
+    : 'fn compute(px: vec2i, uv: vec2f) -> vec4f { return mix(a_at(px), b_at(px), 0.5 + 0.5 * sin(f32(px.x) * 0.2)); }',
+});
+const weaves = { field: weave('field'), color: weave('color') };
+conformance(defineNode({
+  type: 'ref/bad-color-pair',
+  title: 'Bad Color Pair (Reference)',
+  category: 'ref',
+  description: 'Weaves two inputs into stripes.',
+  inputs: [{ name: 'a', type: 'any' }, { name: 'b', type: 'any' }],
+  outputs: [{ name: 'out', type: { sameAs: 'a' } }],
+  params: [],
+  kernels: [weaves.field, weaves.color],
+  evaluate(ctx) {
+    const a = ctx.input('a');
+    const b = ctx.input('b');
+    if (a.kind === 'field' && b.kind === 'field') {
+      const out = ctx.alloc('field');
+      ctx.run(weaves.field, { in: { a, b }, out: { out } });
+      ctx.output('out', out);
+    } else if (a.kind === 'color' && b.kind === 'color') {
+      const out = ctx.alloc('color');
+      ctx.run(weaves.color, { in: { a, b }, out: { out } });
+      ctx.output('out', out);
+    } else throw new Error('Both inputs are of one kind');
+  },
+}));
+
 // A measure that legitimately changes with the level: the difference to the next texel, as a physical slope.
 const forward = (name: string) => defineKernel({
   name,

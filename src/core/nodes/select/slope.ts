@@ -1,8 +1,7 @@
 // src/core/nodes/select/slope.ts
-import { defineKernel, defineNode, param } from '../../api.ts';
+import { defineKernel, defineNode, ops, param } from '../../api.ts';
 import { invert } from './_params.ts';
-import { scaleKernels, smoothed } from './_scale.ts';
-import { selectShape, selectTerrain } from './_wgsl.ts';
+import { selectShape } from './_wgsl.ts';
 
 /** A tangent no slope reaches, for a threshold at or beyond 90 degrees: finite, as a kernel param has to be. */
 const NEVER = 1e30;
@@ -13,12 +12,12 @@ const band = defineKernel({
   outputs: { out: 'field' },
   // The band and the two ends of its feather as tangents; the band and the feather in radians (engine.md 4.5 rule 2).
   params: { tanBelow: 'f32', tanLo: 'f32', tanHi: 'f32', tanAbove: 'f32', lo: 'f32', hi: 'f32', feather: 'f32', invert: 'u32' },
-  includes: [selectShape, selectTerrain],
+  includes: [selectShape],
   cost: 5,
   code: /* wgsl */ `
 fn compute(px: vec2i, uv: vec2f) -> f32 {
   // The slope is physical: metres per metre, from the terrain size and the height range.
-  let slope = length(selectTerrain_gradient(height, height_res(), px));
+  let slope = length(slopeAt(height, px));
   var v = 0.0;
   if (slope >= P.tanLo && slope <= P.tanHi) {
     v = 1.0;
@@ -53,16 +52,16 @@ export default defineNode({
     param.radius({ help: 'Smooths the terrain before its slope is measured: larger values follow the broad shape and ignore small detail.' }),
     invert,
   ],
-  kernels: [band, ...scaleKernels],
+  kernels: [band],
   evaluate(ctx) {
     const { slopeMin, slopeMax, feather, radius } = ctx.params;
     const lo = radians(slopeMin);
     const hi = radians(Math.max(slopeMax, slopeMin));   // an upper angle below the lower one leaves a band of no width at the lower
     const soft = radians(feather);
-    const src = smoothed(ctx, ctx.input('in'), radius);
+    const height = ops.smooth(ctx, ctx.input('in'), Math.max(radius, 0));   // soft: any finite number can arrive
     const out = ctx.alloc('field');
     ctx.run(band, {
-      in: { height: src.field },
+      in: { height },
       out: { out },
       params: {
         // Below 0 degrees and from 90 upwards an end of the feather is a slope no texel has.
@@ -73,7 +72,7 @@ export default defineNode({
         lo, hi, feather: soft, invert: ctx.params.invert,
       },
     });
-    if (src.owned) ctx.release(src.field);
+    ctx.release(height);
     ctx.output('out', out);
   },
 });

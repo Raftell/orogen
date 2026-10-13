@@ -85,9 +85,10 @@ export default defineNode({
       ctx.output('out', src);
       return;
     }
-    // The guide is smoothed over a length, so that it pushes the same way at every resolution.
+    // The guide is smoothed over a length, so that it pushes the same way at every resolution, and without
+    // anything assumed beyond its border, so that it keeps its slope there.
     const smoothing = Math.min(Math.max(ctx.params.guideRadius, 0), 4);
-    const smooth = connected && Math.floor(3 * ctx.lengthToPx(smoothing)) >= 1 ? ops.blur(ctx, connected, smoothing) : null;
+    const smooth = connected && Math.floor(3 * ctx.lengthToPx(smoothing)) >= 1 ? ops.smooth(ctx, connected, smoothing) : null;
     const out = ctx.alloc(src.kind);
     ctx.run(kernels[src.kind], {
       in: { src, guide: smooth ?? connected },

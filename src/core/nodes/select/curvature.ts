@@ -1,7 +1,6 @@
 // src/core/nodes/select/curvature.ts
-import { defineKernel, defineNode, param } from '../../api.ts';
+import { FIT_MIN_SIGMA, defineKernel, defineNode, ops, param } from '../../api.ts';
 import { invert } from './_params.ts';
-import { MIN_FIT_SIGMA, fitPass, restore, scaleKernels, scaleOf } from './_scale.ts';
 import { selectShape } from './_wgsl.ts';
 
 /**
@@ -78,38 +77,39 @@ export default defineNode({
     param.strength({ default: 0.5, help: 'Larger values select gentler bends, until every bend of the chosen kind is fully selected.' }),
     invert,
   ],
-  kernels: [measure, mask, ...scaleKernels],
+  kernels: [measure, mask],
   evaluate(ctx) {
-    const { radius, strength } = ctx.params;
-    const scale = scaleOf(ctx, ctx.input('in'), radius);
+    const { strength } = ctx.params;
+    const radius = Math.max(ctx.params.radius, 0);   // soft: any finite number can arrive
+    const scale = ops.scale(ctx, ctx.input('in'), radius);
 
     // Along x: the smoothed terrain, its slope and its bend. Along y, of each of them, what the surface needs.
-    const x = fitPass(ctx, scale, scale.field, 0, { value: true, slope: true, bend: true });
+    const x = ops.fit(ctx, scale, scale.field, 0, { value: true, slope: true, bend: true });
     if (scale.owned) ctx.release(scale.field);
-    const zxx = fitPass(ctx, scale, x.bend!, 1, { value: true }).value!;
+    const zxx = ops.fit(ctx, scale, x.bend!, 1, { value: true }).value!;
     ctx.release(x.bend!);
-    const acrossSlope = fitPass(ctx, scale, x.slope!, 1, { value: true, slope: true });
+    const acrossSlope = ops.fit(ctx, scale, x.slope!, 1, { value: true, slope: true });
     ctx.release(x.slope!);
-    const acrossValue = fitPass(ctx, scale, x.value!, 1, { slope: true, bend: true });
+    const acrossValue = ops.fit(ctx, scale, x.value!, 1, { slope: true, bend: true });
     ctx.release(x.value!);
 
     // The radius the bend is counted over is never below the Gaussian the derivatives are fitted with.
-    const reach = Math.max(ctx.lengthToMetres(Math.max(radius, 0)), MIN_FIT_SIGMA * ctx.cellSize) / scale.cell;
+    const reach = Math.max(ctx.lengthToMetres(radius), FIT_MIN_SIGMA * ctx.cellSize) / scale.cell;
     const bend = ctx.alloc('field', { like: zxx });
     const derivatives = { zx: acrossSlope.value!, zy: acrossValue.slope!, zxx, zxy: acrossSlope.slope!, zyy: acrossValue.bend! };
     ctx.run(measure, { in: derivatives, out: { out: bend }, params: { rise: ctx.heightRange / scale.cell, reach } });
     for (const field of Object.values(derivatives)) ctx.release(field);
 
-    const full = restore(ctx, scale, bend);
-    if (full.owned) ctx.release(bend);
+    const full = ops.restore(ctx, scale, bend);
+    if (full !== bend) ctx.release(bend);
     const out = ctx.alloc('field');
     // The strength acts as its cube: half of it asks for eight times the bend, and 0 selects nothing.
     ctx.run(mask, {
-      in: { bend: full.field },
+      in: { bend: full },
       out: { out },
       params: { gain: (2 * strength) ** 3 / FULL_BEND, mode: ctx.enumIndex('mode'), invert: ctx.params.invert },
     });
-    ctx.release(full.field);
+    ctx.release(full);
     ctx.output('out', out);
   },
 });

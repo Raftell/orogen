@@ -14,12 +14,15 @@ import { test } from 'node:test';
 
 import { decode } from 'fast-png';
 
+import { nodes } from '../../../src/core/nodes/index.ts';
 import { nodes as refNodes } from '../../../src/core/nodes/ref/index.ts';
 
 const ROOT = path.resolve(import.meta.dirname, '../../..');
 const OUTPUT = path.join(path.resolve(process.env.OROGEN_TEST_OUTPUT || path.join(ROOT, 'test-output')), 'cli');
 const PROFILE = process.env.OROGEN_GPU_PROFILE || 'core';
 const RES = 129;
+/** The first terrain a rendered node is given: the product's eroded noise where it has one, else ref/fbm (testing.md 2.4). */
+const FIRST_TERRAIN = nodes.some((def) => def.type === 'generate/eroded-noise') ? 'generate/eroded-noise' : 'ref/fbm';
 
 // Pictures of an earlier run would stand in for pictures this one failed to write.
 fs.rmSync(OUTPUT, { recursive: true, force: true });
@@ -155,7 +158,7 @@ test('orogen render ref/fbm: a sheet of the output, and one JSON line that says 
   assert.deepEqual(fs.readdirSync(path.join(out, 'nodes', 'ref', 'fbm')), ['out-129.png'], 'nothing else is left in the folder');
 });
 
-test('orogen render ref/talus --crop --param: every output as a sheet and as a one-to-one crop, the data output over the input terrain', () => {
+test('orogen render ref/talus --crop --param: every output as a sheet and as a one-to-one crop, the data output over the terrain the node made', () => {
   const out = path.join(OUTPUT, 'talus');
   // A low talus angle and a long reach: much of a fractal terrain collapses, so `moved` is not empty.
   const line = rendered(orogen(['render', 'ref/talus', '--res', String(RES), '--crop', '64', '--param', 'talus=20', '--param', 'reach=0.05', '--out', out]));
@@ -167,7 +170,7 @@ test('orogen render ref/talus --crop --param: every output as a sheet and as a o
   assert.deepEqual([crop.width, crop.height], [64, 64]);
   assert.ok(look(crop, 0, 64).spread >= 40, 'the crop shows relief');
 
-  // `moved` is a data output: drawn with the range of its own values, over the terrain the node was given.
+  // `moved` is a data output: drawn with the range of its own values, over `out`, the terrain the node made of its input.
   const moved = expectSheet(line.files[2]!, 'ref/talus.moved');
   assert.ok(look(moved, 0, 512).spread >= 250, 'the grey picture reaches from nothing moved to the most that moved');
   const tinted = look(moved, 520, 1032).tinted;
@@ -207,7 +210,7 @@ function differingGrey(a: Png, b: Png): number {
   return count / (512 * 512);
 }
 
-test('orogen render of a node with two inputs: each is fed a terrain of its own, and --masked connects the optional mask', () => {
+test('orogen render of a node with two inputs: each is fed a terrain of its own, and --connected connects the optional mask', () => {
   const sheet = (name: string, type: string, args: readonly string[]): { readonly png: Png; readonly files: readonly string[] } => {
     const out = path.join(OUTPUT, name);
     const { files } = rendered(orogen(['render', type, '--res', String(RES), '--out', out, ...args]));
@@ -217,27 +220,27 @@ test('orogen render of a node with two inputs: each is fed a terrain of its own,
   const second = sheet('combine-b', 'ref/combine', ['--param', 'strength=1']);
   const first = sheet('combine-a', 'ref/combine', ['--param', 'strength=0']);
   assert.ok(differingGrey(first.png, second.png) > 0.5, 'the two inputs are two terrains');
-  // The first is ref/fbm at its defaults, the second ref/fbm with seed 1 and feature size 0.1 (testing.md 2.4).
-  assert.equal(differingGrey(first.png, sheet('combine-fbm0', 'ref/fbm', []).png), 0);
+  // The first is the first terrain at its defaults, the second ref/fbm with seed 1 and feature size 0.1 (testing.md 2.4).
+  assert.equal(differingGrey(first.png, sheet('combine-first', FIRST_TERRAIN, []).png), 0);
   assert.equal(differingGrey(second.png, sheet('combine-fbm1', 'ref/fbm', ['--seed', '1', '--param', 'size=0.1']).png), 0);
-  assert.deepEqual(second.files, [fileOf(path.join(OUTPUT, 'combine-b'), 'ref/combine', 'out-129.png')], 'without --masked the optional mask is unconnected');
+  assert.deepEqual(second.files, [fileOf(path.join(OUTPUT, 'combine-b'), 'ref/combine', 'out-129.png')], 'without --connected the optional mask is unconnected');
 
-  // --masked: `b` only where the slope mask of the first terrain selects, in files of their own.
-  const masked = sheet('combine-masked', 'ref/combine', ['--param', 'strength=1', '--masked']);
-  assert.deepEqual(masked.files, [fileOf(path.join(OUTPUT, 'combine-masked'), 'ref/combine', 'out-129-masked.png')]);
+  // --connected: `b` only where the slope mask of the first terrain selects, in files of their own.
+  const masked = sheet('combine-connected', 'ref/combine', ['--param', 'strength=1', '--connected']);
+  assert.deepEqual(masked.files, [fileOf(path.join(OUTPUT, 'combine-connected'), 'ref/combine', 'out-129-connected.png')]);
   const fromB = differingGrey(masked.png, second.png), fromA = differingGrey(masked.png, first.png);
   assert.ok(fromB > 0.05 && fromA > 0.05, `under the mask ${(100 * fromB).toFixed(0)} % of the picture differs from b and ${(100 * fromA).toFixed(0)} % from a`);
 
   // The mask the evaluator gives a maskable node: the blur acts on the steep ground alone.
   const blurred = sheet('blur-plain', 'ref/blur', ['--param', 'radius=0.05']);
-  const partly = sheet('blur-masked', 'ref/blur', ['--param', 'radius=0.05', '--masked', '--crop', '64']);
-  assert.deepEqual(partly.files, ['out-129-masked.png', 'out-129-masked-crop.png'].map((name) => fileOf(path.join(OUTPUT, 'blur-masked'), 'ref/blur', name)));
+  const partly = sheet('blur-connected', 'ref/blur', ['--param', 'radius=0.05', '--connected', '--crop', '64']);
+  assert.deepEqual(partly.files, ['out-129-connected.png', 'out-129-connected-crop.png'].map((name) => fileOf(path.join(OUTPUT, 'blur-connected'), 'ref/blur', name)));
   assert.ok(differingGrey(blurred.png, partly.png) > 0.05);
 
-  // A node without an optional mask has no masked variant.
-  const refused = orogen(['render', 'ref/fbm', '--masked', '--out', path.join(OUTPUT, 'refused')]);
+  // A node without an optional input that is not maskable has no connected variant.
+  const refused = orogen(['render', 'ref/fbm', '--connected', '--out', path.join(OUTPUT, 'refused')]);
   assert.equal(refused.code, 2, refused.err);
-  assert.match(refused.err, /--masked connects the optional mask inputs of a node, and ref\/fbm has none and is not maskable/);
+  assert.match(refused.err, /--connected connects the optional inputs of a node and the mask of a maskable one, and ref\/fbm has no optional input and is not maskable/);
 });
 
 test('orogen render ref/distance: a node whose input is a mask is drawn over the terrain the mask was made of', () => {
@@ -298,21 +301,35 @@ test('orogen render: a node that fails ends with exit code 1, its error on stand
   assert.equal(fs.existsSync(path.join(out, 'nodes')), false, 'no picture of a node that did not run');
 });
 
-test('orogen gallery --category ref: every reference node rendered, and the page a reviewer reads', () => {
+test('orogen gallery --category ref: every reference node rendered, the page a reviewer reads, and an index that links it', () => {
   const out = path.join(OUTPUT, 'gallery');
   // A conformance report in the output folder is shown with its node.
   fs.mkdirSync(path.join(out, 'conformance', 'ref'), { recursive: true });
   fs.writeFileSync(path.join(out, 'conformance', 'ref', 'fbm.json'), JSON.stringify({ adapter: { description: 'the adapter of this test' }, profile: 'core', checks: { finite: { result: 'passed' } }, optOuts: [], budget: null }));
+  // The page an earlier run left of another category stays, and the index links it; a file that is no such page is not listed.
+  fs.mkdirSync(path.join(out, 'gallery'), { recursive: true });
+  const earlier = '<!doctype html><html><head><meta name="orogen-gallery" content="{&quot;category&quot;:&quot;filter&quot;,&quot;nodes&quot;:14,&quot;failed&quot;:0,&quot;res&quot;:513,&quot;adapter&quot;:&quot;an earlier adapter&quot;,&quot;software&quot;:false,&quot;profile&quot;:&quot;max&quot;}"></head></html>';
+  fs.writeFileSync(path.join(out, 'gallery', 'filter.html'), earlier);
+  fs.writeFileSync(path.join(out, 'gallery', 'select.html'), '<!doctype html><html><head><title>Not a gallery page</title></head></html>');
 
   const done = orogen(['gallery', '--category', 'ref', '--res', String(RES), '--out', out]);
   assert.equal(done.code, 0, done.err);
-  const index = path.join(out, 'gallery', 'index.html');
-  assert.equal(done.out, `${index}\n`);
-  const page = fs.readFileSync(index, 'utf8');
+  // The page of the category asked for is what is printed: gallery/<category>.html, not one page for everything.
+  const file = path.join(out, 'gallery', 'ref.html');
+  assert.equal(done.out, `${file}\n`);
+  const page = fs.readFileSync(file, 'utf8');
+
+  const index = fs.readFileSync(path.join(out, 'gallery', 'index.html'), 'utf8');
+  assert.deepEqual([...index.matchAll(/<a href="([a-z]+)\.html">/g)].map((found) => found[1]), ['filter', 'ref'], 'the categories drawn into the folder, in the order of the categories');
+  assert.ok(index.includes('<p>14 nodes at 513 × 513</p><p>an earlier adapter · profile max</p>'));
+  assert.ok(!index.includes('<article'), 'the index holds no node');
+  assert.equal(fs.readFileSync(path.join(out, 'gallery', 'filter.html'), 'utf8'), earlier, 'the page of another category is left as it was');
+  assert.ok(page.includes('<a href="index.html">all categories</a>'));
 
   const withOutputs = refNodes.filter((def) => def.outputs.length > 0);
   assert.ok(withOutputs.some((def) => def.type === 'ref/fbm') && withOutputs.some((def) => def.type === 'ref/talus'));
   assert.equal(page.split('<article ').length - 1, withOutputs.length, 'one article per reference node with outputs');
+  const hasSecond = (def: (typeof refNodes)[number]): boolean => def.maskable === true || def.inputs.some((port) => port.optional === true);
   for (const def of withOutputs) {
     assert.ok(page.includes(`id="${def.type.replace('/', '-')}"`) && page.includes(`<code class="type">${def.type}</code>`), `${def.type} is on the page`);
     const picture = fileOf(out, def.type, `out-${RES}.png`);
@@ -328,12 +345,31 @@ test('orogen gallery --category ref: every reference node rendered, and the page
     assert.deepEqual([png.width, png.height], expected, def.type);
     assert.ok(look(png, 0, Math.min(png.width, 512)).spread >= 40, `${def.type}: the picture of outputs[0] is not flat`);
     for (const port of def.outputs.slice(1)) assert.ok(fs.existsSync(fileOf(out, def.type, `${port.name}-${RES}.png`)), `${def.type}.${port.name}`);
-    // The second variant of a node with an optional mask: outputs[0] under a slope mask, shown below the plain picture.
-    const hasMask = def.maskable === true || def.inputs.some((port) => port.role === 'mask' && port.optional);
-    assert.equal(fs.existsSync(fileOf(out, def.type, `out-${RES}-masked.png`)), hasMask, `${def.type}: the masked variant`);
-    assert.equal(page.includes(`<img src="../nodes/${def.type}/out-${RES}-masked.png"`), hasMask, `${def.type}: the masked picture on the page`);
+    // The second variant of a node with an optional input or a mask: outputs[0] with them connected, shown below the plain picture.
+    assert.equal(fs.existsSync(fileOf(out, def.type, `out-${RES}-connected.png`)), hasSecond(def), `${def.type}: the connected variant`);
+    assert.equal(page.includes(`<img src="../nodes/${def.type}/out-${RES}-connected.png"`), hasSecond(def), `${def.type}: the connected picture on the page`);
   }
-  assert.deepEqual(withOutputs.filter((def) => def.maskable === true || def.inputs.some((port) => port.role === 'mask' && port.optional)).map((def) => def.type), ['ref/blur', 'ref/combine', 'ref/talus']);
+  assert.deepEqual(withOutputs.filter(hasSecond).map((def) => def.type), ['ref/blur', 'ref/colorize', 'ref/combine', 'ref/talus']);
+
+  // A node with two or more connected inputs shows what each was given: ref/combine its two terrains, and with
+  // its mask connected the mask as well. A node with one input shows none in its plain variant.
+  for (const [name, size] of [['input-a-129.png', RES], ['input-b-129.png', RES], ['input-a-129-connected.png', RES], ['input-mask-129-connected.png', RES]] as const) {
+    const given = read(fileOf(out, 'ref/combine', name));
+    assert.deepEqual([given.width, given.height], [size, size], name);
+    assert.ok(look(given, 0, size).spread >= 60, `${name} is not flat`);
+    assert.ok(page.includes(`<img src="../nodes/ref/combine/${name}"`), `${name} is on the page`);
+  }
+  assert.equal(fs.existsSync(fileOf(out, 'ref/blur', 'input-in-129.png')), false, 'one input: the terrain every picture starts from');
+  assert.ok(fs.existsSync(fileOf(out, 'ref/blur', 'input-mask-129-connected.png')), 'with its mask connected a maskable node has two');
+  // The mask is black and white: a picture of where a node is let act.
+  const mask = read(fileOf(out, 'ref/combine', 'input-mask-129-connected.png'));
+  let black = 0, white = 0;
+  for (let i = 0; i < RES * RES * 3; i += 3) {
+    if (mask.data[i] === 0) black++;
+    if (mask.data[i] === 255) white++;
+  }
+  assert.ok(black > 0.1 * RES * RES && white > 0.1 * RES * RES, `the mask selects ${white} texels in full and leaves ${black} out, of ${RES * RES}`);
+
   assert.match(page, new RegExp(`${withOutputs.length} nodes of the category ref at ${RES} × ${RES}`));
   assert.ok(page.includes('Checked on the adapter of this test, profile core.'));
   assert.match(done.err, new RegExp(`^orogen gallery: ${withOutputs.length}/${withOutputs.length} `, 'm'));

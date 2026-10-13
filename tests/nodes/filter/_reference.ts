@@ -60,6 +60,36 @@ export function gaussian(src: FieldData, sigma: number): FieldData {
   return { ...src, data };
 }
 
+/**
+ * What ops.smooth gives for a Gaussian of `sigma` texels, up to 8.5 of them (engine.md section 5): along the rows
+ * and then along the columns, at each texel the value of the line through the samples the field has within 4
+ * sigma, weighted by the Gaussian. Inside the field that is the Gaussian; at the border nothing is assumed
+ * beyond it, where `gaussian` reads the border texel again, and a slope stays the slope it is.
+ */
+export function smoothed(src: FieldData, sigma: number): FieldData {
+  const n = src.width;
+  const taps = Math.ceil(4 * sigma);
+  const pass = (from: ArrayLike<number>, index: (along: number, across: number) => number): Float64Array => {
+    const out = new Float64Array(n * n);
+    for (let across = 0; across < n; across++) {
+      for (let at0 = 0; at0 < n; at0++) {
+        const base = from[index(at0, across)]!;
+        let m0 = 0, m1 = 0, m2 = 0, t0 = 0, t1 = 0;
+        for (let i = Math.max(-taps, -at0); i <= Math.min(taps, n - 1 - at0); i++) {
+          const x = i / sigma;
+          const w = Math.exp(-0.5 * x * x);
+          const d = from[index(at0 + i, across)]! - base;
+          m0 += w; m1 += w * x; m2 += w * x * x; t0 += w * d; t1 += w * x * d;
+        }
+        out[index(at0, across)] = base + (m2 * t0 - m1 * t1) / (m0 * m2 - m1 * m1);
+      }
+    }
+    return out;
+  };
+  const rows = pass(src.data, (along, across) => across * n + along);
+  return { ...src, data: Float32Array.from(pass(rows, (along, across) => along * n + across)) };
+}
+
 /** The bilinear value at the fractional texel position (x, y), clamped to the field. */
 export function bilinearAt(f: FieldData, x: number, y: number, channel = 0): number {
   const n = f.width;
@@ -167,14 +197,20 @@ function softStep(gx: number, gy: number): readonly [number, number] {
   return [gx * scale, gy * scale];
 }
 
-/** The physical gradient at texel (x, y), in metres per metre: central differences, one-sided at the border, as slopeAt of the standard library. */
+/** The derivative per texel at texel `i` of the `last + 1` along one axis: central inside, the one-sided difference of second order at the two ends. */
+function difference(h: (i: number) => number, i: number, last: number): number {
+  if (i === 0) return 0.5 * (4 * h(1) - 3 * h(0) - h(2));
+  if (i === last) return -0.5 * (4 * h(last - 1) - 3 * h(last) - h(last - 2));
+  return 0.5 * (h(i + 1) - h(i - 1));
+}
+
+/** The physical gradient at texel (x, y), in metres per metre, as slopeAt of the standard library: central differences, of second order at the border too. */
 export function slopeAt(f: FieldData, x: number, y: number): readonly [number, number] {
   const last = f.width - 1;
   const cell = TERRAIN_SIZE / last;
-  const x0 = Math.max(x - 1, 0), x1 = Math.min(x + 1, last), y0 = Math.max(y - 1, 0), y1 = Math.min(y + 1, last);
   return [
-    ((at(f, x1, y) - at(f, x0, y)) * HEIGHT_RANGE) / (Math.max(x1 - x0, 1) * cell),
-    ((at(f, x, y1) - at(f, x, y0)) * HEIGHT_RANGE) / (Math.max(y1 - y0, 1) * cell),
+    (difference((i) => at(f, i, y), x, last) * HEIGHT_RANGE) / cell,
+    (difference((j) => at(f, x, j), y, last) * HEIGHT_RANGE) / cell,
   ];
 }
 

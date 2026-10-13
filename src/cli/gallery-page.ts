@@ -1,24 +1,36 @@
-// gallery/index.html (testing.md 8.6): the page a reviewer reads. Pure: it makes the text of the page from
-// what was rendered.
+// gallery/<category>.html and gallery/index.html (testing.md 8.6): the pages a reviewer reads. Pure: it makes
+// the text of a page from what was rendered.
 
 import type { NodeDef, ParamDef, PortDef } from '../core/api.ts';
 import type { NodeError } from '../core/runtime.ts';
-import { describeError, HARD_CEILING_MS, type RenderResult, type WrittenPicture } from './result.ts';
+import { describeError, HARD_CEILING_MS, type RenderResult, type WrittenInput, type WrittenPicture } from './result.ts';
 
 export interface GalleryEntry {
   readonly def: NodeDef;
   readonly result: RenderResult;
-  /** The masked variant (testing.md 2.4), for a node that has one and rendered without it; else null. */
-  readonly masked: RenderResult | null;
+  /** The connected variant (testing.md 2.4), for a node that has one and rendered without it; else null. */
+  readonly connected: RenderResult | null;
   /** The text of conformance/<category>/<name>.json in the output folder; null when it holds none. */
   readonly conformance: string | null;
 }
 
 export interface GalleryInfo {
   readonly res: number;
-  readonly category: string | null;
-  /** null: no node was rendered, so no device was opened. */
-  readonly device: { readonly adapter: string; readonly software: boolean; readonly profile: string } | null;
+  /** The category of the page: every entry is of it. */
+  readonly category: string;
+  readonly device: { readonly adapter: string; readonly software: boolean; readonly profile: string };
+}
+
+/** What the index says of one category page. A page carries it, so that the index can list pages of earlier runs. */
+export interface GallerySummary {
+  readonly category: string;
+  readonly nodes: number;
+  /** Nodes that failed and count for the exit code. */
+  readonly failed: number;
+  readonly res: number;
+  readonly adapter: string;
+  readonly software: boolean;
+  readonly profile: string;
 }
 
 /** A node whose defaults cannot run because it reads a file: listed with its error, and not what makes the gallery fail. */
@@ -26,7 +38,7 @@ const needsFile = (def: NodeDef): boolean => def.params.some((param) => param.ki
 
 /** Whether this entry makes `gallery` exit with 1. */
 export function countsAsFailure(entry: GalleryEntry): boolean {
-  return (entry.result.status !== 'ok' || (entry.masked !== null && entry.masked.status !== 'ok')) && !needsFile(entry.def);
+  return (entry.result.status !== 'ok' || (entry.connected !== null && entry.connected.status !== 'ok')) && !needsFile(entry.def);
 }
 
 const esc = (text: unknown): string => String(text)
@@ -168,15 +180,28 @@ function image(picture: WrittenPicture, alt: string): string {
   return `<a href="${src}"><img src="${src}" width="${picture.width}" height="${picture.height}" alt="${esc(alt)}" loading="lazy"></a>`;
 }
 
-/** The second figure of a node with a masked variant: outputs[0] with the optional mask inputs connected, or why there is none. */
-function maskedFigure(def: NodeDef, masked: RenderResult | null, primary: string): string {
-  if (masked === null) return '';
-  const main = masked.pictures[primary];
-  if (masked.status !== 'ok' || main === undefined) return `<div class="failed"><p>Not rendered with its mask connected.</p>${masked.errors.map((error) => `<pre>${esc(describeError(error, false))}</pre>`).join('')}</div>`;
-  const view = masked.views[primary];
-  const inputs = [...def.inputs.filter((port) => port.role === 'mask' && port.optional).map((port) => port.name), ...(def.maskable ? ['mask'] : [])];
-  return `<figure class="masked">${image(main, `${primary} of ${def.type} under a mask`)}${view ? image(view, `${primary} of ${def.type} under a mask, over its height input`) : ''}`
-    + `<figcaption>${esc(primary)} with ${inputs.map((name) => `<code>${esc(name)}</code>`).join(', ')} connected to a slope mask of the first terrain's broad shape</figcaption></figure>`;
+const GIVEN: Readonly<Record<WrittenInput['kind'], string>> = { terrain: 'a terrain', mask: 'the mask', color: 'a coloring' };
+
+/** What the node was given, beside what it made of it: one small picture per connected input, where there are two or more. */
+function givenRow(type: string, inputs: readonly WrittenInput[]): string {
+  if (inputs.length === 0) return '';
+  const items = inputs.map((input) => {
+    const src = `../${esc(input.file)}`;
+    return `<a class="given" href="${src}"><img src="${src}" width="${input.width}" height="${input.height}" alt="${esc(`what the input ${input.port} of ${type} was given`)}" loading="lazy">`
+      + `<span><code>${esc(input.port)}</code>: ${GIVEN[input.kind]}</span></a>`;
+  });
+  return `<div class="inputs">${items.join('')}</div>`;
+}
+
+/** The second figure of a node with a connected variant: outputs[0] with the optional inputs and the mask connected, or why there is none. */
+function connectedFigure(def: NodeDef, connected: RenderResult | null, primary: string): string {
+  if (connected === null) return '';
+  const main = connected.pictures[primary];
+  if (connected.status !== 'ok' || main === undefined) return `<div class="failed"><p>Not rendered with its optional inputs connected.</p>${connected.errors.map((error) => `<pre>${esc(describeError(error, false))}</pre>`).join('')}</div>`;
+  const view = connected.views[primary];
+  const inputs = [...def.inputs.filter((port) => port.optional).map((port) => port.name), ...(def.maskable ? ['mask'] : [])];
+  return `<figure class="connected">${givenRow(def.type, connected.inputs)}${image(main, `${primary} of ${def.type} with its optional inputs connected`)}${view ? image(view, `${primary} of ${def.type} with its optional inputs connected, over its terrain`) : ''}`
+    + `<figcaption>${esc(primary)} with ${inputs.map((name) => `<code>${esc(name)}</code>`).join(', ')} connected</figcaption></figure>`;
 }
 
 function nodeArticle(entry: GalleryEntry, res: number): string {
@@ -197,14 +222,14 @@ function nodeArticle(entry: GalleryEntry, res: number): string {
     ...result.engineErrors.map((message) => `<span class="failed">GPU error outside every scope: ${esc(message)}</span>`),
   ] : [];
   return [
-    `<article class="node${result.status === 'ok' && (entry.masked === null || entry.masked.status === 'ok') ? '' : ' broken'}" id="${esc(anchor(def.type))}">`,
+    `<article class="node${result.status === 'ok' && (entry.connected === null || entry.connected.status === 'ok') ? '' : ' broken'}" id="${esc(anchor(def.type))}">`,
     `<header><h3>${esc(def.title)}</h3><code class="type">${esc(def.type)}</code>${flags}</header>`,
     `<p class="description">${esc(def.description)}</p>`,
     def.keywords && def.keywords.length > 0 ? `<p class="keywords">${def.keywords.map((word) => `<span>${esc(word)}</span>`).join('')}</p>` : '',
     main !== undefined
-      ? `<figure>${image(main, `${primary} of ${def.type}`)}${view ? image(view, `${primary} of ${def.type} over its height input`) : ''}<figcaption>${esc(primary)} at ${res} × ${res}: ${measuredItems.join(' · ')}</figcaption></figure>`
+      ? `<figure>${givenRow(def.type, result.inputs)}${image(main, `${primary} of ${def.type}`)}${view ? image(view, `${primary} of ${def.type} over its terrain`) : ''}<figcaption>${esc(primary)} at ${res} × ${res}: ${measuredItems.join(' · ')}</figcaption></figure>`
       : errorBox(def, result),
-    maskedFigure(def, entry.masked, primary),
+    connectedFigure(def, entry.connected, primary),
     '<h4>Ports</h4>',
     `<table><thead><tr><th></th><th>Name</th><th>Label</th><th>Type</th></tr></thead><tbody>\n${portRows('input', def.inputs, {})}\n${portRows('output', def.outputs, result.pictures)}\n</tbody></table>`,
     '<h4>Parameters</h4>',
@@ -242,6 +267,14 @@ code, pre { font: 13px/1.45 ui-monospace, monospace; }
 figure { margin: 16px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
 figure a { max-width: 100%; }
 figcaption { flex-basis: 100%; }
+.inputs { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; }
+.given { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--quiet); text-decoration: none; }
+.given img { width: 168px; height: 168px; }
+.pages { list-style: none; padding: 0; margin: 24px 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.pages li { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+.pages li.broken { border-color: var(--bad); }
+.pages a { font-size: 18px; font-weight: 600; }
+.pages p { margin: 4px 0 0; font-size: 13px; color: var(--quiet); }
 img { display: block; max-width: 100%; height: auto; border-radius: 4px; background: #1a1a1a; }
 figcaption { font-size: 13px; margin-top: 6px; }
 .failed { color: var(--bad); }
@@ -260,37 +293,91 @@ th { color: var(--quiet); font-weight: 500; }
 details pre { overflow-x: auto; padding: 12px; border: 1px solid var(--line); border-radius: 4px; }
 `;
 
-/** gallery/index.html. Pictures are linked relative to the page, which lies one folder below the output folder. */
-export function galleryPage(info: GalleryInfo, entries: readonly GalleryEntry[]): string {
-  const categories = [...new Set(entries.map((entry) => entry.def.category))];
-  const failed = entries.filter((entry) => entry.result.status !== 'ok');
-  const summary = [
-    `${entries.length} ${entries.length === 1 ? 'node' : 'nodes'}${info.category !== null ? ` of the category ${info.category}` : ''} at ${info.res} × ${info.res}`,
-    ...(failed.length > 0 ? [`<span class="failed">${failed.length} not rendered</span>`] : []),
-    ...(info.device ? [`${esc(info.device.adapter)}${info.device.software ? ' (a software adapter)' : ''}`, `profile ${esc(info.device.profile)}`] : []),
-  ].join(' · ');
-  const sections = categories.map((category) => [
-    `<h2 id="${esc(category)}">${esc(category)}</h2>`,
-    ...entries.filter((entry) => entry.def.category === category).map((entry) => nodeArticle(entry, info.res)),
-  ].join('\n'));
-  return `<!doctype html>
+const SUMMARY_META = 'orogen-gallery';
+
+/** What the index says of the page of `entries`. */
+export function gallerySummary(info: GalleryInfo, entries: readonly GalleryEntry[]): GallerySummary {
+  return {
+    category: info.category, nodes: entries.length, failed: entries.filter(countsAsFailure).length, res: info.res,
+    adapter: info.device.adapter, software: info.device.software, profile: info.device.profile,
+  };
+}
+
+/** The summary a category page carries; null when the text is no such page. */
+export function readGallerySummary(html: string): GallerySummary | null {
+  const found = new RegExp(`<meta name="${SUMMARY_META}" content="([^"]*)">`).exec(html);
+  if (!found) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(found[1]!.replaceAll('&quot;', '"').replaceAll('&#39;', "'").replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&'));
+  } catch {
+    return null;
+  }
+  if (!isRecord(value)) return null;
+  const { category, nodes, failed, res, adapter, software, profile } = value;
+  const count = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0;
+  if (typeof category !== 'string' || !/^[a-z]+$/.test(category) || !count(nodes) || !count(failed) || !count(res)) return null;
+  if (typeof adapter !== 'string' || typeof software !== 'boolean' || typeof profile !== 'string') return null;
+  return { category, nodes, failed, res, adapter, software, profile };
+}
+
+const page = (title: string, head: string, header: string, main: string): string => `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Orogen node gallery</title>
+${head}<title>${esc(title)}</title>
 <style>${STYLE}</style>
 </head>
 <body>
 <header>
-<h1>Orogen node gallery</h1>
-<p class="quiet">${summary}</p>
-<nav>${entries.map((entry) => `<a href="#${esc(anchor(entry.def.type))}"${entry.result.status === 'ok' ? '' : ' class="failed"'}>${esc(entry.def.type)}</a>`).join('')}</nav>
+${header}
 </header>
 <main>
-${entries.length > 0 ? sections.join('\n') : '<p>The registry has no node with outputs in this selection.</p>'}
+${main}
 </main>
 </body>
 </html>
 `;
+
+const drawnOn = (summary: Pick<GallerySummary, 'adapter' | 'software' | 'profile'>): string =>
+  `${esc(summary.adapter)}${summary.software ? ' (a software adapter)' : ''} · profile ${esc(summary.profile)}`;
+
+/**
+ * gallery/<category>.html: the nodes of one category. Pictures are linked relative to the page, which lies one
+ * folder below the output folder.
+ */
+export function galleryPage(info: GalleryInfo, entries: readonly GalleryEntry[]): string {
+  const failed = entries.filter((entry) => entry.result.status !== 'ok');
+  const summary = [
+    `${entries.length} ${entries.length === 1 ? 'node' : 'nodes'} of the category ${esc(info.category)} at ${info.res} × ${info.res}`,
+    ...(failed.length > 0 ? [`<span class="failed">${failed.length} not rendered</span>`] : []),
+    drawnOn(info.device),
+  ].join(' · ');
+  return page(
+    `Orogen node gallery: ${info.category}`,
+    `<meta name="${SUMMARY_META}" content="${esc(JSON.stringify(gallerySummary(info, entries)))}">\n`,
+    [
+      `<h1>Orogen node gallery: ${esc(info.category)}</h1>`,
+      `<p class="quiet">${summary} · <a href="index.html">all categories</a></p>`,
+      `<nav>${entries.map((entry) => `<a href="#${esc(anchor(entry.def.type))}"${entry.result.status === 'ok' ? '' : ' class="failed"'}>${esc(entry.def.type)}</a>`).join('')}</nav>`,
+    ].join('\n'),
+    entries.map((entry) => nodeArticle(entry, info.res)).join('\n'),
+  );
+}
+
+/** gallery/index.html: a link to the page of every category that has been drawn into the folder, in the order given. */
+export function galleryIndex(pages: readonly GallerySummary[]): string {
+  const nodes = pages.reduce((sum, summary) => sum + summary.nodes, 0);
+  const items = pages.map((summary) => [
+    `<li${summary.failed > 0 ? ' class="broken"' : ''}><a href="${esc(summary.category)}.html">${esc(summary.category)}</a>`,
+    `<p>${summary.nodes} ${summary.nodes === 1 ? 'node' : 'nodes'} at ${summary.res} × ${summary.res}${summary.failed > 0 ? ` · <span class="failed">${summary.failed} failed</span>` : ''}</p>`,
+    `<p>${drawnOn(summary)}</p></li>`,
+  ].join(''));
+  return page(
+    'Orogen node gallery',
+    '',
+    `<h1>Orogen node gallery</h1>\n<p class="quiet">${pages.length} ${pages.length === 1 ? 'category' : 'categories'}, ${nodes} ${nodes === 1 ? 'node' : 'nodes'}. Each page is as its category was last drawn.</p>`,
+    pages.length > 0 ? `<ul class="pages">\n${items.join('\n')}\n</ul>` : '<p>No category has been drawn into this folder.</p>',
+  );
 }

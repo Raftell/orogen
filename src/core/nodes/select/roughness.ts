@@ -1,7 +1,6 @@
 // src/core/nodes/select/roughness.ts
-import { defineKernel, defineNode, param } from '../../api.ts';
+import { defineKernel, defineNode, ops, param } from '../../api.ts';
 import { invert } from './_params.ts';
-import { scaleKernels, smoothed } from './_scale.ts';
 import { selectShape } from './_wgsl.ts';
 
 /**
@@ -71,7 +70,7 @@ export default defineNode({
     param.strength({ default: 0.5, help: 'Larger values count gentler ground as rough, until every unevenness is fully selected.' }),
     invert,
   ],
-  kernels: [deviation, mask, ...scaleKernels],
+  kernels: [deviation, mask],
   evaluate(ctx) {
     const { strength } = ctx.params;
     const radius = Math.max(ctx.params.radius, 0);   // soft: any finite number can arrive
@@ -79,24 +78,24 @@ export default defineNode({
 
     // What stands above or below the terrain smoothed over the radius, squared, and the mean of that over a
     // patch of a few radii. Below a quarter of a texel nothing is smoothed and nothing stands out: the mask is empty.
-    const around = smoothed(ctx, src, radius);
+    const around = ops.smooth(ctx, src, radius);
     const squares = ctx.alloc('field');
-    ctx.run(deviation, { in: { height: src, around: around.field }, out: { out: squares } });
-    if (around.owned) ctx.release(around.field);
+    ctx.run(deviation, { in: { height: src, around }, out: { out: squares } });
+    ctx.release(around);
     // Near the border the smoothed surface has fewer samples on one side and lies closer to the terrain than
     // it does inside: the squares there are too small, and are not counted.
-    const variance = smoothed(ctx, squares, PATCH * radius, { level: true, skip: MARGIN * radius });
-    if (variance.owned) ctx.release(squares);
+    const variance = ops.smooth(ctx, squares, PATCH * radius, { mean: true, skip: MARGIN * radius });
+    ctx.release(squares);
 
     // Relief in metres over the radius in metres. The strength acts as its cube: 0 selects nothing.
     const perRadius = ctx.heightRange / Math.max(ctx.lengthToMetres(radius), 1e-6 * ctx.terrainSize);
     const out = ctx.alloc('field');
     ctx.run(mask, {
-      in: { variance: variance.field },
+      in: { variance },
       out: { out },
       params: { gain: (perRadius * (2 * strength) ** 3) / FULL_ROUGHNESS, invert: ctx.params.invert },
     });
-    ctx.release(variance.field);
+    ctx.release(variance);
     ctx.output('out', out);
   },
 });

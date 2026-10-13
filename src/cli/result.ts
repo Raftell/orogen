@@ -26,10 +26,15 @@ export interface RenderResult {
   readonly pictures: Readonly<Record<string, WrittenPicture>>;
   /** The `3d` view of each colour output that has one, by port name. */
   readonly views: Readonly<Record<string, WrittenPicture>>;
+  /** The pictures of what the node's inputs were given, where they were asked for and the node has two or more connected. */
+  readonly inputs: readonly WrittenInput[];
 }
 
 /** A picture in the output folder: its path under that folder with `/`, and its size in pixels. */
 export interface WrittenPicture { readonly file: string; readonly width: number; readonly height: number }
+
+/** The picture of what one input was given: a terrain, the mask or a colouring. */
+export interface WrittenInput extends WrittenPicture { readonly port: string; readonly kind: 'terrain' | 'mask' | 'color' }
 
 /** Whether the run broke what keeps a GPU pre-emptible: a slice above the hard ceiling, or an error outside every scope. */
 export function overran(result: Pick<RenderResult, 'longestSliceMs' | 'engineErrors'>): boolean {

@@ -35,9 +35,10 @@ export interface OutputPicture {
 
 /**
  * The pictures of one output, the main one first. A field is a `sheet`; a mask or a data field is drawn over
- * the node's first height input when it has one, and a data field with the range of its own values, as the
- * conformance suite draws them. A colour is a `color` picture and a `3d` view of that height input with the
- * colour drawn over it. `crop` adds the centre window of that many texels at one texel per pixel.
+ * `terrain` when there is one, and a data field with the range of its own values, as the conformance suite
+ * draws them. A colour is a `color` picture and a `3d` view of `terrain` with the colour drawn over it. `terrain`
+ * is the node's first output where that is a height, else its first height input (testing.md 8.6). `crop` adds
+ * the centre window of that many texels at one texel per pixel.
  */
 export function picturesOf(
   port: Pick<PortDef, 'role'>, field: Raster, terrain: Raster | null,
@@ -56,4 +57,13 @@ export function picturesOf(
   out.push({ suffix: '', draw: () => drawPreview(field, { style: 'sheet', ...over }) });
   if (window) out.push({ suffix: '-crop', draw: () => drawPreview(field, { style: 'hillshade', ...over, crop: window }) });
   return out;
+}
+
+/**
+ * The picture of what an input of a rendered node was given, at one pixel per texel: a terrain shaded, the mask
+ * black to white, a colouring as the colours it holds.
+ */
+export function inputPicture(kind: 'terrain' | 'mask' | 'color', field: Raster, scale: { readonly terrainSize: number; readonly heightRange: number }): Picture {
+  if (field.kind === 'color') return drawPreview(field, { style: 'color' });
+  return drawPreview(field, kind === 'mask' ? { style: 'grey' } : { style: 'hillshade', ...scale });
 }

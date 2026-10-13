@@ -23,6 +23,18 @@ test('registry: one instance of every node of the product evaluates at 129', asy
     assert.ok(instances.length >= 1, `the document holds an instance of ${def.type}`);
   }
 
+  // The first terrain is the product's own, smooth valleys under rough crests (testing.md 2.4): its instance
+  // feeds the first height input of the other nodes, and the mask is a slope mask of its first two octaves.
+  const typeOf = (id: string): string => doc.nodes[id]!.type;
+  const eroded = Object.keys(doc.nodes).filter((id) => typeOf(id) === 'generate/eroded-noise');
+  if (byType.has('generate/eroded-noise')) {
+    const first = eroded.find((id) => doc.nodes[id]!.params.octaves === 8), broad = eroded.find((id) => doc.nodes[id]!.params.octaves === 2);
+    assert.ok(first !== undefined && broad !== undefined && eroded.length === 2, `the document holds the first terrain and its broad shape: ${eroded.length} nodes of generate/eroded-noise`);
+    const fed = Object.values(doc.edges).filter((edge) => edge.from.node === first && edge.to.port === 'in').map((edge) => typeOf(edge.to.node));
+    for (const type of ['filter/blur', 'select/slope', 'adjust/levels']) if (byType.has(type)) assert.ok(fed.includes(type), `${type} reads the first terrain`);
+    assert.deepEqual(Object.values(doc.edges).filter((edge) => edge.from.node === broad).map((edge) => typeOf(edge.to.node)), ['ref/slope-mask']);
+  }
+
   // Every node is a target, and so is every output: nothing of the product is left unevaluated.
   const ids = Object.keys(doc.nodes);
   const outputs = ids.flatMap((id) => (byType.get(doc.nodes[id]!.type)?.outputs ?? []).map((port) => ({ id, port, target: `${id}.${port.name}` })));

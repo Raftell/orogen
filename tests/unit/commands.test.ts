@@ -51,7 +51,7 @@ test('newDoc: the settings defaults of 4.2 and no nodes, a new object each time'
   assert.deepEqual(newDoc(), {
     format: 'orogen',
     version: 1,
-    settings: { terrainSize: 5000, heightRange: 2500, seed: 0, buildResolution: 4033, previewLevel: 2, seaLevel: 0 },
+    settings: { terrainSize: 4032, heightRange: 1008, seed: 0, buildResolution: 4033, previewLevel: 2, seaLevel: 0 },
     nodes: {}, edges: {}, groups: {}, ui: {},
   });
   assert.notEqual(newDoc().settings, newDoc().settings);
@@ -531,7 +531,7 @@ test('setSettings: writes the members of the patch, validated', () => {
   assert.equal(transact(doc, (d) => setSettings(d, { buildResolution: 1000 })).doc.settings.buildResolution, 993);
 
   noChange(doc, (d) => setSettings(d, {}));
-  noChange(doc, (d) => setSettings(d, { terrainSize: 5000, previewLevel: 2 }));
+  noChange(doc, (d) => setSettings(d, { terrainSize: 4032, previewLevel: 2 }));
   noChange(doc, (d) => setSettings(d, { terrainSize: undefined }));
 });
 

@@ -224,10 +224,16 @@ function checkParam(p: ParamDef, params: readonly ParamDef[], fail: (problem: st
     if (!other || other === p || (other.kind !== 'bool' && other.kind !== 'enum' && other.kind !== 'int')) {
       fail(`visibleWhen names "${when.param}", which is not another bool, enum or int param of the node`);
     }
-    const possible = other.kind === 'bool' ? typeof when.equals === 'boolean'
-      : other.kind === 'int' ? Number.isInteger(when.equals)
-      : other.options.some((o) => o.value === when.equals);
-    if (!possible) fail(`visibleWhen compares "${when.param}" with ${JSON.stringify(when.equals)}, a value it never has`);
+    const possible = (value: unknown): boolean => (other.kind === 'bool' ? typeof value === 'boolean'
+      : other.kind === 'int' ? Number.isInteger(value) && (value as number) >= other.min && (value as number) <= other.max
+      : other.options.some((o) => o.value === value));
+    // One value, or a list of them: the control shows while the param has any of the list.
+    const values: readonly unknown[] = Array.isArray(when.equals) ? when.equals : [when.equals];
+    if (values.length === 0) fail(`visibleWhen compares "${when.param}" with an empty list, which never shows the control`);
+    for (const value of values) {
+      if (!possible(value)) fail(`visibleWhen compares "${when.param}" with ${JSON.stringify(value)}, a value it never has`);
+    }
+    if (new Set(values).size !== values.length) fail(`visibleWhen lists a value of "${when.param}" twice`);
   }
 }
 

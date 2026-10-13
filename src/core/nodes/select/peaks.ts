@@ -1,6 +1,5 @@
 // src/core/nodes/select/peaks.ts
-import { defineKernel, defineNode, param } from '../../api.ts';
-import { scaleKernels, smoothed } from './_scale.ts';
+import { defineKernel, defineNode, ops, param } from '../../api.ts';
 import { selectShape } from './_wgsl.ts';
 
 /**
@@ -50,19 +49,19 @@ export default defineNode({
       help: 'Selects ground that lies below its surroundings instead: valley floors and hollows.',
     },
   ],
-  kernels: [rise, ...scaleKernels],
+  kernels: [rise],
   evaluate(ctx) {
     const { radius, feather } = ctx.params;
     const src = ctx.input('in');
     // The surroundings of a point are the terrain smoothed over the radius: their mean, weighted by distance.
-    const around = smoothed(ctx, src, radius);
+    const around = ops.smooth(ctx, src, Math.max(radius, 0));   // soft: any finite number can arrive
     const out = ctx.alloc('field');
     ctx.run(rise, {
-      in: { height: src, around: around.field },
+      in: { height: src, around },
       out: { out },
       params: { side: ctx.params.invert ? -1 : 1, level: LEVEL, feather: Math.max(feather, 0) },
     });
-    if (around.owned) ctx.release(around.field);
+    ctx.release(around);
     ctx.output('out', out);
   },
 });

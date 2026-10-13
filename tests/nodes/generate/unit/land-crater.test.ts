@@ -36,6 +36,39 @@ test('generate/land-crater: relief smaller than the crater is no part of the gro
   }
 });
 
+test('generate/land-crater: the three coarse grids a project can have give nearly one ground under a crater that spans their cells', () => {
+  // The coarsest ladder level has 33 vertices a side below 513, 64 below 4033 and 128 below 8129 (engine.md 1.9
+  // rule 1): the same graph is fitted on another grid in another project. On the `terrain` fixture of the
+  // harness, whose relief is 0.79 high, the fitted height stays within 0.03 for craters of radius 0.1 to 0.25,
+  // wherever they lie.
+  const TAU = 2 * Math.PI;
+  const fixture = (u: number, v: number): number =>
+    0.5 + 0.22 * Math.sin(TAU * (u + 0.5 * v) + 0.3) + 0.10 * Math.sin(TAU * (-2 * u + 3 * v) + 1.7)
+    + 0.05 * Math.sin(TAU * (5 * u + 4 * v) + 4.1) + 0.025 * Math.sin(TAU * (9 * u - 7 * v) + 2.9);
+  const grids = [33, 64, 128].map((size) => terrainOf(size, fixture));
+  let widest = 0;
+  for (const radius of [0.1, 0.14, 0.18, 0.25]) {
+    for (let i = 1; i < 20; i++) {
+      for (let j = 1; j < 20; j++) {
+        const x = i / 20, y = j / 20;
+        const heights = grids.map((grid) => groundAt(grid, x, y, radius, 0.3));
+        assert.ok(heights.every((ground) => ground.known === 1), `radius ${radius}: the ground is known on every grid`);
+        const spread = Math.max(...heights.map((ground) => ground.height)) - Math.min(...heights.map((ground) => ground.height));
+        widest = Math.max(widest, spread);
+        assert.ok(spread < 0.035, `radius ${radius} at (${x}, ${y}): the fitted heights are ${heights.map((ground) => ground.height.toFixed(4)).join(', ')}`);
+      }
+    }
+  }
+  // The grids are not one grid: the fits do differ, by a few hundredths at the most.
+  assert.ok(widest > 0.01, `the widest spread is ${widest}`);
+  // A crater two cells of the coarsest grid in radius is fitted in full; below that the fit fades out, at a
+  // radius that halves with the cell.
+  for (const [i, last] of [32, 63, 127].entries()) {
+    assert.equal(groundAt(grids[i]!, 0.5, 0.5, 2 / last, 0.3).known, 1);
+    assert.equal(groundAt(grids[i]!, 0.5, 0.5, 0.5 / last, 0.3).known, 0);
+  }
+});
+
 test('generate/land-crater: the ground tilts by no more than the limit from the center to the rim', () => {
   const terrain = terrainOf(65, (u) => 2 * u);
   const free = groundAt(terrain, 0.5, 0.5, 0.1, 1);
