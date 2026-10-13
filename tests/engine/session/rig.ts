@@ -278,6 +278,17 @@ export interface SessionSetup {
   readonly buildTargets?: (doc: GraphDoc) => EvalTarget[];
   /** Called with the session before anything else subscribes to it. */
   readonly first?: (session: EngineSession) => void;
+  /**
+   * What the session is told an evaluation took, in its result and in its eval-end event, in place of the wall
+   * time the engine measured. The level of the next draft follows from it (runtime.md 7.3 rule 4). Called when the
+   * evaluation ends; undefined leaves the engine's time.
+   */
+  readonly tookMs?: () => number | undefined;
+  /**
+   * The last timing of a node as the session is told it: what predicts a node too slow for an idle thumbnail
+   * (7.3 rule 9). Default: no node has one, so that none is left out because this machine was slow.
+   */
+  readonly lastTiming?: (nodeId: string) => { readonly resolution: number; readonly wallMs: number } | null;
 }
 
 /** What a session of this file left in the pool when it was disposed (testing.md 2.8). A leak fails the file, whichever test made it. */
@@ -286,8 +297,15 @@ after(() => {
   assert.deepEqual(leaks, [], 'every session left its pool empty at dispose');
 });
 
-/** A wait that no event ends is a failure to describe, not to sit through until the runner's own limit. */
-const BACKSTOP_MS = 120_000;
+/** A wait that nothing ends is a failure to describe, not to sit through until the runner's own limit. It bounds no duration that a test relies on. */
+export const BACKSTOP_MS = 120_000;
+
+/** `work`, or a failure that says `what` did not happen. */
+export function within<T>(work: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`Not within ${BACKSTOP_MS / 1000} s: ${what}`)), BACKSTOP_MS); });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
 
 export async function startSession(setup: SessionSetup = {}): Promise<SessionRig> {
   const gpu = setup.gpu ?? await testGpu();
@@ -312,8 +330,20 @@ export async function startSession(setup: SessionSetup = {}): Promise<SessionRig
   };
   // The session's engine is the real one seen through its calls. It disposes its engine; the ledger is read
   // just before, with the cache and the free lists emptied, for the leak check (testing.md 2.8).
+  const evaluate: Engine['evaluate'] = async (doc, targets, opts) => {
+    if (!setup.tookMs) return real.evaluate(doc, targets, opts);
+    let told: number | undefined;
+    const telling = (wallMs: number): number => (told ??= setup.tookMs!() ?? wallMs);
+    const { onEvent } = opts;
+    const result = await real.evaluate(doc, targets, {
+      ...opts,
+      ...(onEvent ? { onEvent: (e) => onEvent(e.type === 'eval-end' ? { ...e, wallMs: telling(e.wallMs) } : e) } : {}),
+    });
+    return { ...result, timing: { ...result.timing, wallMs: telling(result.timing.wallMs) } };
+  };
   const engine: Engine = Object.create(real, {
-    evaluate: { value: counted(real.evaluate.bind(real)) },
+    evaluate: { value: counted(evaluate) },
+    lastTiming: { value: setup.lastTiming ?? (() => null) },
     keys: { value: counted(real.keys.bind(real)) },
     stats: { value: counted(real.stats.bind(real)) },
     onOverrun: {

@@ -12,17 +12,20 @@ import type {
 } from '../../../src/core/runtime.ts';
 import { createSessionClient, serveSession } from '../../../src/core/session/protocol.ts';
 import { testGpu } from '../gpu/rig.ts';
-import { doc, PREVIEW, resetSlow, startSession, THUMBNAIL } from './rig.ts';
+import { BACKSTOP_MS, doc, PREVIEW, resetSlow, startSession, THUMBNAIL } from './rig.ts';
 
 const gpu = await testGpu();
 
-/** Lets the messages that are under way arrive: a message is delivered in a later turn of the event loop. */
+/**
+ * Lets the messages that are under way arrive: a message is delivered in a later turn of the event loop. Some
+ * are the answer to GPU work, which takes as many turns as the adapter is slow: the wait has a backstop, not a count.
+ */
 async function delivered(until: () => boolean, what: string): Promise<void> {
-  for (let turn = 0; turn < 10_000; turn++) {
-    if (until()) return;
+  const backstop = performance.now() + BACKSTOP_MS;
+  while (!until()) {
+    if (performance.now() > backstop) assert.fail(`the messages did not arrive: ${what}`);
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
-  assert.fail(`the messages did not arrive: ${what}`);
 }
 
 function sameBytes(a: ArrayLike<number>, b: ArrayLike<number>): string | null {

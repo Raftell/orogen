@@ -182,52 +182,44 @@ test('a requested node that fails gets one idle evaluation, not one after anothe
 
 test('a node predicted above 100 ms is not run for its thumbnail alone, unless it is cached', async () => {
   resetSlow();
-  const t = await startSession();
+  // What a node took is the machine's to say. The session is told here, and the rule is held to those numbers:
+  // the prediction is the last timing scaled by the number of texels (5.10).
+  const timings = new Map<string, { resolution: number; wallMs: number }>([
+    ['level', { resolution: THUMBNAIL, wallMs: 1 }], ['side', { resolution: THUMBNAIL, wallMs: 1 }],
+  ]);
+  const t = await startSession({ lastTiming: (id) => timings.get(id) ?? null });
   try {
-    /** level, `far` (slow, reads level) and `side`; the view shows `far` or level. */
-    const lab = (p: { iterations: number; side?: number; view?: string; id?: string; settings?: object }) => doc({
+    /** level, `far` (reads level) and `side`; the view shows `far` or level. */
+    const lab = (p: { iterations: number; side?: number; view?: string }) => doc({
       level: { type: 'ref/constant', params: { value: 0.25 } },
-      [p.id ?? 'far']: { type: 'ref/slow', params: { iterations: p.iterations }, inputs: { in: 'level.out' } },
+      far: { type: 'ref/slow', params: { iterations: p.iterations }, inputs: { in: 'level.out' } },
       side: { type: 'ref/gain', params: { gain: p.side ?? 3 }, inputs: { in: 'level.out' } },
-    }, { height: { node: p.view ?? 'level', port: 'out' } }, p.settings);
-
-    // How many passes take well over 100 ms at the thumbnail resolution on this adapter: measured with a node of
-    // another id, by real evaluations there, until one took 250 ms. The count at most quadruples per round.
+    }, { height: { node: p.view ?? 'level', port: 'out' } });
     let revision = 0;
-    let iterations = 2000;
-    for (let round = 0; round < 12; round++) {
-      t.session.setDocument(lab({ iterations, id: 'probe', view: 'probe', settings: { previewLevel: 2 } }), ++revision);
-      await t.next('view-updated', (e) => e.revision === revision);
-      const took = t.engine.lastTiming('probe')!;
-      assert.equal(took.resolution, THUMBNAIL);
-      if (took.wallMs >= 250) break;
-      iterations = Math.ceil(iterations * Math.min(4, Math.max(1.5, 300 / Math.max(took.wallMs, 1))));
-    }
-    assert.ok(t.engine.lastTiming('probe')!.wallMs >= 250, `${iterations} passes take ${t.engine.lastTiming('probe')!.wallMs} ms`);
-    await t.idle();
+    const idleRequests = (from: number) => t.of('request-start', from).filter((e) => e.purpose === 'thumbnails');
 
-    // 1. `far` has never run: nothing predicts it slow, so the idle evaluation runs it, and its time is measured.
+    // 1. `far` has no timing: nothing predicts it slow, so the idle evaluation runs it.
     t.session.requestThumbnails(['far', 'side']);
     let from = t.mark();
-    t.session.setDocument(lab({ iterations }), ++revision);
+    t.session.setDocument(lab({ iterations: 8 }), ++revision);
     const keysA = (await t.next('keys')).keys;
     const first = await thumbnails(t, ['far', 'side'], from);
     await t.idle();
     assert.equal(first.far!.contentKey, keysA.far);
-    const measured = t.engine.lastTiming('far')!;
-    assert.equal(measured.resolution, THUMBNAIL);
-    assert.ok(measured.wallMs > 100, `far took ${measured.wallMs} ms at the thumbnail resolution`);
+    assert.deepEqual(endings(t.events, idleRequests(from)[0]!.requestId), { level: 'run', far: 'run', side: 'run' });
     const runsBefore = slow.runs.get(THUMBNAIL)!;
 
-    // 2. With another parameter it is predicted slow and is not cached: it is left out, and `side` gets its thumbnail.
+    // 2. It took 100.5 ms there. With another parameter it is predicted slow and is not cached: it is left out,
+    // and `side` gets its thumbnail.
+    timings.set('far', { resolution: THUMBNAIL, wallMs: 100.5 });
     from = t.mark();
-    t.session.setDocument(lab({ iterations: iterations + 1, side: 4 }), ++revision);
+    t.session.setDocument(lab({ iterations: 9, side: 4 }), ++revision);
     const keysB = (await t.next('keys')).keys;
     assert.notEqual(keysB.far, keysA.far);
     const second = await thumbnails(t, ['side'], from);
     await t.idle();
     assert.equal(second.side!.contentKey, keysB.side);
-    const idle = t.of('request-start', from).filter((e) => e.purpose === 'thumbnails');
+    const idle = idleRequests(from);
     assert.equal(idle.length, 2, 'one evaluation that stopped before its first node, and one without the slow node');
     assert.deepEqual(endings(t.events, idle[0]!.requestId), { level: 'skipped:aborted', far: 'skipped:aborted', side: 'skipped:aborted' });
     assert.deepEqual(endings(t.events, idle[1]!.requestId), { level: 'cached', side: 'run' });
@@ -236,23 +228,39 @@ test('a node predicted above 100 ms is not run for its thumbnail alone, unless i
 
     // 3. A view evaluation runs it, and the thumbnail comes with that.
     from = t.mark();
-    t.session.setDocument(lab({ iterations: iterations + 1, side: 4, view: 'far' }), ++revision);
+    t.session.setDocument(lab({ iterations: 9, side: 4, view: 'far' }), ++revision);
     const third = await thumbnails(t, ['far'], from);
     await t.idle();
     assert.deepEqual([third.far!.contentKey, third.far!.resolution], [keysB.far, PREVIEW]);
-    assert.equal(t.of('request-start', from).filter((e) => e.purpose === 'thumbnails').length, 0);
+    assert.equal(idleRequests(from).length, 0);
 
     // 4. Back to the first parameter: the thumbnail is stale again, the node is still predicted slow, but its
     // result of step 1 is cached at the thumbnail resolution, so the idle evaluation makes it without running it.
     from = t.mark();
-    t.session.setDocument(lab({ iterations, side: 4 }), ++revision);
+    t.session.setDocument(lab({ iterations: 8, side: 4 }), ++revision);
     const fourth = await thumbnails(t, ['far'], from);
     await t.idle();
     assert.deepEqual([fourth.far!.contentKey, fourth.far!.resolution], [keysA.far, THUMBNAIL]);
-    const last = t.of('request-start', from).filter((e) => e.purpose === 'thumbnails');
+    const last = idleRequests(from);
     assert.equal(last.length, 1);
     assert.deepEqual(endings(t.events, last[0]!.requestId), { level: 'cached', far: 'cached' });
     assert.equal(slow.runs.get(THUMBNAIL), runsBefore);
+
+    // 5. A timing at another resolution counts by its texels: 396 ms at 257 are 99.8 ms at 129, which is not above
+    // the limit, and 100 ms is not above it either. The node is run for its thumbnail.
+    for (const [iterations, timing] of [[10, { resolution: PREVIEW, wallMs: 396 }], [11, { resolution: THUMBNAIL, wallMs: 100 }]] as const) {
+      timings.set('far', timing);
+      from = t.mark();
+      t.session.setDocument(lab({ iterations, side: 4 }), ++revision);
+      const keys = (await t.next('keys')).keys;
+      const made = await thumbnails(t, ['far'], from);
+      await t.idle();
+      assert.deepEqual([made.far!.contentKey, made.far!.resolution], [keys.far, THUMBNAIL]);
+      const ran = idleRequests(from);
+      assert.equal(ran.length, 1);
+      assert.deepEqual(endings(t.events, ran[0]!.requestId), { level: 'cached', far: 'run' });
+    }
+    assert.equal(slow.runs.get(THUMBNAIL), runsBefore + 2);
   } finally {
     await t.dispose();
   }

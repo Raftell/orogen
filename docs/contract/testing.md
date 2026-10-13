@@ -110,7 +110,7 @@ The process environment selects the device. The harness reads it once:
 | Variable | Values | Harness default | Effect |
 | --- | --- | --- | --- |
 | `OROGEN_GPU_PROFILE` | `core`, `max` | `core` | the `profile` passed to `createNodeGpu`. The harness passes `core` explicitly when the variable is unset; the factory's own default is `max` |
-| `OROGEN_GPU_ADAPTER` | case-sensitive substring of an adapter name | unset: the default adapter | the `adapter` passed to `createNodeGpu`: `llvmpipe`, `Microsoft`, `NVIDIA` |
+| `OROGEN_GPU_ADAPTER` | case-sensitive substring of an adapter name as its driver spells it, which is not how `caps.adapter` spells it (`runtime.md` 1.3) | unset: the default adapter | the `adapter` passed to `createNodeGpu`: `llvmpipe`, `Microsoft`, `NVIDIA` |
 | `OROGEN_TEST_OUTPUT` | a folder | `test-output` | where previews and reports are written |
 
 The harness builds its engine like this:
@@ -1281,6 +1281,9 @@ What each layer contains:
 
 - Test cases inside a file run one after another: no test uses `{ concurrency: true }`.
 - `--test-timeout=300000` is a backstop for a hung device, not a performance requirement. No test asserts a duration.
+- Nor does a test assert what follows from a duration the machine measured: how many slices or batches a workload takes under `'auto'`, that a slice timed by wall clock was resolved, that one measured more or less than its estimate, or more than nothing, that no slice exceeded the hard ceiling, which level a draft runs at, or which node is too slow for an idle thumbnail. A software adapter on a shared runner is a hundred times slower than a GPU and different on every run, and the device's timer has steps (`runtime.md` 3.5). A test of a rule that depends on measured time gives the durations itself: those of slices (the learned rates, the bound on unmeasured kernels, the hard ceiling) through the `measure` hook (`runtime.md` 5.14), and what a session is told of its engine (the time of an evaluation, the last timing of a node; `runtime.md` 7.3 rules 4 and 9) through the engine its test hands it. A test that leaves the measuring to the machine asserts only what holds for whatever it reports.
+- A wait for something the GPU delivers ends when it is delivered. Its limit, in time, is a backstop that says what did not happen; it is never a number of polls or of turns of the event loop, which a slow adapter uses up.
+- A test that checks which adapter it runs on compares names with `adapterNamed` (`runtime.md` 1.3), never with the strings of `caps.adapter` directly.
 - Creating the device costs 141 to 177 ms per file on the development machine, and a render with readback 5 ms at 513 and 37 ms at 2049. A node's test file therefore keeps its work at 257 and below where it can.
 - When the GPU layer becomes too slow for one CI job, it is split with `--test-shard=<i>/<n>` across jobs; the concurrency inside a job stays 1.
 
@@ -1558,7 +1561,7 @@ cover those on real machines.
 | Where | Adapter | Selected by | Status |
 | --- | --- | --- | --- |
 | Node on `ubuntu-latest` | lavapipe (Mesa `llvmpipe`, a Vulkan implementation) | `OROGEN_GPU_ADAPTER=llvmpipe` after installing `mesa-vulkan-drivers` | works; also on the development machine |
-| Node on `windows-latest` | WARP, `Microsoft Basic Render Driver`, a D3D12 adapter that is part of Windows | `OROGEN_GPU_ADAPTER=Microsoft` | works on hosted runners |
+| Node on `windows-latest` | WARP, `Microsoft Basic Render Driver`, a D3D12 adapter that is part of Windows | `OROGEN_GPU_ADAPTER=Microsoft` | works on hosted runners. It does not report `isFallbackAdapter`; `caps.software` knows it by its name (`runtime.md` 1.3) |
 | Electron | SwiftShader, shipped with Electron | `OROGEN_ELECTRON_GPU=software`: on Linux the application then appends `enable-unsafe-webgpu` and not `enable-features=Vulkan`, which leaves Chromium on SwiftShader (`runtime.md` 1.6). `use-webgpu-adapter=swiftshader` is Chromium's explicit switch for the same thing and is the next thing to try if that fails on a runner | the first recipe is measured on the development machine with a display; both are unproven under Xvfb on a hosted runner |
 
 - `forceFallbackAdapter` is never used to obtain a software adapter (`runtime.md` 1.5).

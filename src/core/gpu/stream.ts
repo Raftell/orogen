@@ -27,11 +27,20 @@ export interface SliceReport {
   readonly resolved: boolean;
 }
 
+/** What EngineTestHooks.measure receives (runtime.md 5.14): the dispatches of one kernel at one level (3.3) in a slice. */
+export interface KernelShare {
+  readonly kernel: string;
+  readonly level: number;
+  readonly work: number;
+  readonly estimateMs: number;
+}
+
 /** The members of EngineTestHooks the stream obeys. */
 export interface StreamHooks {
   readonly sliceTargetMs?: number;
   readonly inFlightLimit?: 1 | 2;
   readonly maxTileRows?: number;
+  readonly measure?: (share: KernelShare) => number;
   readonly onSlice?: (s: SliceReport) => void;
 }
 
@@ -221,7 +230,7 @@ interface Slice {
   /** Texels written by kernels the device has not measured at their level (3.4 rule 5). */
   unmeasuredTexels: number;
   /** Per rate key (a kernel at a level, 3.3), the work of its dispatches in this slice and what they were estimated at. */
-  readonly kernels: Map<string, { readonly name: string; work: number; estimateMs: number }>;
+  readonly kernels: Map<string, { readonly name: string; readonly level: number; work: number; estimateMs: number }>;
 }
 
 const none = (): null => null;
@@ -460,15 +469,31 @@ export function createStream(opts: StreamOptions): CommandStream {
     else measured.delete(key);
   }
 
-  /**
-   * 3.3 rule 2 with timestamps: every kernel of the slice follows the time of its own passes. The factor applies
-   * to the rate the slice was estimated with: with two slices in flight the second is estimated before the first
-   * completes, and a factor applied to the current rate would correct one error twice.
-   */
-  function learnTimed(s: Slice, ends: Float64Array): void {
+  /** The time of the timed passes of each rate key of a slice, from its timestamps. */
+  function passTimes(s: Slice, ends: Float64Array): Map<string, number> {
     const times = new Map<string, number>();
     s.timed.forEach((key, k) => times.set(key, (times.get(key) ?? 0) + ends[k + 1]! - ends[k]!));
-    const over = ends[ends.length - 1]! > s.owner.ceiling;
+    return times;
+  }
+
+  /** 5.14: what the `measure` hook gives for each rate key of a slice, in place of the device's timing. Null without the hook. */
+  function suppliedTimes(s: Slice): Map<string, number> | null {
+    if (!hooks.measure) return null;
+    const times = new Map<string, number>();
+    for (const [key, share] of s.kernels) {
+      times.set(key, hooks.measure({ kernel: share.name, level: share.level, work: share.work, estimateMs: share.estimateMs }));
+    }
+    return times;
+  }
+
+  /**
+   * 3.3 rule 2 with timestamps: every kernel of the slice follows the time of its own passes, of a slice that
+   * took `total`. The factor applies to the rate the slice was estimated with: with two slices in flight the
+   * second is estimated before the first completes, and a factor applied to the current rate would correct one
+   * error twice.
+   */
+  function learnTimed(s: Slice, times: ReadonlyMap<string, number>, total: number): void {
+    const over = total > s.owner.ceiling;
     for (const [key, share] of s.kernels) {
       const dt = times.get(key);
       // A kernel whose only pass is the one beyond the last timestamp has no time of its own.
@@ -593,11 +618,22 @@ export function createStream(opts: StreamOptions): CommandStream {
       if (!gpu.lost && !disposed) {
         let dt = wall;
         let resolved = false;
-        if (timestamps) {
+        const supplied = suppliedTimes(s);
+        if (supplied) {
+          dt = 0;
+          for (const ms of supplied.values()) dt += ms;
+          resolved = true;
+          if (timestamps) {
+            learnTimed(s, supplied, dt);
+            owner.gpuMs += dt;
+          } else {
+            learnWall(s, dt, true);
+          }
+        } else if (timestamps) {
           if (ends) {
             dt = ends[timed]!;
             resolved = true;
-            learnTimed(s, ends);
+            learnTimed(s, passTimes(s, ends), dt);
             owner.gpuMs += dt;
           } else if (s.passes > 0) {
             owner.untimed = true;
@@ -770,7 +806,7 @@ export function createStream(opts: StreamOptions): CommandStream {
           share.work += work;
           share.estimateMs += work * rate;
         } else {
-          s.kernels.set(key, { name, work, estimateMs: work * rate });
+          s.kernels.set(key, { name, level, work, estimateMs: work * rate });
         }
         if (unmeasured) s.unmeasuredTexels += width * rows;
         if (s.estimateMs >= owner.target || s.unmeasuredTexels >= UNMEASURED_SLICE_TEXELS) submit();

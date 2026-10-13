@@ -39,7 +39,9 @@ test('a device lost in the middle of an evaluation is recovered, and the same vi
   resetSlow();
   const first = await nextGpu();
   let reopened = 0;
-  const t = await startSession({ gpu: first, reopenGpu: () => { reopened++; return nextGpu(); } });
+  // Every slice measures what it was estimated at: a slice that really took longer than the hard ceiling on this
+  // adapter would be an engine-error of its own, and this test counts them.
+  const t = await startSession({ gpu: first, reopenGpu: () => { reopened++; return nextGpu(); }, hooks: { measure: (share) => share.estimateMs } });
   try {
     /** Read through a call: the compiler takes what an assertion saw of it for what it still is. */
     const content = (): ViewportContent | null => t.renderer.content;
@@ -118,7 +120,7 @@ test('a third loss within two minutes ends automatic recovery until retryDevice'
 
     const from = t.mark();
     lose(contexts.at(-1)!);
-    const fatal = await t.next('engine-error');
+    const fatal = await t.next('engine-error', (e) => e.fatal);
     assert.deepEqual({ ...fatal }, { type: 'engine-error', message: fatal.message, fatal: true });
     assert.match(fatal.message, /lost 3 times within 120 seconds/);
     assert.equal(reopened, LOSS_LIMIT - 1, 'rule 3: no device is opened for the third loss');

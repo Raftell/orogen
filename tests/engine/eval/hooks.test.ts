@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { defineKernel, defineNode } from '../../../src/core/api.ts';
 import type { AnyFieldHandle } from '../../../src/core/runtime.ts';
 import { testGpu } from '../gpu/rig.ts';
-import { assertUniform, constantNode, gainNode, startEngine, tintNode } from './rig.ts';
+import { assertUniform, constantNode, gainNode, startEngine, tintNode, until } from './rig.ts';
 
 const waveKernel = defineKernel({
   name: 'test/wave',
@@ -78,6 +78,35 @@ test('maxTileRows and sliceTargetMs change how a run is cut, never its result; o
   }
 });
 
+test('measure: a slice measures what the hook says of its kernels, not what the device took; above the hard ceiling it is told to who listens', async () => {
+  let ms = 3;
+  const asked: { kernel: string; level: number; work: number; estimateMs: number }[] = [];
+  const t = await startEngine(DEFS, { hooks: { measure: (share) => { asked.push({ ...share }); return ms; } } });
+  const overruns: { nodeId: string | null; service: string | null; kernels: readonly string[]; measuredMs: number; ceilingMs: number }[] = [];
+  const off = t.engine.onOverrun((slice) => overruns.push({ ...slice }));
+  const doc = t.doc({ w: { type: 'ref/wave' }, v: { type: 'ref/wave' } });
+
+  const first = await t.run(doc, ['w.out'], { mode: 'build' });
+  const [slice, ...rest] = t.slices.filter((s) => s.nodeId === 'w');
+  assert.equal(rest.length, 0);
+  assert.deepEqual([slice!.measuredMs, slice!.resolved], [3, true]);
+  // One call for the kernel at its level: 65 x 65 texels are level 6.
+  assert.deepEqual(asked.filter((share) => share.kernel === 'test/wave'), [{ kernel: 'test/wave', level: 6, work: 65 * 65 * 4, estimateMs: slice!.estimateMs }]);
+  const done = first.events.find((e) => e.type === 'node-done' && e.nodeId === 'w');
+  assert.equal(done?.type === 'node-done' ? done.gpuMs : undefined, t.gpu.caps.timestampQuery ? 3 : null);
+  // The slice of the readback holds no run: it measures nothing.
+  const runless = t.slices.filter((s) => s.kernels.length === 0);
+  assert.ok(runless.length > 0 && runless.every((s) => s.measuredMs === 0 && s.resolved), JSON.stringify(runless));
+  assert.deepEqual(overruns, []);
+
+  ms = 500.5;
+  await t.run(doc, ['v.out'], { mode: 'build' });
+  assert.deepEqual(overruns, [{ nodeId: 'v', service: null, kernels: ['test/wave'], measuredMs: 500.5, ceilingMs: 500 }]);
+  off();
+  t.noLeaks();
+  await t.dispose();
+});
+
 test('a slice of an engine service carries the service\'s name and no node id', async () => {
   const t = await startEngine(DEFS);
   const doc = t.doc({
@@ -94,8 +123,8 @@ test('a slice of an engine service carries the service\'s name and no node id', 
   if (masked.kind === 'field') await t.engine.stats(masked);
   masked.release();
   off.release();
-  // The thumbnails are read back behind the evaluation: a bounded wait for their slices.
-  for (let rounds = 0; rounds < 400 && !t.slices.some((s) => s.service === 'thumbnail'); rounds++) await new Promise((resolve) => setTimeout(resolve, 5));
+  // The thumbnails are read back behind the evaluation.
+  await until(() => t.slices.some((s) => s.service === 'thumbnail'), 'a slice of the thumbnail service');
 
   const services = new Set(t.slices.filter((s) => s.nodeId === null).map((s) => s.service));
   assert.deepEqual([...services].sort(), ['constant', 'convert', 'mask', 'read', 'stats', 'thumbnail']);

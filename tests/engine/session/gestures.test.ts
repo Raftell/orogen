@@ -78,63 +78,38 @@ test('edits inside a gesture are drafts on a coarser ladder level; endGesture re
   }
 });
 
-test('the draft level follows the measured time of the draft before: finer after a fast one, coarser after a slow one', async () => {
+test('the draft level follows the time of the draft before: finer after a fast one, coarser after a slow one', async () => {
   resetSlow();
-  const t = await startSession();
+  // How long a draft takes is the machine's to say. The session is told here, and rule 4 is held to those numbers.
+  let tookMs = 0;
+  const t = await startSession({ tookMs: () => tookMs });
   try {
     let revision = 0;
-    let level: 1 | 2 = 2;
-    const seen: number[] = [];
-    /** One draft; checks that it ran at the level rule 4 gives for the time of the draft before, and returns its own time. */
-    const draft = async (value: number, gain: number, iterations: number): Promise<number> => {
-      t.session.setDocument(doc({
-        level: { type: 'ref/constant', params: { value } },
-        walk: { type: 'ref/slow', params: { iterations }, inputs: { in: 'level.out' } },
-        out: { type: 'ref/gain', params: { gain }, inputs: { in: 'walk.out' } },
-      }, VIEW), ++revision);
+    /** One draft that the session is told took `ms`; returns the resolution it ran at. */
+    const draft = async (ms: number): Promise<number> => {
+      tookMs = ms;
+      t.session.setDocument(graph(++revision / 64, 8), revision);
       const shown = await t.next('view-updated', (e) => e.revision === revision);
-      assert.deepEqual([shown.resolution, shown.draft], [DRAFT[level], true], `draft ${revision} runs ${level} level(s) below the preview`);
-      seen.push(shown.resolution);
-      const tookMs = t.of('eval-end').find((e) => e.requestId === shown.requestId)!.wallMs;
-      level = nextDraftLevel(level, tookMs);
-      return tookMs;
+      assert.equal(shown.draft, true);
+      assert.equal(t.of('eval-end').find((e) => e.requestId === shown.requestId)!.wallMs, ms);
+      return shown.resolution;
     };
 
     t.session.beginGesture();
-    // A draft that is slow on this adapter: the passes of the slow node are raised until one takes three times the threshold.
-    let iterations = 4000;
-    let slowMs = 0;
-    for (let round = 0; round < 10 && slowMs < 150; round++) {
-      slowMs = await draft(round / 16, 2, iterations);
-      if (slowMs < 150) iterations = Math.ceil(iterations * Math.min(4, Math.max(1.5, 200 / Math.max(slowMs, 1))));
-    }
-    assert.ok(slowMs >= 150, `${iterations} passes take ${slowMs} ms`);
-    assert.equal(level, 2, 'after a slow draft the next one is two levels down');
-
-    // A fast one: only the last node has changed, the slow one is a hit among the entries of the draft before.
-    let fastMs = Infinity;
-    for (let round = 0; round < 8 && 4 * fastMs > 50; round++) fastMs = await draft(1, 3 + round, iterations);
-    assert.ok(4 * fastMs <= 50, `a draft that runs one cheap node took ${fastMs} ms`);
-    assert.equal(level, 1, 'after a fast draft the next one is one level down');
-
-    // At the finer level the slow node runs again, slowly: back to two levels.
-    const finer = await draft(2, 3, iterations);
-    assert.equal(seen.at(-1), DRAFT[1]);
-    assert.ok(finer > 50, `the slow node at the finer level took ${finer} ms`);
-    assert.equal(level, 2);
-    await draft(3, 3, iterations);
-    assert.equal(seen.at(-1), DRAFT[2]);
+    assert.equal(await draft(200), DRAFT[2], 'the first draft of a gesture is two levels down');
+    assert.equal(await draft(12.6), DRAFT[2], 'after a slow draft the next one is two levels down');
+    // A level up has four times the texels: 12.6 ms would be 50.4 ms there, above the threshold of 50 ms, and 12.5 ms would not.
+    assert.equal(await draft(12.5), DRAFT[2]);
+    assert.equal(await draft(50), DRAFT[1], 'after a fast draft the next one is one level down');
+    assert.equal(await draft(50.1), DRAFT[1], 'a draft at the threshold keeps the finer level');
+    assert.equal(await draft(1), DRAFT[2], 'one above it goes back to two levels');
+    assert.equal(await draft(1), DRAFT[1]);
 
     // A new gesture starts two levels down again, whatever the last draft was.
-    let again = Infinity;
-    for (let round = 0; round < 8 && 4 * again > 50; round++) again = await draft(3, 5 + round, iterations);
-    assert.equal(level, 1);
     t.session.endGesture();
     await t.next('view-updated', (e) => !e.draft);
     t.session.beginGesture();
-    level = 2;
-    await draft(3, 20, iterations);
-    assert.equal(seen.at(-1), DRAFT[2], 'the first draft of a gesture uses d = 2');
+    assert.equal(await draft(1), DRAFT[2], 'the first draft of a gesture uses d = 2');
   } finally {
     await t.dispose();
   }

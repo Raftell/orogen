@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { adapterNamed } from '../../../src/core/gpu/caps.ts';
 import fbm from '../../../src/core/nodes/ref/fbm.ts';
 import { DeviceLostError } from '../../../src/core/runtime.ts';
 import {
@@ -30,7 +31,7 @@ test('TEST_SETTINGS are those of the contract', () => {
 test('getEngine: one device, the profile of the environment, one engine per slicing', async () => {
   const auto = await getEngine();
   assert.equal(auto.gpu.profile, process.env.OROGEN_GPU_PROFILE || 'core', 'core unless the environment says otherwise');
-  if (process.env.OROGEN_GPU_ADAPTER) assert.ok(auto.gpu.caps.adapter.device.includes(process.env.OROGEN_GPU_ADAPTER), auto.gpu.caps.adapter.device);
+  if (process.env.OROGEN_GPU_ADAPTER) assert.ok(adapterNamed(auto.gpu.caps.adapter, process.env.OROGEN_GPU_ADAPTER), JSON.stringify(auto.gpu.caps.adapter));
   assert.equal(auto.engine.memory().budgetBytes, 1_073_741_824);
   assert.equal(auto.engine.registry.get('ref/fbm'), fbm, 'the reference nodes are registered');
   assert.equal(auto.engine.registry.get('ref/h-scale'), scale, 'and what useNodes was given');
@@ -201,16 +202,20 @@ test('traceNode: the report of a build evaluation, with the node under the id "n
   // The node held two fields of its own, the ping-pong pair; its input is not counted (runtime.md 5.10).
   assert.equal(node.peakBytes, 2 * FIELD_BYTES(129));
   assert.ok(node.wallMs > 0 && node.slices >= 1, `${node.wallMs} ms in ${node.slices} slices`);
+  // How many batches the rounds make, and so which fractions are reported, follows from measured time: see the trace in one slice below.
   assert.ok(node.progress.length >= 1 && node.progress.every((f, i) => f >= 0 && f <= 1 && (i === 0 || f >= node.progress[i - 1]!)), `progress ${node.progress.join(', ')}`);
-  assert.equal(node.progress.at(-1), 1);
   assert.deepEqual([report.nodesRun, report.nodesCached], [2, 0], 'the source and the node ran; a build reads no cache');
   // The longest slice the device measured (runtime.md 3.5): by wall clock a slice this short may not be resolved,
   // and by the device's timer it may measure nothing. That timer has steps: 65.536 µs on the GTX 1660 Ti, where
   // these 16 passes at 129 measured 0 in two runs of six and one step in the others.
   assert.ok(report.slices >= node.slices && report.longestSliceMs >= 0);
-  // A slice of many steps is measured as more than none: 64 passes at 513 measured 0.85 to 0.92 ms there.
-  const long = await traceNode(climb, { res: 513, params: { count: 64 } });
-  if ((await getEngine()).gpu.caps.timestampQuery) assert.ok(long.report.longestSliceMs > 0, `the longest of ${long.report.slices} slices measured ${long.report.longestSliceMs} ms`);
+  // How long a slice of many steps measures is the device's to say (testing.md 8.3): 64 passes at 513 measured
+  // 0.85 to 0.92 ms there. Whatever it is, the report holds the longest of what the slices reported.
+  const heard: number[] = [];
+  const long = await traceNode(climb, { res: 513, params: { count: 64 }, onSlice: (slice) => { heard.push(slice.measuredMs); } });
+  const longest = Math.max(...heard);
+  if ((await getEngine()).gpu.caps.timestampQuery) assert.equal(long.report.longestSliceMs, longest, `the longest of ${long.report.slices} slices`);
+  else assert.ok(long.report.longestSliceMs <= longest, 'by wall clock only the slices that were resolved count');
 
   // The events are those of the evaluation, in order, with the ids of the report.
   assert.deepEqual([report.events[0]!.type, report.events.at(-1)!.type], ['eval-start', 'eval-end']);
@@ -226,6 +231,7 @@ test('traceNode: slices follow the slicing, and onSlice hears every one; the res
   const small = await traceNode(climb, { res: 129, slices: 'small', onSlice: (slice) => { heard.push(slice); } });
   const one = await traceNode(climb, { res: 129, slices: 'one' });
   expectIdentical(small.outputs.out!, one.outputs.out!);
+  assert.deepEqual(one.report.nodes.node!.progress, [1], 'in one slice the loop has one batch boundary, after its last round');
   assert.equal(heard.length, small.report.slices, 'one call per slice of the evaluation');
   assert.equal(heard.filter((slice) => slice.nodeId === 'node').length, small.report.nodes.node!.slices);
   assert.ok(heard.some((slice) => slice.nodeId === 'node' && slice.kernels.includes('ref/h-add')), 'a slice names its kernels');

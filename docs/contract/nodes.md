@@ -29,9 +29,10 @@ one private index module that `generate/index.ts` concatenates:
 | basics | `_basics.ts` | `constant`, `gradient`, `radial-gradient`, `shape`, `waves`, `fractal-noise`, `cellular-noise`, `eroded-noise` | names beginning `_noise`, `_shape` |
 | landforms | `_landforms.ts` | `mountain`, `mountain-range`, `island`, `volcano`, `crater`, `crater-field`, `canyon`, `dunes` | names beginning `_land` |
 
-Each owner's WGSL libraries carry its own prefix (`generate/noise-…`,
-`generate/land-…`), so neither waits for the other; both build on the core
-noise and hash libraries of `engine.md` 3.9.
+Each owner's WGSL libraries carry its own prefix (`generateNoise…`,
+`generateLand…`: a library name has no slash or hyphen, `engine.md` 3.7), so
+neither waits for the other; both build on the core noise and hash libraries
+of `engine.md` 3.9.
 
 | Id | Title | What it makes | Named parameters and notes |
 | --- | --- | --- | --- |
@@ -64,9 +65,9 @@ noise and hash libraries of `engine.md` 3.9.
 | `adjust/autolevel` | Auto Level | field → field | Stretches the measured minimum and maximum to 0..1. `resolutionDependent` |
 | `adjust/equalize` | Equalize | field → field | Redistributes heights so every height band covers the same area: `strength`. `resolutionDependent` |
 | `adjust/math` | Math | `in` (field), `b` (field, optional) → field | One arithmetic operation with a constant or a second field: `mode`: `add`, `subtract`, `multiply`, `divide`, `power`, `absolute`, `minimum`, `maximum`, `modulo`, `fold`; `value`. Not maskable (it has two inputs of its own meaning) |
-| `adjust/combine` | Combine | `a`, `b` (any, same kind), `mask` (optional) → same as `a` | Blends two inputs: `mode`: `mix`, `add`, `subtract`, `multiply`, `screen`, `overlay`, `maximum`, `minimum`, `difference`, `smooth-maximum`, `smooth-minimum`; `strength`, `smoothness` |
+| `adjust/combine` | Combine | `a`, `b` (any; a `b` of the other kind is converted as a connection is, `runtime.md` 5.6), `mask` (optional) → same as `a` | Blends two inputs: `mode`: `mix`, `add`, `subtract`, `multiply`, `screen`, `overlay`, `maximum`, `minimum`, `difference`, `smooth-maximum`, `smooth-minimum`; `strength`, `smoothness` |
 | `adjust/height-blend` | Height Blend | `a`, `b` (field), `mask` (optional) → field; second output `weight` (mask) | Lets the higher of two terrains win with a soft transition, as a material height blend does: `contrast`, `offset` |
-| `adjust/switch` | Switch | `a`, `b`, `c`, `d` (any, all optional but one) → same as first connected | Passes one input through: `mode`: `a`, `b`, `c`, `d`. Not maskable |
+| `adjust/switch` | Switch | `a` (any), `b`, `c`, `d` (any, optional) → same as `a` | Passes one input through: `mode`: `a`, `b`, `c`, `d`. A choice with nothing connected passes `a`; a choice of the other kind is converted as a connection is (`runtime.md` 5.6). Not maskable |
 
 ## 3. `filter`: 14 nodes
 
@@ -82,8 +83,8 @@ All any → same and maskable unless noted.
 | `filter/high-pass` | High Pass | Keeps detail smaller than a radius, centred on 0.5: `radius` |
 | `filter/median` | Median | Removes spikes and pits: `radius` (bounded to a small window). Field only |
 | `filter/grow-shrink` | Grow / Shrink | Morphological dilate, erode, open, close: `mode`: `grow`, `shrink`, `open`, `close`; `radius`. Field only. Keywords: dilate, erode |
-| `filter/warp` | Warp | Displaces the picture by a noise or by a guide: input `guide` (field, optional), `strength` (length), `size`, `seed` |
-| `filter/slope-warp` | Slope Warp | Pushes features along the terrain's own slope: `strength` (length; signed), `radius` (smoothing of the slope). Field only |
+| `filter/warp` | Warp | Displaces the picture by a noise or by a guide: input `guide` (field, optional), `distance` (length: how far the picture moves at most), `size`, `seed` |
+| `filter/slope-warp` | Slope Warp | Pushes features along the terrain's own slope: `distance` (length), `mode`: `downhill`, `uphill`; `radius` (smoothing of the slope). Field only |
 | `filter/transform` | Transform | Moves, rotates and scales: `offset`, `angle`, `zoom`, `edge`: `clamp`, `mirror`, `repeat`, `constant` |
 | `filter/flip` | Flip | Mirrors or turns by quarter turns: `mode`: `horizontal`, `vertical`, `both`, `turn-90`, `turn-270`, `transpose`. Not maskable |
 | `filter/twirl` | Twirl | Twists around a point: `center`, `radius`, `angle` |

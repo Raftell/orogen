@@ -75,9 +75,11 @@ test('events arrive in order: eval-start, one final event per node, eval-end, no
   // Two nodes without a timing weigh the same: the first one done is half of the evaluation.
   const progress = eventsOf(events, 'eval-progress');
   assert.ok(progress.length >= 1 && progress.length <= 2, `${progress.length} eval-progress events within 250 ms`);
-  assert.deepEqual([progress[0]!.fraction, progress[0]!.etaMs], [0.5, null]);
+  assert.equal(progress[0]!.fraction, 0.5);
   assert.ok(progress.every((e, i) => e.fraction <= 1 && (i === 0 || e.fraction >= progress[i - 1]!.fraction)));
   const end = eventsOf(events, 'eval-end')[0]!;
+  // No estimate within the first second of an evaluation (5.10). How long this one took is the machine's to say.
+  if (end.wallMs < 1000) assert.equal(progress[0]!.etaMs, null);
   assert.deepEqual([end.status, result.status], ['ok', 'ok']);
   assert.deepEqual([result.timing.nodesRun, result.timing.nodesCached], [2, 0]);
   assert.deepEqual(result.errors, []);

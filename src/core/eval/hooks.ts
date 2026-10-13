@@ -4,6 +4,8 @@ export interface EngineTestHooks {
   readonly maxTileRows?: number;          // no tile has more rows: forces tiling at any size
   readonly failAllocAfter?: number;       // the nth texture creation from now reports GPU out of memory, once
   readonly poisonRecycled?: boolean;      // a recycled texture is filled with −1e30 before it is handed out
+  readonly measure?: (k: { readonly kernel: string; readonly level: number;
+                           readonly work: number; readonly estimateMs: number }) => number;   // replaces the timing of a slice's kernels by durations the test gives
   readonly onSlice?: (s: { readonly nodeId: string | null; readonly service: string | null;
                            readonly kernels: readonly string[];
                            readonly work: number; readonly estimateMs: number;

@@ -8,7 +8,7 @@ import { BYTES_PER_TEXEL } from '../../../src/core/gpu/pool.ts';
 import type { ViewportContent } from '../../../src/core/runtime.ts';
 import { budgetBytes, budgetInForce, DEFAULT_PREFERENCES, MIN_FIELD_BYTES } from '../../../src/core/session/budget.ts';
 import { testGpu } from '../gpu/rig.ts';
-import { doc, endings, MIB, PREVIEW, RENDERER_BYTES, resetSlow, slow, startSession } from './rig.ts';
+import { doc, endings, MIB, PREVIEW, RENDERER_BYTES, resetSlow, slow, startSession, within } from './rig.ts';
 
 const gpu = await testGpu();
 
@@ -323,7 +323,7 @@ test('preferences that ask for less than the engine has reserved leave room for 
     // The shown port, and one the view does not name: both need scratch of their own.
     assert.deepEqual(await t.session.inspect(port('out')), { min: 48.5, max: 48.5, mean: 48.5, nonFinite: 0 });
     assert.deepEqual(await t.session.inspect(port('walk')), { min: 24.25, max: 24.25, mean: 24.25, nonFinite: 0 });
-    for (let tries = 0; tries < 400 && t.of('thumbnail').length < 3; tries++) await new Promise((resolve) => setTimeout(resolve, 5));
+    while (t.of('thumbnail').length < 3) await t.next('thumbnail');
     assert.deepEqual(t.of('thumbnail').map((e) => e.nodeId).sort(), ['level', 'out', 'walk']);
 
     // What is reserved has grown by the atlas and the staging buffer; the budget follows with the next piece of work.
@@ -391,10 +391,11 @@ test('a slice over the hard ceiling is an engine-error that is not fatal, and th
     t.session.setDocument(graph(), 1);
     await t.next('view-updated');
     await t.idle();
-    t.mark();
+    // From here on: a slice of the evaluation above may really have taken that long on this adapter.
+    const from = t.mark();
     t.overrun({ nodeId: 'walk', service: null, kernels: ['test/session.step'], measuredMs: 612.4, ceilingMs: 500 });
     t.overrun({ nodeId: null, service: 'thumbnail', kernels: ['core/thumbnail.shade'], measuredMs: 260, ceilingMs: 250 });
-    assert.deepEqual(t.of('engine-error').map((e) => ({ ...e })), [
+    assert.deepEqual(t.of('engine-error', from).map((e) => ({ ...e })), [
       { type: 'engine-error', fatal: false, message: 'A slice of node "walk" took 612 ms, above the hard ceiling of 500 ms (kernels: test/session.step)' },
       { type: 'engine-error', fatal: false, message: 'A slice of the engine\'s thumbnail service took 260 ms, above the hard ceiling of 250 ms (kernels: core/thumbnail.shade)' },
     ]);
@@ -452,18 +453,19 @@ test('dispose aborts what runs, releases every handle and disposes renderer and 
   let disposing: Promise<void> | null = null;
   let inspecting: Promise<unknown> | null = null;
   let building: Promise<string> | null = null;
-  slow.at = (i) => {
-    if (i !== 12 || disposing) return;
-    inspecting = t.session.inspect(port('walk'));
-    building = t.session.build({ doc: graph(), outDir: '/out/terrain' }).then((r) => r.status, (e: Error) => e.message);
-    disposing = t.session.dispose();
-  };
+  const reached = new Promise<void>((resolve) => {
+    slow.at = (i) => {
+      if (i !== 12 || disposing) return;
+      inspecting = t.session.inspect(port('walk'));
+      building = t.session.build({ doc: graph(), outDir: '/out/terrain' }).then((r) => r.status, (e: Error) => e.message);
+      disposing = t.session.dispose();
+      resolve();
+    };
+  });
   const count = t.events.length;
   t.session.setDocument(graph({ value: 0.5 }), 2);
-  // The hook has not run yet: wait for the evaluation to reach it through the events it emits meanwhile.
-  await t.next('node-start', (e) => e.nodeId === 'walk');
-  for (let turn = 0; turn < 10_000 && !disposing; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.ok(disposing, 'the slow node reached the iteration that disposes the session');
+  // How many slices the iterations before it take is the adapter's to say: the wait is for the hook itself.
+  await within(reached, 'the slow node reached the iteration that disposes the session');
   await disposing;
 
   assert.equal(await inspecting, null, 'a waiting inspection is answered with null');

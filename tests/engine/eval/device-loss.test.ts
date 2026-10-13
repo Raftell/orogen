@@ -8,7 +8,7 @@ import { after, test } from 'node:test';
 import { defineKernel, defineNode, DeviceLostError, type EvalContext } from '../../../src/core/api.ts';
 import type { GpuContext, GpuProfile } from '../../../src/core/runtime.ts';
 import { createNodeGpu } from '../../../src/platform/node/gpu.ts';
-import { assertUniform, calls, constantNode, endings, eventsOf, gainNode, MIB, startEngine, type TestEngine } from './rig.ts';
+import { assertUniform, calls, constantNode, endings, eventsOf, gainNode, MIB, startEngine, until, type TestEngine } from './rig.ts';
 
 const stepKernel = defineKernel({
   name: 'test/step',
@@ -230,8 +230,8 @@ test('a device lost while nothing runs is forgotten at once; a lost engine can b
   assert.equal(cached.result.status, 'ok');
   assert.ok(t.engine.memory().cacheBytes > 0);
   lose(t.engine.gpu);
-  // The context hears of the loss in a later task; 400 rounds of 5 ms bound the wait.
-  for (let rounds = 0; rounds < 400 && !t.engine.gpu.lost; rounds++) await new Promise((resolve) => setTimeout(resolve, 5));
+  // The context hears of the loss in a later task.
+  await until(() => t.engine.gpu.lost, 'the context hears of the loss');
   await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(t.engine.gpu.lost, true);
   assert.equal(t.engine.memory().cacheBytes, 0);

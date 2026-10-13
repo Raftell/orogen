@@ -5,10 +5,12 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 
+import { adapterNamed } from '../../../src/core/gpu/caps.ts';
 import { DeviceLostError, GpuUnavailableError, type GpuContext, type GpuLostInfo, type GpuProfile } from '../../../src/core/gpu/device.ts';
 import { createNodeGpu } from '../../../src/platform/node/gpu.ts';
 
 const profile: GpuProfile = (process.env.OROGEN_GPU_PROFILE as GpuProfile | undefined) || 'core';
+const requested = process.env.OROGEN_GPU_ADAPTER || undefined;
 const environment = { profile: process.env.OROGEN_GPU_PROFILE, log: process.env.OROGEN_GPU_LOG };
 const contexts: GpuContext[] = [];
 const logged: string[] = [];
@@ -73,7 +75,10 @@ test('caps are read from the adapter and the device', () => {
   const caps = gpu.caps;
   for (const text of [caps.adapter.vendor, caps.adapter.architecture, caps.adapter.device, caps.adapter.description]) assert.equal(typeof text, 'string');
   assert.equal(typeof caps.adapter.isFallbackAdapter, 'boolean');
-  assert.equal(caps.software, caps.adapter.isFallbackAdapter || /llvmpipe|SwiftShader|Basic Render/i.test(`${caps.adapter.device} ${caps.adapter.description}`));
+  assert.equal(typeof caps.software, 'boolean');
+  if (requested) assert.ok(adapterNamed(caps.adapter, requested), JSON.stringify(caps.adapter));
+  // The adapters CI selects by these names compute on the CPU (testing.md 9.3), and the probe has to say so.
+  if (requested === 'llvmpipe' || requested === 'Microsoft') assert.equal(caps.software, true, JSON.stringify(caps.adapter));
   for (const list of [caps.adapterFeatures, caps.features, caps.wgslLanguageFeatures]) assert.deepEqual(list, [...list].sort());
   for (const feature of caps.features) assert.ok(caps.adapterFeatures.includes(feature), `the device has ${feature}, which the adapter does not offer`);
   assert.ok(caps.wgslLanguageFeatures.includes('readonly_and_readwrite_storage_textures'));

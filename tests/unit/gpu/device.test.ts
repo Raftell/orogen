@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { adapterNamed } from '../../../src/core/gpu/caps.ts';
 import { DeviceLostError, deviceLostError, GpuUnavailableError, onUncapturedError, openGpu, type GpuContext, type GpuLostInfo } from '../../../src/core/gpu/device.ts';
 
 const DEFAULTS = {
@@ -156,6 +157,36 @@ test('a software adapter is known by its flag or its name', async () => {
   assert.equal(await software({ isFallbackAdapter: true }), true);
   assert.equal(await software({ device: 'RTX 3080', description: 'NVIDIA' }), false);
   assert.equal((await open(fakeGpu({ info: { isFallbackAdapter: true } }), 'core')).caps.adapter.isFallbackAdapter, true);
+});
+
+test('the software adapters of CI are software: the adapter info of their probes, as printed', async () => {
+  const software = async (info: Record<string, unknown>): Promise<boolean> => (await open(fakeGpu({ info }), 'core')).caps.software;
+  // windows-latest, WARP under Dawn: no flag, and WebGPU's spelling of "Microsoft Basic Render Driver".
+  const warp = { vendor: 'microsoft', architecture: 'warp', device: 'microsoft-basic-render-driver', description: 'D3D12 driver version 10.0.26100.33438', isFallbackAdapter: false };
+  assert.equal(await software(warp), true);
+  assert.equal(await software({ ...warp, architecture: '' }), true, 'by its name alone');
+  assert.equal(await software({ ...warp, device: '', description: '' }), true, 'by its architecture alone');
+  // ubuntu-latest, lavapipe.
+  const lavapipe = { vendor: 'mesa', architecture: 'software', device: 'llvmpipe-llvm-20-1-2-256-bits-', description: 'llvmpipe: Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)', isFallbackAdapter: true };
+  assert.equal(await software(lavapipe), true);
+  assert.equal(await software({ ...lavapipe, isFallbackAdapter: false, architecture: '' }), true);
+  assert.equal(await software({ ...lavapipe, isFallbackAdapter: false, device: '', description: '' }), true);
+  // The development machine, and a D3D12 driver named as WARP's is: neither the vendor nor the backend makes an adapter software.
+  assert.equal(await software({ vendor: 'nvidia', architecture: 'turing', device: 'nvidia-geforce-gtx-1660-ti', description: 'NVIDIA: 595.99.02 595.99.2.0', isFallbackAdapter: false }), false);
+  assert.equal(await software({ ...warp, architecture: 'ampere', device: 'nvidia-geforce-rtx-3080' }), false);
+});
+
+test('an adapter is named whatever the case, the punctuation and the member that holds its name', () => {
+  // Dawn matched "Microsoft" against "Microsoft Basic Render Driver"; this is what adapter.info then said on windows-latest.
+  const warp = { vendor: 'microsoft', architecture: 'warp', device: 'microsoft-basic-render-driver', description: 'D3D12 driver version 10.0.26100.33438' };
+  for (const name of ['Microsoft', 'Microsoft Basic Render Driver', 'Basic Render', 'WARP', 'D3D12']) assert.equal(adapterNamed(warp, name), true, name);
+  for (const name of ['llvmpipe', 'NVIDIA', 'no-adapter-has-this-name']) assert.equal(adapterNamed(warp, name), false, name);
+  const lavapipe = { vendor: 'mesa', architecture: 'software', device: 'llvmpipe-llvm-20-1-2-256-bits-', description: 'llvmpipe: Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)' };
+  for (const name of ['llvmpipe', 'llvmpipe (LLVM 20.1.2, 256 bits)', 'Mesa 25']) assert.equal(adapterNamed(lavapipe, name), true, name);
+  assert.equal(adapterNamed(lavapipe, 'Microsoft'), false);
+  const hardware = { vendor: 'nvidia', architecture: 'turing', device: 'nvidia-geforce-gtx-1660-ti', description: 'NVIDIA: 595.99.02 595.99.2.0' };
+  for (const name of ['NVIDIA', 'NVIDIA GeForce GTX 1660 Ti', 'GTX 1660']) assert.equal(adapterNamed(hardware, name), true, name);
+  assert.equal(adapterNamed(hardware, 'RTX 3080'), false);
 });
 
 test('vramBytes is the largest device-local heap, and backend what the platform exposes', async () => {

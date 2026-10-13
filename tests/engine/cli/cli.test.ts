@@ -50,6 +50,22 @@ function lineOf(done: Done): RenderLine {
   return line;
 }
 
+/** What `render` says on standard error when a slice measured above the hard ceiling (testing.md 8.6). */
+const OVER_CEILING = /^orogen render: a slice took \d+ ms, above the hard ceiling of 500 ms/m;
+
+/**
+ * The JSON line of a render that drew its node. Such a run ends with 0, or with 1 when it says that a slice
+ * measured above the hard ceiling: a software adapter on a busy machine can take that long over any slice, and
+ * how long a slice takes is not for a test to say (testing.md 8.3).
+ */
+function rendered(done: Done): RenderLine {
+  const over = OVER_CEILING.test(done.err);
+  assert.equal(done.code, over ? 1 : 0, done.err);
+  const line = lineOf(done);
+  assert.ok(over ? line.longestSliceMs >= 500 : line.longestSliceMs <= 500, `longestSliceMs ${line.longestSliceMs}\n${done.err}`);
+  return line;
+}
+
 interface Png { readonly width: number; readonly height: number; readonly data: ArrayLike<number> }
 function read(file: string): Png {
   const png = decode(fs.readFileSync(file));
@@ -128,14 +144,12 @@ test('orogen: an adapter nobody has ends with exit code 3, before anything is pr
 
 test('orogen render ref/fbm: a sheet of the output, and one JSON line that says what was measured', () => {
   const out = path.join(OUTPUT, 'fbm');
-  const done = orogen(['render', 'ref/fbm', '--res', String(RES), '--out', out]);
-  assert.equal(done.code, 0, done.err);
-  const line = lineOf(done);
+  const line = rendered(orogen(['render', 'ref/fbm', '--res', String(RES), '--out', out]));
   assert.deepEqual([line.type, line.res, line.files], ['ref/fbm', RES, [fileOf(out, 'ref/fbm', 'out-129.png')]]);
   // One r32float field of 129 x 129 at least: the output itself.
   assert.ok(line.peakBytes >= RES * RES * 4, `peakBytes ${line.peakBytes}`);
   // The longest slice the device measured: 0 where a slice this short is not resolved by wall clock (runtime.md 3.5).
-  assert.ok(line.wallMs > 0 && line.longestSliceMs >= 0 && line.longestSliceMs < 500, `wallMs ${line.wallMs}, longestSliceMs ${line.longestSliceMs}`);
+  assert.ok(line.wallMs > 0 && line.longestSliceMs >= 0, `wallMs ${line.wallMs}, longestSliceMs ${line.longestSliceMs}`);
   assert.ok(line.gpuMs === null || line.gpuMs >= 0, `gpuMs ${String(line.gpuMs)}`);
   expectSheet(line.files[0]!, 'ref/fbm.out');
   assert.deepEqual(fs.readdirSync(path.join(out, 'nodes', 'ref', 'fbm')), ['out-129.png'], 'nothing else is left in the folder');
@@ -144,9 +158,7 @@ test('orogen render ref/fbm: a sheet of the output, and one JSON line that says 
 test('orogen render ref/talus --crop --param: every output as a sheet and as a one-to-one crop, the data output over the input terrain', () => {
   const out = path.join(OUTPUT, 'talus');
   // A low talus angle and a long reach: much of a fractal terrain collapses, so `moved` is not empty.
-  const done = orogen(['render', 'ref/talus', '--res', String(RES), '--crop', '64', '--param', 'talus=20', '--param', 'reach=0.05', '--out', out]);
-  assert.equal(done.code, 0, done.err);
-  const line = lineOf(done);
+  const line = rendered(orogen(['render', 'ref/talus', '--res', String(RES), '--crop', '64', '--param', 'talus=20', '--param', 'reach=0.05', '--out', out]));
   assert.deepEqual([line.type, line.res], ['ref/talus', RES]);
   assert.deepEqual(line.files, ['out-129.png', 'out-129-crop.png', 'moved-129.png', 'moved-129-crop.png'].map((name) => fileOf(out, 'ref/talus', name)));
 
@@ -168,9 +180,7 @@ test('orogen render ref/talus --crop --param: every output as a sheet and as a o
 test('orogen render --max-params --seed: the parameters reach the node', () => {
   const picture = (name: string, args: readonly string[]): Png => {
     const out = path.join(OUTPUT, name);
-    const done = orogen(['render', 'ref/fbm', '--res', String(RES), '--out', out, ...args]);
-    assert.equal(done.code, 0, done.err);
-    return read(lineOf(done).files[0]!);
+    return read(rendered(orogen(['render', 'ref/fbm', '--res', String(RES), '--out', out, ...args])).files[0]!);
   };
   /** The share of the grey picture's pixels that differ between two sheets. */
   const differing = (a: Png, b: Png): number => {
@@ -200,9 +210,7 @@ function differingGrey(a: Png, b: Png): number {
 test('orogen render of a node with two inputs: each is fed a terrain of its own, and --masked connects the optional mask', () => {
   const sheet = (name: string, type: string, args: readonly string[]): { readonly png: Png; readonly files: readonly string[] } => {
     const out = path.join(OUTPUT, name);
-    const done = orogen(['render', type, '--res', String(RES), '--out', out, ...args]);
-    assert.equal(done.code, 0, done.err);
-    const { files } = lineOf(done);
+    const { files } = rendered(orogen(['render', type, '--res', String(RES), '--out', out, ...args]));
     return { png: expectSheet(files[0]!, `${type} ${args.join(' ')}`), files };
   };
   // mode mix at strength 1 gives the second input: the node is shown its `b`, which is not its `a`.
@@ -234,9 +242,7 @@ test('orogen render of a node with two inputs: each is fed a terrain of its own,
 
 test('orogen render ref/distance: a node whose input is a mask is drawn over the terrain the mask was made of', () => {
   const out = path.join(OUTPUT, 'distance');
-  const done = orogen(['render', 'ref/distance', '--res', String(RES), '--out', out]);
-  assert.equal(done.code, 0, done.err);
-  const line = lineOf(done);
+  const line = rendered(orogen(['render', 'ref/distance', '--res', String(RES), '--out', out]));
   assert.deepEqual(line.files, [fileOf(out, 'ref/distance', 'out-129.png')]);
   const png = read(line.files[0]!);
   assert.deepEqual([png.width, png.height], [1808, 512]);
@@ -268,17 +274,13 @@ test('orogen render <project.orogen> --node: a node of a project at the project\
   const project = path.join(out, 'small.orogen');
   writeProject(project);
 
-  const done = orogen(['render', project, '--node', 'talus', '--out', out]);
-  assert.equal(done.code, 0, done.err);
-  const line = lineOf(done);
+  const line = rendered(orogen(['render', project, '--node', 'talus', '--out', out]));
   assert.deepEqual([line.type, line.res], ['ref/talus', 129]);
   assert.deepEqual(line.files, ['out-129.png', 'moved-129.png'].map((name) => fileOf(out, 'ref/talus', name)));
   expectSheet(line.files[0]!, 'talus.out of the project');
   expectSheet(line.files[1]!, 'talus.moved of the project');
 
-  const finer = orogen(['render', project, '--node', 'noise', '--res', '257', '--crop', '100', '--out', out]);
-  assert.equal(finer.code, 0, finer.err);
-  const fine = lineOf(finer);
+  const fine = rendered(orogen(['render', project, '--node', 'noise', '--res', '257', '--crop', '100', '--out', out]));
   assert.deepEqual([fine.type, fine.res, fine.files], ['ref/fbm', 257, ['out-257.png', 'out-257-crop.png'].map((name) => fileOf(out, 'ref/fbm', name))]);
   const crop = read(fine.files[1]!);
   assert.deepEqual([crop.width, crop.height], [100, 100]);

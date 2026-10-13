@@ -121,7 +121,7 @@ interface GpuCaps {
     readonly isFallbackAdapter: boolean;
     readonly backend: string | null;            // exposed by Chromium with developer features, else null
   };
-  /** A CPU rasteriser: isFallbackAdapter, or device + description matches /llvmpipe|SwiftShader|Basic Render/i. */
+  /** A CPU rasteriser: isFallbackAdapter, or architecture `warp` or `software`, or device + description names llvmpipe, SwiftShader or Basic Render. */
   readonly software: boolean;
   readonly adapterFeatures: readonly string[];  // what the adapter offers, sorted
   readonly features: readonly string[];         // what the device has, sorted
@@ -150,6 +150,19 @@ device prints nothing: the line would bury test output and break the JSON a
 command-line tool prints, and `orogen probe` prints `caps` itself
 (`testing.md` 8.6). The application shows a permanent warning when
 `caps.software` is true.
+
+The strings of `caps.adapter` are not the driver's own. WebGPU reports them
+respelled, in lower case with hyphens, and the platform chooses which member
+holds what. Measured on `windows-latest` under Dawn, WARP is vendor
+`microsoft`, architecture `warp`, device `microsoft-basic-render-driver`,
+description `D3D12 driver version 10.0.26100.33438`, and `isFallbackAdapter`
+is false; lavapipe is vendor `mesa`, architecture `software`, device
+`llvmpipe-llvm-20-1-2-256-bits-`, with `isFallbackAdapter` true. A name is
+therefore compared by its letters and digits alone, whatever the case:
+`caps.software` is decided that way (`isSoftwareAdapter` in
+`src/core/gpu/caps.ts`), and `adapterNamed(caps.adapter, name)` there tells
+whether a name given to the factory (1.5 rule 2) names the adapter of a
+device, looking at all four strings.
 
 ### 1.4 What the engine may assume
 
@@ -1435,6 +1448,9 @@ interface EngineTestHooks {
   readonly maxTileRows?: number;          // no tile has more rows: forces tiling at any size
   readonly failAllocAfter?: number;       // the nth texture creation from now reports GPU out of memory, once
   readonly poisonRecycled?: boolean;      // a recycled texture is filled with −1e30 before it is handed out
+  readonly measure?: (k: { readonly kernel: string; readonly level: number;
+                           readonly work: number; readonly estimateMs: number }) => number;
+                                          // replaces the timing of a slice's kernels by durations the test gives
   readonly onSlice?: (s: { readonly nodeId: string | null; readonly service: string | null;
                            readonly kernels: readonly string[];
                            readonly work: number; readonly estimateMs: number;
@@ -1451,10 +1467,23 @@ invocation owns the slice (3.1). `service` names the engine service when no
 node does: `'convert'`, `'mask'`, `'constant'`, `'thumbnail'`, `'stats'` or
 `'read'`. Exactly one of the two is not `null`.
 
+`measure` replaces the device's timing of 3.5. When a slice completes, the
+stream calls it once for each kernel at each level (3.3) in the slice, with the
+work of that kernel's dispatches there and their estimate, and takes the result
+as their measured duration in milliseconds. The slice's duration is the sum,
+and it is resolved. Everything that follows from a measurement then follows
+from these numbers: the rates (3.3), with `caps.timestampQuery` from each
+kernel's own duration and without it from the sum, as for a device; which
+kernels are measured (3.4 rule 5); the overrun report (3.5); `gpuMs`; and what
+`onSlice` receives. The slice still runs on the device and completes when the
+device says so; the device's clock is not consulted, and a slice without runs
+measures 0.
+
 The hooks exist so that policy is testable on any machine: tiling and batching
 independence without a slow kernel, the out-of-memory retry without exhausting
 a GPU, eviction and build-mode release with a `budgetBytes` of a few megabytes,
-and reliance on undefined texture contents. `testing.md` says which tests use
+reliance on undefined texture contents, and the rules that follow from measured
+time on an adapter of any speed (`testing.md` 8.3). `testing.md` says which tests use
 them. They change no result that a correct kernel produces.
 
 ---

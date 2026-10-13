@@ -189,6 +189,21 @@ export async function startEngine(defs: readonly NodeDef[], setup: EngineSetup =
   };
 }
 
+// ---- waiting ----------------------------------------------------------------------------------------------------
+
+/**
+ * Waits for what is delivered behind an evaluation, a thumbnail or the news of a lost device, looking every few
+ * milliseconds. How long that takes is the adapter's to say: the bound is a backstop that describes a wait
+ * nothing would end, not a duration a test relies on.
+ */
+export async function until(done: () => boolean, what: string): Promise<void> {
+  const backstop = performance.now() + 120_000;
+  while (!done()) {
+    if (performance.now() > backstop) assert.fail(`Not within 120 s: ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 // ---- reading results ---------------------------------------------------------------------------------------------
 
 type EventOf<T extends EvalEvent['type']> = Extract<EvalEvent, { type: T }>;

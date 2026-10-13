@@ -7,7 +7,7 @@ import { after, test } from 'node:test';
 import { defineKernel, defineNode } from '../../../src/core/api.ts';
 import { drawPreview } from '../../../src/cli/preview.ts';
 import type { GraphDoc, Thumbnail } from '../../../src/core/runtime.ts';
-import { constantNode, gainNode, MIB, rampNode, SETTINGS, startEngine, tintNode } from './rig.ts';
+import { constantNode, gainNode, MIB, rampNode, SETTINGS, startEngine, tintNode, until } from './rig.ts';
 
 const planeKernel = defineKernel({
   name: 'test/plane',
@@ -45,7 +45,7 @@ t.engine.onThumbnail((thumbnail) => delivered.push(thumbnail));
 
 /** Waits until `count` thumbnails have been delivered since `from`; the readback runs behind the evaluation. */
 async function thumbnails(from: number, count: number): Promise<Thumbnail[]> {
-  for (let tries = 0; tries < 400 && delivered.length - from < count; tries++) await new Promise((resolve) => setTimeout(resolve, 5));
+  await until(() => delivered.length - from >= count, `${count} thumbnails; ${delivered.length - from} were delivered`);
   // A little longer, so that one too many would be seen.
   await new Promise((resolve) => setTimeout(resolve, 30));
   return delivered.slice(from);
@@ -231,9 +231,7 @@ test('a budget that shrinks below what the atlas fits in gives the atlas back, a
     const heard: string[] = [];
     own.engine.onThumbnail((x) => heard.push(x.nodeId));
     const graph = (value: number) => own.doc({ level: { type: 'ref/constant', params: { value } }, gain: { type: 'ref/gain', inputs: { in: 'level.out' } } });
-    const delivered = async (count: number): Promise<void> => {
-      for (let tries = 0; tries < 400 && heard.length < count; tries++) await new Promise((resolve) => setTimeout(resolve, 5));
-    };
+    const delivered = (count: number): Promise<void> => until(() => heard.length >= count, `${count} thumbnails; ${heard.length} were delivered`);
     await own.run(graph(0.25), ['gain.out'], { thumbnails: true });
     await delivered(2);
     const withAtlas = own.engine.memory().reservedBytes;

@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { DeviceLostError } from '../../../src/core/gpu/device.ts';
 import { defineKernel } from '../../../src/core/gpu/kernel.ts';
 import { GpuValidationError, WatchdogError, type SliceReport } from '../../../src/core/gpu/stream.ts';
-import { RATE_CAP_FACTOR, RATE_FLOOR_FACTOR, RATE_INITIAL } from '../../../src/core/gpu/tuning.ts';
+import { HARD_CEILING_MS, RATE_CAP_FACTOR, RATE_FLOOR_FACTOR, RATE_INITIAL } from '../../../src/core/gpu/tuning.ts';
 import { createRig, firstDifference, HEIGHT_RANGE, TERRAIN_SIZE, texel, texels, type Rig } from './rig.ts';
 import { fbm, relax, step } from './worked.ts';
 
@@ -362,10 +362,60 @@ test('a full arena submits the open slice; every run still has its own uniforms'
 });
 
 // ---- learned throughput (runtime.md 3.3) -----------------------------------------------------------------------
+//
+// What a slice measures is the device's to say, and a software adapter on a shared machine says something else
+// every time. The rules are therefore driven with durations these tests supply through the `measure` hook
+// (5.14). Two tests leave the measuring to the device, and assert what holds for whatever it reports.
 
-test('a kernel starts at RATE_INITIAL and its rate follows the measurements, by at most a factor of two per slice', async () => {
-  const rig = await createRig({ hooks: { sliceTargetMs: 1e9 } });
+const same = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 * Math.max(Math.abs(a), Math.abs(b));
+const rateOf = (slice: SliceReport): number => slice.estimateMs / slice.work;
+const RATE_FLOOR = RATE_INITIAL * RATE_FLOOR_FACTOR, RATE_CAP = RATE_INITIAL * RATE_CAP_FACTOR;
+
+test('a kernel starts at RATE_INITIAL and its rate follows what its slices measure, by at most a factor of two per slice', async () => {
+  let ratio = 1;                                                   // what the next slice measures, as a multiple of its estimate
+  const rig = await createRig({ hooks: { sliceTargetMs: 1e9, measure: (share) => share.estimateMs * ratio } });
   await rig.compile(where, whereWide);
+  const n = 257, work = n * n * 8;
+  const out = rig.field('field', n);
+  const sliceMeasuring = async (multiple: number): Promise<SliceReport> => {
+    ratio = multiple;
+    const [slice, ...rest] = await slicesOf(rig, () => { rig.run(where, { out: { out } }); });
+    assert.equal(rest.length, 0);
+    assert.equal(slice!.work, work);
+    assert.ok(slice!.resolved && same(slice!.measuredMs, multiple * slice!.estimateMs), `measured ${slice!.measuredMs} ms for an estimate of ${slice!.estimateMs} ms`);
+    return slice!;
+  };
+
+  // Rule 2: the rate behind a slice's estimate, times clamp(dt / est, 0.5, 2).
+  let rate = RATE_INITIAL;
+  for (const [multiple, factor] of [[1, 1], [1.5, 1.5], [2, 2], [40, 2], [0.75, 0.75], [0.5, 0.5], [0.01, 0.5], [0, 0.5]] as const) {
+    const got = rateOf(await sliceMeasuring(multiple));
+    assert.ok(same(got, rate), `a rate of ${got} where ${rate} was expected, before a slice measuring ${multiple} times its estimate`);
+    rate *= factor;
+  }
+  // Rule 6: slices that go on measuring forty times their estimate, all below the hard ceiling, stop at the cap.
+  for (let i = 0; i < 12; i++) {
+    assert.ok(same(rateOf(await sliceMeasuring(40)), rate), `doubling ${i}`);
+    rate = Math.min(2 * rate, RATE_CAP);
+  }
+  assert.equal(rate, RATE_CAP);
+  // Rule 7: slices too short to measure anything stop at the floor.
+  for (let i = 0; i < 18; i++) {
+    assert.ok(same(rateOf(await sliceMeasuring(0)), rate), `halving ${i}`);
+    rate = Math.max(rate / 2, RATE_FLOOR);
+  }
+  assert.equal(rate, RATE_FLOOR);
+  assert.ok(same(rateOf(await sliceMeasuring(1)), RATE_FLOOR));
+
+  // A rate belongs to a kernel name: another kernel still starts at RATE_INITIAL.
+  const [other] = await slicesOf(rig, () => { rig.run(whereWide, { out: { out } }); });
+  assert.equal(other!.estimateMs, work * RATE_INITIAL);
+  rig.dispose();
+});
+
+test('on the device\'s own clock a rate follows what each slice reported, whatever that was', async () => {
+  const rig = await createRig({ hooks: { sliceTargetMs: 1e9 } });
+  await rig.compile(where);
   const n = 257, work = n * n * 8;
   const out = rig.field('field', n);
   const reports: SliceReport[] = [];
@@ -374,121 +424,120 @@ test('a kernel starts at RATE_INITIAL and its rate follows the measurements, by 
     reports.push(slice!);
   }
   assert.equal(reports[0]!.estimateMs, work * RATE_INITIAL);
+  if (rig.gpu.caps.timestampQuery) assert.ok(reports.every((slice) => slice.resolved), 'with timestamps every slice is timed');
   for (let i = 0; i + 1 < reports.length; i++) {
-    const { estimateMs, measuredMs } = reports[i]!;
-    const ratio = reports[i + 1]!.estimateMs / estimateMs;
-    assert.ok(measuredMs >= 0 && Number.isFinite(measuredMs));
-    assert.ok(ratio >= 0.5 - 1e-9 && ratio <= 2 + 1e-9, `slice ${i}: the estimate changed by ${ratio}`);
-    const floor = work * RATE_INITIAL * RATE_FLOOR_FACTOR, cap = work * RATE_INITIAL * RATE_CAP_FACTOR;
-    assert.ok(reports[i + 1]!.estimateMs >= floor * (1 - 1e-9) && reports[i + 1]!.estimateMs <= cap * (1 + 1e-9));
-    const wanted = Math.min(Math.max(measuredMs / estimateMs, 0.5), 2);
-    const next = Math.min(Math.max(estimateMs * wanted, floor), cap);
-    if (wanted <= 1 || rig.gpu.caps.timestampQuery) {
-      assert.ok(Math.abs(reports[i + 1]!.estimateMs - next) <= 1e-9 * next, `slice ${i}: measured ${measuredMs} for an estimate of ${estimateMs}, next estimate ${reports[i + 1]!.estimateMs}`);
-    } else {
-      // By wall clock a slice too close to the completion latency does not raise a rate (3.5 rule 2).
-      assert.ok(ratio >= 1 - 1e-9 && reports[i + 1]!.estimateMs <= next * (1 + 1e-9));
-    }
+    const { estimateMs, measuredMs, resolved } = reports[i]!;
+    const next = reports[i + 1]!.estimateMs;
+    const told = `slice ${i}: measured ${measuredMs} ms${resolved ? '' : ' at most'} for an estimate of ${estimateMs} ms, next estimate ${next} ms`;
+    assert.ok(measuredMs >= 0 && Number.isFinite(measuredMs), told);
+    // Rule 3: a duration above the hard ceiling is taken as it is, past the factor of two and past the cap.
+    const over = resolved && measuredMs > HARD_CEILING_MS;
+    const factor = Math.max(measuredMs / estimateMs, 0.5);
+    let wanted = estimateMs * (over ? factor : Math.min(factor, 2));
+    if (!over) wanted = Math.min(wanted, Math.max(estimateMs, work * RATE_CAP));
+    wanted = Math.max(wanted, work * RATE_FLOOR);
+    // 3.5 rule 2: a duration that is only an upper bound may lower a rate and never raises one.
+    if (!resolved) wanted = Math.min(wanted, estimateMs);
+    assert.ok(Math.abs(next - wanted) <= 1e-9 * wanted, told);
   }
-  // A rate belongs to a kernel name: another kernel still starts at RATE_INITIAL.
-  const [other] = await slicesOf(rig, () => { rig.run(whereWide, { out: { out } }); });
-  assert.equal(other!.estimateMs, work * RATE_INITIAL);
   rig.dispose();
 });
 
 test('a kernel keeps its rate when it shares slices with a kernel the device has not measured', async () => {
-  const rig = await createRig({ hooks: { sliceTargetMs: 1e9 } });
+  // What this device takes per unit of work: the generator three times RATE_INITIAL, the other kernel a hundredth of it.
+  const speed: Readonly<Record<string, number>> = { 'ref/fbm': 3 * RATE_INITIAL, 'test/where': RATE_INITIAL / 100 };
+  const rig = await createRig({ hooks: { sliceTargetMs: 1e9, measure: (share) => share.work * speed[share.kernel]! } });
   await rig.compile(fbm, where);
-  const n = 513;
+  const n = 65;
   const out = rig.field('field', n), other = rig.field('field', n);
-  const params = { cells: 8, octaves: 16, gain: 0.5 };
-  const known = (): void => { rig.run(fbm, { out: { out }, params, cost: 128 }); };
-  const rateOf = (slice: SliceReport): number => slice.estimateMs / slice.work;
+  const known = (): void => { rig.run(fbm, { out: { out }, params: { cells: 8, octaves: 2, gain: 0.5 }, cost: 128 }); };
+  const fresh = (): void => { rig.run(where, { out: { out: other }, cost: 4000 }); };
 
-  // The generator alone, in slices long enough to be measured on any device, until its estimate is the measurement.
-  let alone: SliceReport[] = [];
-  for (let i = 0; i < 12; i++) {
-    alone = await slicesOf(rig, () => { for (let k = 0; k < 20; k++) known(); });
-    assert.equal(alone.length, 1);
-    if (i >= 3 && alone[0]!.resolved && alone[0]!.measuredMs > 0.6 * alone[0]!.estimateMs && alone[0]!.measuredMs < 1.6 * alone[0]!.estimateMs) break;
-  }
-  const settled = rateOf((await slicesOf(rig, known))[0]!);
+  // The generator alone, until its estimate is the measurement.
+  const alone: number[] = [];
+  for (let i = 0; i < 4; i++) alone.push(rateOf((await slicesOf(rig, known))[0]!));
+  for (const [i, multiple] of [1, 2, 3, 3].entries()) assert.ok(same(alone[i]!, multiple * RATE_INITIAL), `slice ${i} of the generator alone was estimated at a rate of ${alone[i]}`);
+  const settled = alone[3]!;
 
-  // One run of it beside a long run of a kernel new to the device, whose declared cost makes the slice's estimate
-  // many times its duration: the slice as a whole measures far below its estimate, four times over.
+  // One run of it beside twenty of a kernel new to the device, whose declared cost puts the slice's estimate
+  // many times above its duration: the slice as a whole measures far below its estimate, four times over.
   for (let i = 0; i < 4; i++) {
     const [mixed, ...rest] = await slicesOf(rig, () => {
       known();
-      for (let k = 0; k < 20; k++) rig.run(where, { out: { out: other }, cost: 4000 });
+      for (let k = 0; k < 20; k++) fresh();
     });
     assert.equal(rest.length, 0);
     assert.deepEqual(mixed!.kernels, ['ref/fbm', 'test/where']);
-    assert.ok(mixed!.measuredMs < 0.5 * mixed!.estimateMs, `the mixed slice measured ${mixed!.measuredMs} ms for an estimate of ${mixed!.estimateMs} ms`);
+    assert.ok(mixed!.resolved && mixed!.measuredMs < 0.5 * mixed!.estimateMs, `the mixed slice measured ${mixed!.measuredMs} ms for an estimate of ${mixed!.estimateMs} ms`);
   }
 
-  // Under one factor for the whole slice the generator's rate would now be a sixteenth of what was measured.
+  // Under one factor for the whole slice the generator's rate would now be a sixteenth of what it measures.
   const after = rateOf((await slicesOf(rig, known))[0]!);
-  assert.ok(after >= 0.45 * settled && after <= 2.2 * settled, `the rate went from ${settled} to ${after}`);
+  assert.ok(same(after, settled), `the rate went from ${settled} to ${after}`);
+  // The correction went to the kernel it belongs to: half per slice.
+  const corrected = rateOf((await slicesOf(rig, fresh))[0]!);
+  assert.ok(same(corrected, RATE_INITIAL / 16), `the new kernel's rate is ${corrected}`);
   rig.dispose();
 });
 
 test('a rate is learned per ladder level: what a small grid measures does not change the estimate of a large one', async () => {
-  const rig = await createRig({ hooks: { sliceTargetMs: 1e9 } });
+  // This device takes three times RATE_INITIAL per unit at 129 (level 7); at 33 and below a slice is over before its timer moves.
+  const rig = await createRig({ hooks: { sliceTargetMs: 1e9, measure: (share) => (share.level >= 7 ? share.work * 3 * RATE_INITIAL : 0) } });
   await rig.compile(fbm);
-  const params = { cells: 8, octaves: 16, gain: 0.5 };
-  const large = rig.field('field', 513), small = rig.field('field', 33);
-  const rateOf = (slice: SliceReport): number => slice.estimateMs / slice.work;
-  const at = (out: typeof large, runs: number) => (): void => { for (let k = 0; k < runs; k++) rig.run(fbm, { out: { out }, params, cost: 128 }); };
+  const large = rig.field('field', 129), small = rig.field('field', 33), tiny = rig.field('field', 17);
+  const rateAt = async (out: typeof large): Promise<number> => {
+    const [slice, ...rest] = await slicesOf(rig, () => { rig.run(fbm, { out: { out }, params: { cells: 8, octaves: 2, gain: 0.5 }, cost: 128 }); });
+    assert.equal(rest.length, 0);
+    return rateOf(slice!);
+  };
 
-  // The first run at a level starts at RATE_INITIAL.
-  const same = (a: number, b: number): boolean => Math.abs(a - b) <= 1e-9 * b;
-  const first = (await slicesOf(rig, at(large, 20)))[0]!;
-  assert.ok(same(rateOf(first), RATE_INITIAL));
-  for (let i = 0; i < 12; i++) {
-    const [slice] = await slicesOf(rig, at(large, 20));
-    if (i >= 3 && slice!.resolved && slice!.measuredMs > 0.6 * slice!.estimateMs && slice!.measuredMs < 1.6 * slice!.estimateMs) break;
+  // The first run at a level starts at RATE_INITIAL, and the level learns what it measures.
+  for (const multiple of [1, 2, 3]) assert.ok(same(await rateAt(large), multiple * RATE_INITIAL));
+  const learned = await rateAt(large);
+  assert.ok(same(learned, 3 * RATE_INITIAL));
+
+  // A level it has not run at takes the rate of the nearest level where it has, when that is above RATE_INITIAL.
+  // Every slice there then measures nothing, and halves the rate of that level alone, down to the floor (rule 7).
+  let expected = learned;
+  for (let i = 0; i < 13; i++) {
+    const got = await rateAt(small);
+    assert.ok(same(got, expected), `run ${i} at 33 was estimated at a rate of ${got}; expected ${expected}`);
+    expected = Math.max(expected / 2, RATE_FLOOR);
   }
-  const learned = rateOf((await slicesOf(rig, at(large, 1)))[0]!);
+  assert.equal(expected, RATE_FLOOR);
 
-  // A level it has not run at takes the rate of the nearest level where that is above RATE_INITIAL, and RATE_INITIAL otherwise.
-  const smallFirst = (await slicesOf(rig, at(small, 1)))[0]!;
-  // (The slice that showed `learned` may have moved the rate once more, by at most a factor of two.)
-  const inherited = rateOf(smallFirst);
-  assert.ok(
-    inherited >= Math.max(0.5 * learned, RATE_INITIAL) * (1 - 1e-9) && inherited <= Math.max(2 * learned, RATE_INITIAL) * (1 + 1e-9),
-    `${inherited} at 33 after ${learned} at 513`,
-  );
-  // Slices far too short to be measured: each halves the rate of the small level, down to the floor (3.3 rule 7).
-  for (let i = 0; i < 12; i++) await slicesOf(rig, at(small, 1));
-  const smallRate = rateOf((await slicesOf(rig, at(small, 1)))[0]!);
-
-  const after = rateOf((await slicesOf(rig, at(large, 1)))[0]!);
-  // The single run in between may move the large level by its own factor of at most two; twelve halvings would not.
-  assert.ok(after >= 0.45 * learned && after <= 2.2 * learned, `the rate at 513 went from ${learned} to ${after} while the rate at 33 went to ${smallRate}`);
+  const after = await rateAt(large);
+  assert.ok(same(after, learned), `the rate at 129 went from ${learned} to ${after} while the rate at 33 went to ${expected}`);
+  // And RATE_INITIAL where the nearest level is below it: 17 has 33 beside it, which is at the floor.
+  assert.ok(same(await rateAt(tiny), RATE_INITIAL));
   rig.dispose();
 });
 
 test('a kernel the device has not measured fills a slice by texels, whatever its estimate; a measured one by its estimate', async () => {
-  const rig = await createRig();
+  // What a slice of each kernel measures, as a multiple of its estimate.
+  const multiple: Record<string, number> = { 'test/where': 2, 'ref/fbm': 100 };
+  const rig = await createRig({ hooks: { measure: (share) => share.estimateMs * multiple[share.kernel]! } });
   await rig.compile(where, fbm);
   const n = 513;                                                   // 263 169 texels: four runs pass 2^20
   const out = rig.field('field', n);
-  const runsPerSlice = (slices: readonly SliceReport[]): number[] => slices.map((s) => Math.round(s.work / (n * n * 8)));
+  const fiveRuns = async (): Promise<number[]> => {
+    const slices = await slicesOf(rig, () => { for (let i = 0; i < 5; i++) rig.run(where, { out: { out } }); });
+    return slices.map((s) => Math.round(s.work / (n * n * 8)));
+  };
 
-  // Estimated at RATE_INITIAL the five runs are 1 ms, far below the slice target of 8 ms.
-  const cold = await slicesOf(rig, () => { for (let i = 0; i < 5; i++) rig.run(where, { out: { out } }); });
-  assert.deepEqual(runsPerSlice(cold), [4, 1]);
+  // Estimated at RATE_INITIAL the five runs are 1 ms, far below the slice target of 8 ms: the texels close the slice.
+  assert.deepEqual(await fiveRuns(), [4, 1]);
+  // Those slices measured twice their estimate, which is "at most twice": from now on the estimate alone decides.
+  multiple['test/where'] = 1;
+  assert.deepEqual(await fiveRuns(), [5]);
+  // The kernel is measured while its last measurement was at most twice its estimate, and no longer.
+  multiple['test/where'] = 2.5;
+  assert.deepEqual(await fiveRuns(), [5], 'sized before it was measured');
+  assert.deepEqual(await fiveRuns(), [4, 1]);
 
-  // Once a slice has measured at most twice its estimate, the estimate alone decides. A software adapter needs
-  // some slices to get there: each raises the rate by at most a factor of two.
-  let warm: number[] = [];
-  for (let i = 0; i < 16 && warm.length !== 1; i++) warm = runsPerSlice(await slicesOf(rig, () => { for (let k = 0; k < 5; k++) rig.run(where, { out: { out } }); }));
-  assert.deepEqual(warm, [5]);
-
-  // A kernel that declares an eighth of a load where it performs 128 stays bound: every slice measures far above its estimate.
-  const params = { cells: 8, octaves: 16, gain: 0.5 };
+  // A kernel that declares an eighth of a load and measures a hundred times its estimate stays bound, slice after slice.
   for (let i = 0; i < 3; i++) {
-    const heavy = await slicesOf(rig, () => { for (let k = 0; k < 5; k++) rig.run(fbm, { out: { out }, params, cost: 0.125 }); });
+    const heavy = await slicesOf(rig, () => { for (let k = 0; k < 5; k++) rig.run(fbm, { out: { out }, params: { cells: 8, octaves: 2, gain: 0.5 }, cost: 0.125 }); });
     assert.deepEqual(heavy.map((s) => Math.round(s.work / (n * n * 0.125))), [4, 1], `round ${i}`);
   }
   rig.dispose();
@@ -541,39 +590,92 @@ test('a kernel declared tiled: false is one dispatch, and is refused when one di
 test('a slice measured above the ceiling is reported and corrects its rates at once', async () => {
   const overruns: SliceReport[] = [];
   const ceilings: number[] = [];
+  let measured = 0;                                                // what the next slice measures, in milliseconds
+  const rig = await createRig({
+    hooks: { sliceTargetMs: 1e9, measure: () => measured },
+    onOverrun: (slice, ceilingMs) => { overruns.push(slice); ceilings.push(ceilingMs); },
+  });
+  await rig.compile(where);
+  const n = 129, work = n * n * 8;
+  const out = rig.field('field', n);
+  const sliceMeasuring = async (ms: number, owner?: { nodeId: string; limitScale: number }): Promise<SliceReport> => {
+    measured = ms;
+    await rig.stream.flush();
+    const before = rig.slices.length;
+    const used = owner ? rig.use(owner) : rig.owner;
+    rig.run(where, { out: { out } });
+    await used.settle();
+    if (owner) {
+      used.close();
+      rig.stream.use(rig.owner);
+    }
+    const [slice, ...rest] = rig.slices.slice(before);
+    assert.equal(rest.length, 0);
+    assert.deepEqual([slice!.measuredMs, slice!.resolved, slice!.work], [ms, true, work]);
+    return slice!;
+  };
+
+  // A slice at the ceiling is not above it: nothing is reported, and the factor is held at two.
+  assert.ok(same(rateOf(await sliceMeasuring(500)), RATE_INITIAL));
+  assert.deepEqual(overruns, []);
+
+  const over = await sliceMeasuring(500.5);
+  assert.ok(same(rateOf(over), 2 * RATE_INITIAL));
+  assert.deepEqual(overruns, [over]);
+  assert.deepEqual(ceilings, [500]);
+  // 3.3 rule 3: the factor is not held at two, nor the rate at the cap of rule 6. The kernel's rate is now what was measured.
+  const next = await sliceMeasuring(1);
+  assert.ok(same(rateOf(next), 500.5 / work) && rateOf(next) > RATE_CAP, `rate ${rateOf(next)} against a measured ${500.5 / work}`);
+  assert.equal(overruns.length, 1, 'a slice below the ceiling is not reported');
+
+  // After a device loss a node's ceiling is halved (5.9 rule 6): the slice is held against the ceiling of its owner.
+  const halved = await sliceMeasuring(300, { nodeId: 'retried', limitScale: 0.5 });
+  assert.deepEqual(overruns, [over, halved]);
+  assert.deepEqual(ceilings, [500, 250]);
+  assert.deepEqual([halved.nodeId, halved.service, halved.kernels], ['retried', null, ['test/where']]);
+  assert.ok(same(rateOf(await sliceMeasuring(300)), 300 / work), 'corrected at once there too');
+  assert.equal(overruns.length, 2, 'under the usual ceiling of 500 ms the same duration is not reported');
+  rig.dispose();
+});
+
+test('on the device\'s own clock a slice is held against the ceiling exactly when its duration was measured', async () => {
+  const overruns: SliceReport[] = [];
+  const ceilings: number[] = [];
   const rig = await createRig({ hooks: { sliceTargetMs: 1e9 }, onOverrun: (slice, ceilingMs) => { overruns.push(slice); ceilings.push(ceilingMs); } });
   await rig.compile(fbm);
   const n = 513;
   const out = rig.field('field', n);
   const params = { cells: 8, octaves: 16, gain: 0.5 };
-  // The first use of the pipeline, and a completion latency measured on an idle queue.
-  rig.run(fbm, { out: { out }, params });
+  // A completion latency measured on an idle queue, so that by wall clock the slice can be resolved.
   await rig.stream.flush();
   await rig.stream.barrier();
-  assert.equal(overruns.length, 0);
 
   // An owner whose ceiling is half a microsecond: whatever its slice takes is above it. The run declares one
   // load per texel where it performs 128, so the slice is estimated far too short.
   const owner = rig.use({ nodeId: 'slow', limitScale: 1e-6 });
   const before = rig.slices.length;
-  for (let i = 0; i < 40; i++) rig.run(fbm, { out: { out }, params, cost: 1 });
+  for (let i = 0; i < 8; i++) rig.run(fbm, { out: { out }, params, cost: 1 });
   await owner.settle();
   owner.close();
   const [slice, ...others] = rig.slices.slice(before);
   assert.equal(others.length, 0);
-  assert.deepEqual(overruns, [slice]);
-  assert.deepEqual(ceilings, [500e-6], 'with the ceiling of the owner it was held against');
-  assert.equal(slice!.resolved, true, 'only a measured duration is held against the ceiling');
-  assert.ok(slice!.measuredMs > 2 * slice!.estimateMs, `measured ${slice!.measuredMs} ms for an estimate of ${slice!.estimateMs} ms`);
+  assert.ok(same(rateOf(slice!), RATE_INITIAL));
+  const told = `measured ${slice!.measuredMs} ms${slice!.resolved ? '' : ' at most'} for an estimate of ${slice!.estimateMs} ms`;
+  // With timestamps every slice is timed. By wall clock a duration is known only when the thread saw both ends
+  // of the slice as they happened (3.5), which a busy machine does not grant: an upper bound is never reported.
+  if (rig.gpu.caps.timestampQuery) assert.ok(slice!.resolved, told);
+  const reported = slice!.resolved && slice!.measuredMs > 500e-6;
+  assert.deepEqual(overruns, reported ? [slice] : [], told);
+  assert.deepEqual(ceilings, reported ? [500e-6] : [], 'with the ceiling of the owner it was held against');
 
-  // 3.3 rule 3: the factor is not held at two. The kernel's rate is now what was measured.
   rig.stream.use(rig.owner);
-  rig.run(fbm, { out: { out }, params, cost: 1 });
-  await rig.stream.flush();
-  const next = rig.slices[rig.slices.length - 1]!;
-  const learned = next.estimateMs / next.work, measured = slice!.measuredMs / slice!.work;
-  assert.ok(Math.abs(learned - measured) <= 1e-9 * measured, `rate ${learned} against a measured ${measured}`);
-  assert.equal(overruns.length, 1, 'under the usual ceiling of 500 ms nothing more is reported');
+  const [next] = await slicesOf(rig, () => { rig.run(fbm, { out: { out }, params, cost: 1 }); });
+  const learned = rateOf(next!), measured = slice!.measuredMs / slice!.work;
+  // 3.3 rule 3: a reported slice sets the rate to what was measured. An upper bound never raises one.
+  if (reported) assert.ok(same(learned, measured), `rate ${learned} against a measured ${measured}`);
+  else if (!slice!.resolved) assert.ok(learned <= RATE_INITIAL, `rate ${learned} after ${told}`);
+  // Under the usual ceiling of 500 ms the next slice is reported only if it really measured more.
+  assert.equal(overruns.length, (reported ? 1 : 0) + (next!.resolved && next!.measuredMs > HARD_CEILING_MS ? 1 : 0));
   rig.dispose();
 });
 
@@ -594,12 +696,13 @@ test('a completion nobody waited for is not a measured duration, and is not held
   // The thread does something else for 30 ms and only then looks: the slice completed long before.
   const until = performance.now() + 30;
   while (performance.now() < until);
-  await rig.gpu.device.queue.onSubmittedWorkDone();
-  for (let i = 0; i < 50 && rig.slices.length === before; i++) await new Promise<void>((done) => { setTimeout(done, 1); });
+  await owner.settle();
   const [slice] = rig.slices.slice(before);
   assert.ok(slice, 'the slice was reported');
   if (rig.gpu.caps.timestampQuery) {
-    assert.ok(slice.resolved && slice.measuredMs < 20, `timestamps are the GPU's own: ${slice.measuredMs} ms`);
+    // Timestamps are the GPU's own: the slice is timed whatever the thread did meanwhile, and is held against the ceiling.
+    assert.equal(slice.resolved, true);
+    assert.deepEqual(overruns, slice.measuredMs > 500e-6 ? [slice] : [], `measured ${slice.measuredMs} ms`);
   } else {
     assert.equal(slice.resolved, false);
     assert.ok(slice.measuredMs >= 25, `what is known is an upper bound: ${slice.measuredMs} ms`);

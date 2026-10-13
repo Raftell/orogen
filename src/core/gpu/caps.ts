@@ -7,7 +7,7 @@ export interface GpuCaps {
     readonly isFallbackAdapter: boolean;
     readonly backend: string | null;            // exposed by Chromium with developer features, else null
   };
-  /** A CPU rasteriser: isFallbackAdapter, or device + description matches /llvmpipe|SwiftShader|Basic Render/i. */
+  /** A CPU rasteriser: isFallbackAdapter, or architecture `warp` or `software`, or device + description names llvmpipe, SwiftShader or Basic Render. */
   readonly software: boolean;
   readonly adapterFeatures: readonly string[];  // what the adapter offers, sorted
   readonly features: readonly string[];         // what the device has, sorted
@@ -63,6 +63,26 @@ interface PlatformAdapterInfo {
 }
 const HEAP_DEVICE_LOCAL = 1;
 
+/** A name by its letters and digits alone: WebGPU reports "microsoft-basic-render-driver" where the driver says "Microsoft Basic Render Driver". */
+const letters = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]+/g, '');
+
+/** Whether an adapter computes on the CPU (runtime.md 1.3). WARP under Dawn does not set isFallbackAdapter: its name has to do. */
+export function isSoftwareAdapter(adapter: Pick<GpuCaps['adapter'], 'architecture' | 'device' | 'description' | 'isFallbackAdapter'>): boolean {
+  return adapter.isFallbackAdapter
+    || /^(warp|software)$/.test(letters(adapter.architecture))
+    || /llvmpipe|swiftshader|basicrender/.test(letters(`${adapter.device} ${adapter.description}`));
+}
+
+/**
+ * Whether `name`, as OROGEN_GPU_ADAPTER or --adapter gives it, names this adapter (runtime.md 1.5 rule 2). The
+ * factory matches the name against the driver's own text; adapter.info gives that text respelled, in a member
+ * the platform chooses.
+ */
+export function adapterNamed(adapter: Pick<GpuCaps['adapter'], 'vendor' | 'architecture' | 'device' | 'description'>, name: string): boolean {
+  const wanted = letters(name);
+  return [adapter.vendor, adapter.architecture, adapter.device, adapter.description].some((text) => letters(text).includes(wanted));
+}
+
 /** Fills GpuCaps from the adapter and the created device (runtime.md 1.3). `gpu` supplies wgslLanguageFeatures. */
 export function probeCaps(gpu: GPU, adapter: GPUAdapter, device: GPUDevice): GpuCaps {
   const info = adapter.info;
@@ -70,13 +90,14 @@ export function probeCaps(gpu: GPU, adapter: GPUAdapter, device: GPUDevice): Gpu
   const isFallbackAdapter = platform.isFallbackAdapter === true || (adapter as { isFallbackAdapter?: boolean }).isFallbackAdapter === true;
   const compactFormats = device.features.has('texture-formats-tier1');
   const heaps = (platform.memoryHeaps ?? []).filter((heap) => (heap.properties & HEAP_DEVICE_LOCAL) !== 0).map((heap) => Number(heap.size));
+  const described: GpuCaps['adapter'] = {
+    vendor: info.vendor, architecture: info.architecture, device: info.device, description: info.description,
+    isFallbackAdapter,
+    backend: typeof platform.backend === 'string' ? platform.backend : null,
+  };
   return {
-    adapter: {
-      vendor: info.vendor, architecture: info.architecture, device: info.device, description: info.description,
-      isFallbackAdapter,
-      backend: typeof platform.backend === 'string' ? platform.backend : null,
-    },
-    software: isFallbackAdapter || /llvmpipe|SwiftShader|Basic Render/i.test(`${info.device} ${info.description}`),
+    adapter: described,
+    software: isSoftwareAdapter(described),
     adapterFeatures: [...adapter.features].sort(),
     features: [...device.features].sort(),
     wgslLanguageFeatures: [...gpu.wgslLanguageFeatures].sort(),

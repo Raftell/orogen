@@ -11,6 +11,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { before, test } from 'node:test';
 
+import { adapterNamed } from '../../../src/core/gpu/caps.ts';
 import fbm from '../../../src/core/nodes/ref/fbm.ts';
 import talus from '../../../src/core/nodes/ref/talus.ts';
 import { conformance } from '../../helpers/index.ts';
@@ -25,7 +26,7 @@ const KEPT_OUTPUT = 1 << 20;
 type Result = 'passed' | 'failed' | 'skipped' | 'not-applicable' | 'not-run';
 interface Report {
   readonly type: string;
-  readonly adapter: { readonly description: string; readonly device: string; readonly software: boolean } | null;
+  readonly adapter: { readonly vendor: string; readonly architecture: string; readonly device: string; readonly description: string; readonly software: boolean } | null;
   readonly profile: string | null;
   readonly compactFormats: boolean | null;
   readonly checks: Readonly<Record<string, { readonly result: Result; readonly reason?: string; readonly message?: string }>>;
@@ -239,7 +240,7 @@ test('the report names the adapter and the profile the suite ran on', () => {
   assert.equal(r.type, 'ref/good-any');
   assert.equal(r.profile, process.env.OROGEN_GPU_PROFILE || 'core');
   assert.ok(r.adapter && typeof r.adapter.description === 'string' && typeof r.adapter.software === 'boolean');
-  if (process.env.OROGEN_GPU_ADAPTER) assert.ok(r.adapter.device.includes(process.env.OROGEN_GPU_ADAPTER), r.adapter.device);
+  if (process.env.OROGEN_GPU_ADAPTER) assert.ok(adapterNamed(r.adapter, process.env.OROGEN_GPU_ADAPTER), JSON.stringify(r.adapter));
   assert.deepEqual(Object.keys(r.checks), [
     'meta', 'finite', 'mask-range', 'alpha', 'generator-range', 'deterministic', 'deterministic-large', 'resolution', 'params',
     'optional-unbound', 'short-ladder', 'mask-neutral', 'seed', 'wants', 'budget', 'abort', 'slicing', 'leaks',
