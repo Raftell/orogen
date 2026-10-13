@@ -10,10 +10,9 @@ import {
   type ClientMessage, type GpuContext, type GpuProfile, type SessionPort, type WorkerMessage,
 } from '../../../core/runtime.ts';
 import { buildToFolder } from '../../../export/folder.ts';
+import { createViewportRenderer } from '../../../viewport/index.ts';
 import { NodeFileSink, NodeFileSource } from '../../node/files.ts';
 import { createWebCpuRunner } from './cpu.ts';
-// PLACEHOLDER: the renderer of src/viewport/ takes its place.
-import { createPlaceholderViewport } from './placeholder-viewport.ts';
 
 type Listener = (e: { data: unknown }) => void;
 
@@ -130,7 +129,7 @@ async function start(): Promise<void> {
       reopenGpu,
       createFiles: (projectPath) => NodeFileSource(projectPath === null ? null : path.dirname(projectPath)),
       build: (host, o) => buildToFolder(host, { ...o, createSink: NodeFileSink }),
-      renderer: createPlaceholderViewport(),
+      renderer: createViewportRenderer(),
     });
     // The same task as createSession (8.3 step 4): the first subscriber is the server, so no event is missed.
     serveSession(session, port);

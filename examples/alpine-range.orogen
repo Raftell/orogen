@@ -1,0 +1,720 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4032,
+    "heightRange": 1008,
+    "seed": 11,
+    "buildResolution": 4033,
+    "previewLevel": 2,
+    "seaLevel": 0
+  },
+  "nodes": {
+    "range": {
+      "id": "range",
+      "type": "generate/mountain-range",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 220
+      },
+      "params": {
+        "angle": 14,
+        "size": 0.8,
+        "length": 1.9,
+        "height": 1,
+        "count": 9,
+        "sharpness": 0.65,
+        "erosion": 0.6,
+        "seed": 0
+      },
+      "title": "Range"
+    },
+    "foothills": {
+      "id": "foothills",
+      "type": "generate/fractal-noise",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 440
+      },
+      "params": {
+        "mode": "fbm",
+        "size": 0.5,
+        "octaves": 6,
+        "gain": 0.45,
+        "lacunarity": 2,
+        "warpStrength": 0,
+        "warpSize": 0.5,
+        "seed": 3
+      },
+      "title": "Foothills"
+    },
+    "lowFoothills": {
+      "id": "lowFoothills",
+      "type": "adjust/levels",
+      "version": 1,
+      "position": {
+        "x": 300,
+        "y": 440
+      },
+      "params": {
+        "inMin": 0,
+        "inMax": 1,
+        "gamma": 1,
+        "outMin": 0,
+        "outMax": 0.2,
+        "clamp": true
+      },
+      "title": "Foothill Height"
+    },
+    "base": {
+      "id": "base",
+      "type": "adjust/combine",
+      "version": 1,
+      "position": {
+        "x": 600,
+        "y": 220
+      },
+      "params": {
+        "mode": "add",
+        "strength": 1,
+        "smoothness": 0.1
+      },
+      "title": "Range on Foothills"
+    },
+    "fluvial": {
+      "id": "fluvial",
+      "type": "simulate/fluvial-erosion",
+      "version": 1,
+      "position": {
+        "x": 900,
+        "y": 220
+      },
+      "params": {
+        "size": 0.125,
+        "duration": 0.7,
+        "concavity": 0.4,
+        "talus": 30,
+        "uplift": 0,
+        "lakeFill": 1,
+        "detail": 0,
+        "seed": 0
+      },
+      "title": "Valleys"
+    },
+    "hydraulic": {
+      "id": "hydraulic",
+      "type": "simulate/hydraulic-erosion",
+      "version": 1,
+      "position": {
+        "x": 1200,
+        "y": 220
+      },
+      "params": {
+        "size": 0.05,
+        "duration": 2,
+        "rain": 0.24,
+        "capacity": 1,
+        "downcutting": 0.5,
+        "deposition": 1,
+        "removal": 0.4,
+        "talus": 45,
+        "detail": 0,
+        "seed": 0
+      },
+      "title": "Gullies and Fans"
+    },
+    "thermal": {
+      "id": "thermal",
+      "type": "simulate/thermal-erosion",
+      "version": 1,
+      "position": {
+        "x": 1500,
+        "y": 220
+      },
+      "params": {
+        "talus": 38,
+        "size": 0.005,
+        "strength": 1,
+        "removal": 0
+      },
+      "title": "Scree Slopes"
+    },
+    "snow": {
+      "id": "snow",
+      "type": "simulate/snow",
+      "version": 1,
+      "position": {
+        "x": 1800,
+        "y": 220
+      },
+      "params": {
+        "snowfall": 0.02,
+        "snowLine": 0.42,
+        "band": 0.05,
+        "slipAngle": 50,
+        "melt": 0.2,
+        "exposure": 0.5,
+        "angle": 135,
+        "size": 0.02
+      },
+      "title": "Snow Cover"
+    },
+    "flow": {
+      "id": "flow",
+      "type": "simulate/flow",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 0
+      },
+      "params": {
+        "routing": "single",
+        "seed": 0
+      },
+      "title": "Drainage"
+    },
+    "color": {
+      "id": "color",
+      "type": "color/natural",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 0
+      },
+      "params": {
+        "mode": "alpine",
+        "variation": 0.5,
+        "seed": 0
+      },
+      "title": "Alpine Colors"
+    },
+    "rock": {
+      "id": "rock",
+      "type": "select/slope",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 660
+      },
+      "params": {
+        "slopeMin": 38,
+        "slopeMax": 90,
+        "feather": 6,
+        "radius": 0.005,
+        "invert": false
+      },
+      "title": "Steep Rock"
+    },
+    "scree": {
+      "id": "scree",
+      "type": "adjust/levels",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 880
+      },
+      "params": {
+        "inMin": 0,
+        "inMax": 0.004,
+        "gamma": 1,
+        "outMin": 0,
+        "outMax": 1,
+        "clamp": true
+      },
+      "title": "Scree Deposits"
+    },
+    "lowland": {
+      "id": "lowland",
+      "type": "select/height",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 1100
+      },
+      "params": {
+        "heightMin": 0,
+        "heightMax": 0.32,
+        "feather": 0.06,
+        "invert": false
+      },
+      "title": "Below Tree Line"
+    },
+    "gentle": {
+      "id": "gentle",
+      "type": "select/slope",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 1320
+      },
+      "params": {
+        "slopeMin": 0,
+        "slopeMax": 28,
+        "feather": 8,
+        "radius": 0.005,
+        "invert": false
+      },
+      "title": "Gentle Ground"
+    },
+    "grass": {
+      "id": "grass",
+      "type": "adjust/combine",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 1100
+      },
+      "params": {
+        "mode": "multiply",
+        "strength": 1,
+        "smoothness": 0.1
+      },
+      "title": "Grass"
+    },
+    "landscape": {
+      "id": "landscape",
+      "type": "io/export-landscape",
+      "version": 1,
+      "position": {
+        "x": 2700,
+        "y": 220
+      },
+      "params": {
+        "enabled": true,
+        "name": "Alpine",
+        "rangeMode": "measured",
+        "headroom": 0,
+        "heightMin": 0,
+        "heightMax": 1,
+        "dither": true,
+        "zeroAt": "seaLevel",
+        "origin": "center",
+        "baseLayer": "Soil",
+        "layerBlend": "advanced",
+        "layerFloor": 0.008,
+        "layerLimit": 0,
+        "partition": true,
+        "gridComponents": 4,
+        "regionComponents": 32
+      },
+      "title": "Landscape"
+    },
+    "layerRock": {
+      "id": "layerRock",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2700,
+        "y": 660
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Rock",
+        "weightBlended": true
+      },
+      "title": "Rock Layer"
+    },
+    "layerScree": {
+      "id": "layerScree",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2700,
+        "y": 880
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Scree",
+        "weightBlended": true
+      },
+      "title": "Scree Layer"
+    },
+    "layerGrass": {
+      "id": "layerGrass",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2700,
+        "y": 1100
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Grass",
+        "weightBlended": true
+      },
+      "title": "Grass Layer"
+    },
+    "layerSnow": {
+      "id": "layerSnow",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2700,
+        "y": 440
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Snow",
+        "weightBlended": true
+      },
+      "title": "Snow Layer"
+    },
+    "colorMap": {
+      "id": "colorMap",
+      "type": "io/export-color",
+      "version": 1,
+      "position": {
+        "x": 2700,
+        "y": 0
+      },
+      "params": {
+        "enabled": true,
+        "name": "AlpineColor",
+        "dimension": "auto",
+        "content": "color"
+      },
+      "title": "Color Map"
+    }
+  },
+  "edges": {
+    "foothills-out--lowFoothills-in": {
+      "id": "foothills-out--lowFoothills-in",
+      "from": {
+        "node": "foothills",
+        "port": "out"
+      },
+      "to": {
+        "node": "lowFoothills",
+        "port": "in"
+      }
+    },
+    "range-out--base-a": {
+      "id": "range-out--base-a",
+      "from": {
+        "node": "range",
+        "port": "out"
+      },
+      "to": {
+        "node": "base",
+        "port": "a"
+      }
+    },
+    "lowFoothills-out--base-b": {
+      "id": "lowFoothills-out--base-b",
+      "from": {
+        "node": "lowFoothills",
+        "port": "out"
+      },
+      "to": {
+        "node": "base",
+        "port": "b"
+      }
+    },
+    "base-out--fluvial-in": {
+      "id": "base-out--fluvial-in",
+      "from": {
+        "node": "base",
+        "port": "out"
+      },
+      "to": {
+        "node": "fluvial",
+        "port": "in"
+      }
+    },
+    "fluvial-out--hydraulic-in": {
+      "id": "fluvial-out--hydraulic-in",
+      "from": {
+        "node": "fluvial",
+        "port": "out"
+      },
+      "to": {
+        "node": "hydraulic",
+        "port": "in"
+      }
+    },
+    "hydraulic-out--thermal-in": {
+      "id": "hydraulic-out--thermal-in",
+      "from": {
+        "node": "hydraulic",
+        "port": "out"
+      },
+      "to": {
+        "node": "thermal",
+        "port": "in"
+      }
+    },
+    "thermal-out--snow-in": {
+      "id": "thermal-out--snow-in",
+      "from": {
+        "node": "thermal",
+        "port": "out"
+      },
+      "to": {
+        "node": "snow",
+        "port": "in"
+      }
+    },
+    "snow-out--flow-in": {
+      "id": "snow-out--flow-in",
+      "from": {
+        "node": "snow",
+        "port": "out"
+      },
+      "to": {
+        "node": "flow",
+        "port": "in"
+      }
+    },
+    "snow-out--color-in": {
+      "id": "snow-out--color-in",
+      "from": {
+        "node": "snow",
+        "port": "out"
+      },
+      "to": {
+        "node": "color",
+        "port": "in"
+      }
+    },
+    "flow-out--color-flow": {
+      "id": "flow-out--color-flow",
+      "from": {
+        "node": "flow",
+        "port": "out"
+      },
+      "to": {
+        "node": "color",
+        "port": "flow"
+      }
+    },
+    "snow-snow--color-snow": {
+      "id": "snow-snow--color-snow",
+      "from": {
+        "node": "snow",
+        "port": "snow"
+      },
+      "to": {
+        "node": "color",
+        "port": "snow"
+      }
+    },
+    "snow-out--rock-in": {
+      "id": "snow-out--rock-in",
+      "from": {
+        "node": "snow",
+        "port": "out"
+      },
+      "to": {
+        "node": "rock",
+        "port": "in"
+      }
+    },
+    "thermal-deposit--scree-in": {
+      "id": "thermal-deposit--scree-in",
+      "from": {
+        "node": "thermal",
+        "port": "deposit"
+      },
+      "to": {
+        "node": "scree",
+        "port": "in"
+      }
+    },
+    "snow-out--lowland-in": {
+      "id": "snow-out--lowland-in",
+      "from": {
+        "node": "snow",
+        "port": "out"
+      },
+      "to": {
+        "node": "lowland",
+        "port": "in"
+      }
+    },
+    "snow-out--gentle-in": {
+      "id": "snow-out--gentle-in",
+      "from": {
+        "node": "snow",
+        "port": "out"
+      },
+      "to": {
+        "node": "gentle",
+        "port": "in"
+      }
+    },
+    "lowland-out--grass-a": {
+      "id": "lowland-out--grass-a",
+      "from": {
+        "node": "lowland",
+        "port": "out"
+      },
+      "to": {
+        "node": "grass",
+        "port": "a"
+      }
+    },
+    "gentle-out--grass-b": {
+      "id": "gentle-out--grass-b",
+      "from": {
+        "node": "gentle",
+        "port": "out"
+      },
+      "to": {
+        "node": "grass",
+        "port": "b"
+      }
+    },
+    "snow-out--landscape-in": {
+      "id": "snow-out--landscape-in",
+      "from": {
+        "node": "snow",
+        "port": "out"
+      },
+      "to": {
+        "node": "landscape",
+        "port": "in"
+      }
+    },
+    "rock-out--layerRock-in": {
+      "id": "rock-out--layerRock-in",
+      "from": {
+        "node": "rock",
+        "port": "out"
+      },
+      "to": {
+        "node": "layerRock",
+        "port": "in"
+      }
+    },
+    "scree-out--layerScree-in": {
+      "id": "scree-out--layerScree-in",
+      "from": {
+        "node": "scree",
+        "port": "out"
+      },
+      "to": {
+        "node": "layerScree",
+        "port": "in"
+      }
+    },
+    "grass-out--layerGrass-in": {
+      "id": "grass-out--layerGrass-in",
+      "from": {
+        "node": "grass",
+        "port": "out"
+      },
+      "to": {
+        "node": "layerGrass",
+        "port": "in"
+      }
+    },
+    "snow-snow--layerSnow-in": {
+      "id": "snow-snow--layerSnow-in",
+      "from": {
+        "node": "snow",
+        "port": "snow"
+      },
+      "to": {
+        "node": "layerSnow",
+        "port": "in"
+      }
+    },
+    "color-out--colorMap-in": {
+      "id": "color-out--colorMap-in",
+      "from": {
+        "node": "color",
+        "port": "out"
+      },
+      "to": {
+        "node": "colorMap",
+        "port": "in"
+      }
+    }
+  },
+  "groups": {
+    "group-1": {
+      "id": "group-1",
+      "title": "Shape",
+      "color": "#79461d",
+      "rect": {
+        "x": -20,
+        "y": 176,
+        "w": 864,
+        "h": 428
+      }
+    },
+    "group-2": {
+      "id": "group-2",
+      "title": "Erosion",
+      "color": "#2b652b",
+      "rect": {
+        "x": 880,
+        "y": 176,
+        "w": 864,
+        "h": 208
+      }
+    },
+    "group-3": {
+      "id": "group-3",
+      "title": "Snow",
+      "color": "#246283",
+      "rect": {
+        "x": 1780,
+        "y": 176,
+        "w": 264,
+        "h": 208
+      }
+    },
+    "group-4": {
+      "id": "group-4",
+      "title": "Color",
+      "color": "#6e6e23",
+      "rect": {
+        "x": 2080,
+        "y": -44,
+        "w": 564,
+        "h": 208
+      }
+    },
+    "group-5": {
+      "id": "group-5",
+      "title": "Layer Masks",
+      "color": "#3c3c83",
+      "rect": {
+        "x": 2080,
+        "y": 616,
+        "w": 564,
+        "h": 868
+      }
+    },
+    "group-6": {
+      "id": "group-6",
+      "title": "Export",
+      "color": "#82354c",
+      "rect": {
+        "x": 2680,
+        "y": -44,
+        "w": 264,
+        "h": 1230
+      }
+    }
+  },
+  "ui": {
+    "view": {
+      "height": {
+        "node": "snow",
+        "port": "out"
+      },
+      "overlay": {
+        "ref": {
+          "node": "color",
+          "port": "out"
+        },
+        "as": "color",
+        "opacity": 1
+      }
+    }
+  }
+}

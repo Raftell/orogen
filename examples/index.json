@@ -1,0 +1,40 @@
+{
+  "examples": [
+    {
+      "file": "first-terrain.orogen",
+      "image": "first-terrain.png",
+      "title": "First Terrain",
+      "description": "A mountain, rain that erodes it and an Unreal Landscape: the three nodes every project has. Start here and change one value at a time."
+    },
+    {
+      "file": "alpine-range.orogen",
+      "image": "alpine-range.png",
+      "title": "Alpine Range",
+      "description": "A snow-capped range over foothills, cut by rivers, rain and rockfall. Exports rock, scree, grass and snow layers and a color map."
+    },
+    {
+      "file": "temperate-hills.orogen",
+      "image": "temperate-hills.png",
+      "title": "Temperate Hills",
+      "description": "Rolling green hills drained by a river network, with lakes in the hollows. Shows how rivers and lakes become masks for water and banks."
+    },
+    {
+      "file": "volcanic-island.orogen",
+      "image": "volcanic-island.png",
+      "title": "Volcanic Island",
+      "description": "A cone with a crater lake on an island with beaches and a shallow shelf. Shows the sea level, the coast and masks for sand and rock."
+    },
+    {
+      "file": "desert-canyons.orogen",
+      "image": "desert-canyons.png",
+      "title": "Desert Canyons",
+      "description": "A layered plateau cut by canyons that falls to a sea of dunes. Shows how a mask joins two landforms and keeps the rain off the sand."
+    },
+    {
+      "file": "cratered-highland.orogen",
+      "image": "cratered-highland.png",
+      "title": "Cratered Highland",
+      "description": "Old and young impact craters around one great basin, softened by slumped walls and a blanket of dust. A world without water."
+    }
+  ]
+}

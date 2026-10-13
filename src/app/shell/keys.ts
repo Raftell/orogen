@@ -110,6 +110,17 @@ export function reachesBindingsFromTextField(key: string): boolean {
   return parsed.modifiers.includes('Mod') || FUNCTION_KEY.test(parsed.name);
 }
 
+/**
+ * Rule 3, for a control that uses plain keys for itself and holds no typed text: a number field that shows its
+ * value, a list. It has no undo and no clipboard of its own, so the keys of FIELD_KEYS are the application's
+ * there: Mod+Z after a value was dragged undoes the drag.
+ */
+export function reachesBindingsFromControl(key: string): boolean {
+  const parsed = parse(key);
+  if (!parsed) return false;
+  return parsed.modifiers.includes('Mod') || FUNCTION_KEY.test(parsed.name);
+}
+
 /** A default binding with who declared it. */
 export interface OwnedBinding extends KeyBinding { readonly owner: string }
 
@@ -128,8 +139,12 @@ export interface Keymap {
   readonly bindings: readonly BoundKey[];
   /** The keys of a command; the first is the one shown in menus, the palette and tooltips. */
   keysOf(commandId: string): readonly string[];
-  /** Rule 3: a binding scoped to the focused panel wins over a global one. */
-  resolve(key: string, where: { readonly focusedPanel: PanelId | null; readonly textField: boolean }): string | null;
+  /**
+   * Rule 3: a binding scoped to the focused panel wins over a global one. `textField`: the focus is in an element
+   * that takes plain keys for itself. `typing` (default: as `textField`): that element holds typed text, with an
+   * undo and a clipboard of its own; false for a number field that shows its value and for a list.
+   */
+  resolve(key: string, where: { readonly focusedPanel: PanelId | null; readonly textField: boolean; readonly typing?: boolean }): string | null;
   /** One sentence for each entry of Preferences.keymap that was not applied as written, and each default it displaced. */
   readonly problems: readonly string[];
 }
@@ -206,7 +221,7 @@ export function createKeymap(
     problems,
     keysOf: (commandId) => byCommand.get(commandId) ?? NONE,
     resolve(key, where) {
-      if (where.textField && !reachesBindingsFromTextField(key)) return null;
+      if (where.textField && !((where.typing ?? true) ? reachesBindingsFromTextField(key) : reachesBindingsFromControl(key))) return null;
       const scoped = where.focusedPanel === null ? undefined : bySlot.get(slot(key, where.focusedPanel));
       return scoped ?? bySlot.get(slot(key, 'global')) ?? null;
     },

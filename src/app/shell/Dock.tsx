@@ -172,6 +172,15 @@ export function Dock(props: { readonly shell: Shell; expose?(handle: DockHandle 
       layout: () => ({ version: LAYOUT_VERSION, dock: dock.toJSON() }),
       restore,
     });
+    // What a panel's command asks for through `useApp().showPanel`: its tab in front, and the focus with it.
+    shell.attachDock({
+      show(id) {
+        const panel = dock.getPanel(id);
+        if (!panel) return;
+        if (!panel.api.isActive) panel.api.setActive();
+        if (ui.getState().focusedPanel !== id) ui.setState({ focusedPanel: id });
+      },
+    });
   }
 
   // "Reset layout" (8.7 rule 7): every raise of the counter lays the dock out anew.
@@ -191,6 +200,7 @@ export function Dock(props: { readonly shell: Shell; expose?(handle: DockHandle 
   useEffect(() => () => {
     api.current = null;
     props.expose?.(null);
+    shell.attachDock(null);
   }, []);
 
   return <DockviewReact ref={element} className="og-dock" theme={THEME} components={components} defaultTabComponent={Tab} onReady={onReady} />;

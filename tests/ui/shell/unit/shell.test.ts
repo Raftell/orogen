@@ -430,6 +430,21 @@ test('an edit command goes to the text field that has the focus, else to the foc
   assert.equal(editRoute('copy', { textField: false, focusedPanel: null, has: has('graph.copy') }), null);
 });
 
+test('an edit command that goes to a command of the panel is enabled when that command is', async () => {
+  let selected = false;
+  const ran: string[] = [];
+  const rig = createRig({ panels: fakePanels({ graph: [{ id: 'graph.delete', title: 'Delete', enabled: () => selected, run: () => { ran.push('delete'); } }] }) });
+  rig.ui.setState({ focusedPanel: 'graph' });
+  // Nothing is selected: Edit > Delete is shown as the graph's own Delete is, and does nothing.
+  assert.equal(rig.shell.runner.enabled('edit.delete'), false);
+  await run(rig, 'edit.delete');
+  assert.deepEqual(ran, []);
+  selected = true;
+  assert.equal(rig.shell.runner.enabled('edit.delete'), true);
+  await run(rig, 'edit.delete');
+  assert.deepEqual(ran, ['delete']);
+});
+
 test('the edit commands of the shell do what the route says', async () => {
   const deleted: string[] = [];
   const rig = createRig({ panels: fakePanels({ graph: [{ id: 'graph.delete', title: 'Delete Nodes', run: () => { deleted.push('graph'); } }] }) });

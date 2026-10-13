@@ -1,0 +1,178 @@
+/* The inspector panel. Every colour, space and font is a token of src/app/shell/theme.css; the sizes written
+   out are those of the panel's own drawings: the dial, the curve's points, a gradient's stops. */
+
+/* The panel is the container its rows ask for their width: the dock makes it anything from a sliver to half the window. */
+.root { container: inspector / inline-size; display: flex; flex-direction: column; height: 100%; min-height: 0; overflow-x: auto; overflow-y: hidden; }
+/* Narrower than this nothing can be read: the dock then cuts the panel off, and it scrolls sideways. */
+.root > * { min-width: 168px; }
+.scroll { flex: 1; min-height: 0; padding: var(--og-space-4) var(--og-space-4) var(--og-space-7); overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; }
+.fill { flex: 1; }
+.dim { color: var(--og-text-dim); }
+.warn { color: var(--og-warning); }
+
+/* ---- the head ---- */
+.header { display: flex; flex: none; border-bottom: 1px solid var(--og-border); background: var(--og-bg-raised); }
+.category { flex: none; width: var(--og-space-2); background: var(--og-bg-widget); }
+.headerMain { display: flex; flex: 1; flex-direction: column; gap: var(--og-space-2); min-width: 0; padding: var(--og-space-4); }
+.titleLine { display: flex; align-items: center; gap: var(--og-space-4); min-height: var(--og-control-height); }
+.titleLine .title { flex: 1; min-width: 0; font-size: var(--og-font-size-large); font-weight: var(--og-font-weight-bold); }
+.multiTitle { flex: 1; min-width: 0; overflow: hidden; font-size: var(--og-font-size-large); font-weight: var(--og-font-weight-bold); text-overflow: ellipsis; white-space: nowrap; }
+.bypass { display: inline-flex; flex: none; align-items: center; }
+.typeLine { display: flex; align-items: baseline; gap: var(--og-space-4); min-width: 0; color: var(--og-text-secondary); }
+.typeTitle { flex: none; }
+.typeId { min-width: 0; overflow: hidden; color: var(--og-text-dim); font-family: var(--og-font-mono); font-size: var(--og-font-size-small); text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- what the node does and what the engine says of it ---- */
+.about { position: relative; display: flex; flex-direction: column; gap: var(--og-space-3); padding-bottom: var(--og-space-4); margin-bottom: var(--og-space-3); border-bottom: 1px solid var(--og-divider); }
+.description { color: var(--og-text-secondary); user-select: text; }
+.facts, .derived { display: flex; flex-direction: column; gap: var(--og-space-1); margin: 0; }
+.derived { margin-top: var(--og-space-4); padding-top: var(--og-space-4); border-top: 1px solid var(--og-divider); }
+/* The names of these facts are short words: a narrow column leaves the line to what is said. */
+.fact { display: grid; grid-template-columns: 52px minmax(0, 1fr); column-gap: var(--og-space-3); }
+.derived .fact { grid-template-columns: var(--og-label-width) minmax(0, 1fr); }
+/* One line whatever it says, so that the parameters below never move with the engine's report. */
+.fact dd.oneLine { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fact dt { color: var(--og-text-dim); }
+.fact dd { min-width: 0; margin: 0; color: var(--og-text-secondary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; user-select: text; }
+/* The numbers of the result on screen while a newer one is computed: there, and not the last word. */
+.fact[data-stale] dd { color: var(--og-text-dim); }
+.dot { display: inline-block; width: 7px; height: 7px; margin-right: var(--og-space-3); border-radius: 50%; background: var(--og-text-disabled); }
+.dot[data-tone='ok'] { background: var(--og-ok); }
+.dot[data-tone='running'] { background: var(--og-accent); }
+.dot[data-tone='error'] { background: var(--og-error); }
+.dot[data-tone='skipped'] { background: var(--og-warning); }
+/* On the line below the status, so that nothing moves when a node starts and stops. */
+.progress { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: var(--og-bg-widget); overflow: hidden; }
+.progress > div { height: 100%; background: var(--og-accent); }
+
+.error { display: flex; flex-direction: column; gap: var(--og-space-3); padding: var(--og-space-3) var(--og-space-4); border-left: 2px solid var(--og-error); border-radius: var(--og-radius-small); background: var(--og-error-bg); }
+.errorMessage { display: flex; gap: var(--og-space-3); color: var(--og-text); overflow-wrap: anywhere; user-select: text; }
+.errorMessage > svg { margin-top: 1px; color: var(--og-error); }
+.errorNote { color: var(--og-text-secondary); overflow-wrap: anywhere; user-select: text; }
+.excerpt { margin: 0; padding: var(--og-space-2) 0; border-radius: var(--og-radius-small); background: var(--og-bg-sunken); color: var(--og-text-dim); font: var(--og-font-size-small) / var(--og-line-height) var(--og-font-mono); overflow-x: auto; user-select: text; }
+.excerptLine { padding: 0 var(--og-space-3); white-space: pre; }
+.excerptLine[data-failing] { background: var(--og-error-bg); color: var(--og-text); }
+.excerptNumber { display: inline-block; width: 4ch; margin-right: var(--og-space-4); color: var(--og-text-disabled); text-align: right; user-select: none; }
+.detail > summary { color: var(--og-text-secondary); cursor: default; }
+.detail > summary:focus-visible { outline: none; box-shadow: var(--og-focus-shadow); }
+.detail > pre { max-height: 180px; margin: var(--og-space-2) 0 0; padding: var(--og-space-3); border-radius: var(--og-radius-small); background: var(--og-bg-sunken); color: var(--og-text-secondary); font: var(--og-font-size-small) / var(--og-line-height) var(--og-font-mono); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.failedNode { display: flex; flex-direction: column; gap: var(--og-space-1); }
+
+.notice { display: flex; gap: var(--og-space-3); margin-bottom: var(--og-space-3); padding: var(--og-space-3) var(--og-space-4); border-left: 2px solid var(--og-warning); border-radius: var(--og-radius-small); background: var(--og-warning-bg); color: var(--og-text); }
+.notice > svg { margin-top: 1px; color: var(--og-warning); }
+.none { padding: var(--og-space-4) 0; color: var(--og-text-dim); }
+
+/* ---- rows ---- */
+.rowMenu { display: block; }
+.row { display: grid; grid-template-columns: var(--og-label-width) minmax(0, 1fr) var(--og-control-height-small); align-items: center; column-gap: var(--og-space-3); min-height: var(--og-row-height); padding: var(--og-space-1) 0; }
+.label { min-width: 0; overflow: hidden; color: var(--og-text-secondary); text-overflow: ellipsis; white-space: nowrap; }
+.row[data-changed] .label,
+.block[data-changed] .label { color: var(--og-text); }
+.mixed { margin-left: var(--og-space-3); color: var(--og-warning); font-size: var(--og-font-size-small); }
+.control { display: flex; align-items: center; gap: var(--og-space-2); min-width: 0; }
+.control > * { min-width: 0; }
+.rowEnd { display: flex; flex: none; align-items: center; justify-content: center; width: var(--og-control-height-small); height: var(--og-control-height); }
+.rowEnd button { color: var(--og-text-dim); }
+.block { display: flex; flex-direction: column; gap: var(--og-space-2); padding: var(--og-space-1) 0 var(--og-space-3); }
+.blockHead { display: grid; grid-template-columns: minmax(0, 1fr) var(--og-control-height-small); align-items: center; column-gap: var(--og-space-3); min-height: var(--og-row-height); }
+
+/* ---- sections ---- */
+.loose { display: block; }
+.section { margin: var(--og-space-3) calc(-1 * var(--og-space-4)) 0; }
+.sectionHead { display: flex; align-items: center; gap: var(--og-space-2); box-sizing: border-box; width: 100%; height: var(--og-row-height); padding: 0 var(--og-space-4) 0 var(--og-space-2); border: 0; border-top: 1px solid var(--og-border); background: var(--og-bg-raised); color: var(--og-text); font: inherit; font-weight: var(--og-font-weight-medium); text-align: left; cursor: default; }
+.sectionHead:hover { background: var(--og-bg-widget); }
+.sectionHead:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--og-focus-ring); }
+.sectionHead > svg { color: var(--og-text-dim); }
+.sectionTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sectionNote { flex: none; color: var(--og-text-dim); font-size: var(--og-font-size-small); font-weight: var(--og-font-weight); }
+.sectionBody { padding: var(--og-space-2) var(--og-space-4) var(--og-space-2); }
+
+/* ---- controls ---- */
+.vec2 { display: flex; flex: 1; gap: var(--og-space-2); min-width: 0; }
+.vec2 > * { flex: 1; min-width: 0; }
+.vec2[data-stacked] { flex-direction: column; }
+.vec2[data-stacked] > * { flex: none; }
+.color { display: flex; flex: 1; align-items: center; gap: var(--og-space-3); min-width: 0; }
+.hex { flex: none; color: var(--og-text-dim); font-family: var(--og-font-mono); font-size: var(--og-font-size-small); }
+
+.file { display: flex; flex: 1; flex-direction: column; gap: var(--og-space-1); min-width: 0; }
+.fileLine { display: flex; align-items: center; gap: var(--og-space-2); min-width: 0; }
+.fileName { display: flex; flex: 1; align-items: center; gap: var(--og-space-3); box-sizing: border-box; min-width: 0; height: var(--og-control-height); padding: 0 var(--og-space-3); border: 1px solid var(--og-border-widget); border-radius: var(--og-radius); background: var(--og-bg-sunken); color: var(--og-text); font: inherit; text-align: left; cursor: default; }
+.fileName:hover { border-color: var(--og-border-strong); }
+.fileName:focus-visible { outline: none; box-shadow: var(--og-focus-shadow); }
+.fileName:disabled { color: var(--og-text-disabled); }
+.fileName > svg { flex: none; color: var(--og-text-dim); }
+/* A name that does not fit is cut at the end of its stem: the extension stays. */
+.fileText { display: flex; flex: 0 1 auto; min-width: 0; }
+.fileStem { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.fileExtension { flex: none; white-space: pre; }
+.file[data-state='empty'] .fileName { color: var(--og-text-dim); }
+.file[data-state='missing'] .fileName { border-color: var(--og-warning); }
+.file[data-state='missing'] .fileName > svg { color: var(--og-warning); }
+.fileProblem { color: var(--og-warning); font-size: var(--og-font-size-small); overflow-wrap: anywhere; user-select: text; }
+
+.dial { flex: none; width: 28px; height: 28px; border-radius: 50%; outline: none; cursor: crosshair; touch-action: none; }
+.dial:focus-visible { box-shadow: var(--og-focus-shadow); }
+.dialRim { fill: var(--og-bg-sunken); stroke: var(--og-border-strong); stroke-width: 1; }
+.dialMark { stroke: var(--og-text-dim); stroke-width: 1; }
+.dialHand { stroke: var(--og-text); stroke-width: 1.5; stroke-linecap: round; }
+.dialTip { fill: var(--og-accent-text); }
+.dial:hover .dialRim { stroke: var(--og-text-dim); }
+.dial[data-disabled] { cursor: default; }
+.dial[data-disabled] .dialHand { stroke: var(--og-text-disabled); }
+.dial[data-disabled] .dialTip { fill: var(--og-text-disabled); }
+
+.editorTools { display: flex; align-items: center; gap: var(--og-space-2); min-width: 0; }
+.editorTools > * { min-width: 0; }
+
+.curve { display: flex; flex-direction: column; gap: var(--og-space-2); min-width: 0; }
+.curvePlot { display: block; width: 100%; border-radius: var(--og-radius); background: var(--og-bg-sunken); cursor: crosshair; touch-action: none; user-select: none; }
+.curvePlot[data-disabled] { cursor: default; }
+.curveFrame { fill: none; stroke: var(--og-border-widget); }
+.curveGrid > line { stroke: var(--og-divider); }
+.curveDiagonal { stroke: var(--og-border-widget); stroke-dasharray: 2 4; }
+.curveLine { fill: none; stroke: var(--og-text); stroke-width: 1.5; stroke-linejoin: round; }
+.curvePoint { outline: none; cursor: grab; }
+.curveHalo { fill: transparent; stroke: transparent; }
+.curveDot { fill: var(--og-bg-sunken); stroke: var(--og-text); stroke-width: 1.5; }
+.curvePoint:hover .curveDot { fill: var(--og-bg-widget-active); }
+.curvePoint[data-selected] .curveDot { fill: var(--og-accent); stroke: var(--og-text-on-accent); }
+.curvePoint:focus-visible .curveHalo { stroke: var(--og-focus-ring); }
+
+.gradient { display: flex; flex-direction: column; gap: var(--og-space-2); min-width: 0; }
+.gradientBar { padding: 0 var(--og-space-3); border-radius: var(--og-radius); cursor: crosshair; touch-action: none; user-select: none; }
+.gradientBar[data-disabled] { cursor: default; }
+.gradientStrip { display: block; box-sizing: border-box; width: 100%; height: 22px; border: 1px solid var(--og-border-widget); border-radius: var(--og-radius-small); }
+.gradientStops { position: relative; height: 18px; margin-top: var(--og-space-1); }
+.gradientStop { position: absolute; top: 1px; box-sizing: border-box; width: 11px; height: 15px; margin-left: -5.5px; padding: 0; border: 2px solid var(--og-bg-panel); border-radius: var(--og-radius); box-shadow: 0 0 0 1px var(--og-border-strong); cursor: ew-resize; }
+.gradientStop:hover { box-shadow: 0 0 0 1px var(--og-text-secondary); }
+.gradientStop[data-selected] { z-index: 1; box-shadow: 0 0 0 1.5px var(--og-text); }
+.gradientStop:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--og-focus-ring); }
+.stopColor { flex: none; width: 34px; }
+
+/* ---- the summary of several nodes ---- */
+.typeList { display: flex; flex-direction: column; gap: var(--og-space-2); margin: 0 0 var(--og-space-4); padding: 0; list-style: none; }
+.typeItem { display: flex; align-items: baseline; gap: var(--og-space-3); min-width: 0; }
+/* The edge keeps the darkest category colors apart from the panel behind them. */
+.chip { flex: none; align-self: center; box-sizing: border-box; width: 10px; height: 10px; border: 1px solid var(--og-border-strong); border-radius: var(--og-radius-small); background: var(--og-bg-widget); }
+
+/* ---- a wide panel: the two components of a position in lengths have room side by side ---- */
+@container inspector (min-width: 480px) {
+  .vec2[data-stacked] { flex-direction: row; }
+  .vec2[data-stacked] > * { flex: 1; }
+}
+
+/* ---- a narrow panel: a row is its label above its control, and the head's title has a line of its own ---- */
+@container inspector (max-width: 259px) {
+  .row { grid-template-columns: minmax(0, 1fr) var(--og-control-height-small); row-gap: 0; padding-bottom: var(--og-space-2); }
+  .row > .label { grid-column: 1 / -1; min-height: var(--og-control-height-small); line-height: var(--og-control-height-small); }
+  .fact,
+  .derived .fact { grid-template-columns: minmax(0, 1fr); }
+  .titleLine { flex-wrap: wrap; row-gap: var(--og-space-2); }
+  .titleLine .title,
+  .titleLine .multiTitle { flex-basis: 100%; }
+  .typeLine { flex-wrap: wrap; row-gap: 0; }
+  .editorTools { flex-wrap: wrap; }
+  .fileLine { flex-wrap: wrap; }
+  .fileName { flex-basis: 100%; }
+}

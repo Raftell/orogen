@@ -67,6 +67,10 @@ export function TextField(props: TextFieldProps) {
           setDraft(null);
           if (text !== value) onChange?.(value);
           event.currentTarget.blur();
+        } else if (event.key === 'Escape') {
+          // Nothing was typed: the key is whoever's is around the field (a dialog closes), and the field is left
+          // all the same. A field that kept the focus would take the next plain key, B or Delete, as text.
+          event.currentTarget.blur();
         }
       }}
       {...rest}

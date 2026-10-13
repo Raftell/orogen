@@ -1,7 +1,7 @@
 // A colour: a swatch that opens a picker. The document stores linear RGB in 0..1 (engine.md 1.7); the swatch,
 // the picker and the hex code show sRGB, and the three number fields show what is stored.
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { RgbColorPicker } from 'react-colorful';
 
 import { fromDisplay, fromHex, toDisplay, toHex, type Rgb } from './color.ts';
@@ -33,16 +33,36 @@ export function ColorSwatch(props: ColorSwatchProps) {
   const hex = toHex(props.value, linear);
   const [badHex, setBadHex] = useState(false);
 
+  // What the listeners below call is that of the last render.
+  const latest = useRef(props);
+  latest.current = props;
+  /** Ends the drag in progress; null when none is. */
+  const stop = useRef<(() => void) | null>(null);
+
+  // The picker follows the mouse through the window without capturing the pointer, and a drag across its square
+  // ends as often outside the popover as inside: at its edges lie the purest colors. The release is therefore
+  // heard on the window, wherever it happens; a release heard only inside the popover left the caller's gesture open.
   const begin = (): void => {
-    if (dragging.current) return;
+    if (stop.current !== null) return;
+    const finish = (): void => {
+      window.removeEventListener('pointerup', finish, true);
+      window.removeEventListener('pointercancel', finish, true);
+      window.removeEventListener('blur', finish);
+      stop.current = null;
+      dragging.current = false;
+      latest.current.onScrubEnd?.();
+    };
+    stop.current = finish;
     dragging.current = true;
-    props.onScrubStart?.();
+    window.addEventListener('pointerup', finish, true);
+    window.addEventListener('pointercancel', finish, true);
+    // A window that loses the focus in the middle of a drag never sees the button come up.
+    window.addEventListener('blur', finish);
+    latest.current.onScrubStart?.();
   };
-  const end = (): void => {
-    if (!dragging.current) return;
-    dragging.current = false;
-    props.onScrubEnd?.();
-  };
+  const end = (): void => stop.current?.();
+  // A swatch that goes away in the middle of a drag ends it: the caller's gesture is not left open.
+  useEffect(() => () => stop.current?.(), []);
 
   return (
     <Popover
@@ -64,7 +84,7 @@ export function ColorSwatch(props: ColorSwatchProps) {
         />
       }
     >
-      <div className="og-color-popover" data-ui="color-picker" onPointerDownCapture={begin} onPointerUpCapture={end} onPointerCancelCapture={end}>
+      <div className="og-color-popover" data-ui="color-picker" onPointerDownCapture={begin}>
         <RgbColorPicker color={toDisplay(props.value, linear)} onChange={(shown) => props.onChange(fromDisplay(shown, linear))} />
         <TextField
           value={hex}

@@ -1,8 +1,8 @@
 # Getting started on Windows 11
 
 Orogen runs from its repository. There is no installer yet: you check the repository out, install its packages
-with npm, and start the command-line program with Node.js. Node runs the TypeScript sources directly, so
-nothing is compiled.
+with npm, and start the desktop application or the command-line program from there. Node runs the TypeScript
+sources of the command-line program directly; the application is built with one command.
 
 **What has and has not been run on Windows.** Orogen is developed on Linux with an NVIDIA GTX 1660 Ti. On
 Windows, the engine's tests run in the project's automated checks on Windows' software graphics adapter (WARP,
@@ -32,7 +32,7 @@ npm ci
 ```
 
 `npm ci` installs exactly the versions the repository's lock file names, into the folder `node_modules`;
-among them is Electron, which the desktop application will use. `npm install` gives the same result and may
+among them is Electron, which the desktop application runs on. `npm install` gives the same result and may
 rewrite the lock file.
 
 ## 3. First run
@@ -81,7 +81,7 @@ for Unreal into `D:\Build\Ridge` and prints the path of the manifest. Choose any
 
 ## 4. The command-line program
 
-Every use of Orogen today goes through one program:
+Everything Orogen does can be done without a window, through one program:
 
 ```
 node src/cli/main.ts <subcommand> [options]
@@ -105,22 +105,40 @@ time limit of 30 minutes, which a long build can exceed: do not use it there.
 
 ## 5. Starting the application
 
-**Its frame is built; its panels are not.** `npm start`, run in the repository's folder, builds the application
-into the folder `dist` and starts it; `npm run build` followed by `npx electron .` does the same in two steps.
+```
+npm start
+```
 
-- What opens is the window with its menus, the command palette, the status bar and five docked panels. It
-  computes the project and shows its terrain from above. The graph editor, the inspector, the node library and
-  the build panel are empty: you can open, save and build a project in the window, and you cannot edit it there
-  yet.
-- `npx electron . D:\Terrains\ridge.orogen` starts it with that project.
-- It has been tested on Linux only, and only in a window that is never shown. **Nobody has started it on
-  Windows.**
+run in the repository's folder, builds the application into the folder `dist` and starts it; `npm run build`
+followed by `npx electron .` does the same in two steps. `npx electron . D:\Terrains\ridge.orogen` starts it
+with that project.
+
+What opens is one window: the terrain of a first project in a 3D viewport, the graph of its nodes below it,
+and at the right the inspector, the node library and the build panel as three tabs. In ten minutes:
+
+1. **Open an example.** The **Library** tab, **Examples**, **Open** on *First Terrain* (three nodes) or *Alpine
+   Range* (twenty-one).
+2. **Look.** Drag in the viewport to turn the camera, turn the wheel to come nearer, `F6` for the view from
+   above. Turn the wheel over the graph until you can read the nodes, and press one: the viewport shows its
+   output and the **Inspector** tab its parameters.
+3. **Change something.** Drag across a number in the inspector and let go; `Ctrl+Z` takes it back. Press `Tab`
+   in the graph, type `terr`, `Enter`, and drag a wire from an output to the new node's input.
+4. **Build.** The **Build** tab: a resolution, an output folder that is new or empty, **Build**. The panel then
+   lists the files and the values Unreal's import panel asks for.
+5. **Save** with `Ctrl+S`.
+
+[The desktop application](application.md) describes every panel, gesture and key.
+
+- It has been tested on Linux only, and only in a window that is never shown, with input sent by tests.
+  **Nobody has started it on Windows**, and you will be the first to use it with a real mouse. If the window
+  stays empty or says that it could not start, the same `probe` as above tells you whether Orogen sees your
+  graphics card; the status bar of the application names the adapter it runs on, and says so when that is a
+  software adapter.
 - `npm run dist:win` packs it for Windows into the folder `release`, as a zip and a portable executable, both
-  unsigned. That package **has never been built or started**.
-
-[The desktop application](application.md) says what works today and what the design fixes of the rest.
+  unsigned. That package **has never been started**.
 
 ## 6. Where to go next
 
-- [Concepts](concepts.md), to understand what a project file says.
+- [The desktop application](application.md), for everything the window does.
+- [Concepts](concepts.md), to understand the graph, the units and what a project file says.
 - [Building and exporting](building.md), then [Importing into Unreal Engine 5.8](unreal-import.md).

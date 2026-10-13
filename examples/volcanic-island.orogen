@@ -1,0 +1,644 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4032,
+    "heightRange": 1008,
+    "seed": 21,
+    "buildResolution": 4033,
+    "previewLevel": 2,
+    "seaLevel": 0.15
+  },
+  "nodes": {
+    "island": {
+      "id": "island",
+      "type": "generate/island",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {
+        "size": 0.8,
+        "coast": 0.5,
+        "height": 0.3,
+        "erosion": 0.5,
+        "seed": 0
+      },
+      "title": "Island"
+    },
+    "volcano": {
+      "id": "volcano",
+      "type": "generate/volcano",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 220
+      },
+      "params": {
+        "center": [
+          0.5,
+          0.47
+        ],
+        "size": 0.55,
+        "height": 0.85,
+        "craterSize": 0.13,
+        "craterDepth": 0.14,
+        "erosion": 0.7,
+        "seed": 0
+      },
+      "title": "Volcano"
+    },
+    "land": {
+      "id": "land",
+      "type": "adjust/combine",
+      "version": 1,
+      "position": {
+        "x": 300,
+        "y": 0
+      },
+      "params": {
+        "mode": "smooth-maximum",
+        "strength": 1,
+        "smoothness": 0.08
+      },
+      "title": "Cone on the Island"
+    },
+    "erosion": {
+      "id": "erosion",
+      "type": "simulate/fluvial-erosion",
+      "version": 1,
+      "position": {
+        "x": 600,
+        "y": 0
+      },
+      "params": {
+        "size": 0.125,
+        "duration": 0.5,
+        "concavity": 0.4,
+        "talus": 30,
+        "uplift": 0,
+        "lakeFill": 0,
+        "detail": 0,
+        "seed": 0
+      },
+      "title": "Valleys"
+    },
+    "rain": {
+      "id": "rain",
+      "type": "simulate/hydraulic-erosion",
+      "version": 1,
+      "position": {
+        "x": 900,
+        "y": 0
+      },
+      "params": {
+        "size": 0.05,
+        "duration": 1,
+        "rain": 0.24,
+        "capacity": 1,
+        "downcutting": 0.5,
+        "deposition": 1,
+        "removal": 0.4,
+        "talus": 45,
+        "detail": 0,
+        "seed": 0
+      },
+      "title": "Gullies"
+    },
+    "lakes": {
+      "id": "lakes",
+      "type": "simulate/lakes",
+      "version": 1,
+      "position": {
+        "x": 1200,
+        "y": 220
+      },
+      "params": {
+        "minDepth": 0.003,
+        "minSize": 0.02
+      },
+      "title": "Crater Lake"
+    },
+    "sea": {
+      "id": "sea",
+      "type": "simulate/sea",
+      "version": 1,
+      "position": {
+        "x": 1200,
+        "y": 0
+      },
+      "params": {
+        "mode": "connected",
+        "strength": 0.7,
+        "shoreSize": 0.012,
+        "shoreHeight": 0.004
+      },
+      "title": "Sea and Coast"
+    },
+    "flow": {
+      "id": "flow",
+      "type": "simulate/flow",
+      "version": 1,
+      "position": {
+        "x": 1500,
+        "y": 660
+      },
+      "params": {
+        "routing": "single",
+        "seed": 0
+      },
+      "title": "Drainage"
+    },
+    "color": {
+      "id": "color",
+      "type": "color/natural",
+      "version": 1,
+      "position": {
+        "x": 1800,
+        "y": 660
+      },
+      "params": {
+        "mode": "volcanic",
+        "variation": 0.5,
+        "seed": 0
+      },
+      "title": "Volcanic Colors"
+    },
+    "lakeBlue": {
+      "id": "lakeBlue",
+      "type": "color/constant",
+      "version": 1,
+      "position": {
+        "x": 1800,
+        "y": 880
+      },
+      "params": {
+        "color": [
+          0.03,
+          0.12,
+          0.2
+        ]
+      },
+      "title": "Lake Blue"
+    },
+    "colored": {
+      "id": "colored",
+      "type": "adjust/combine",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 660
+      },
+      "params": {
+        "mode": "mix",
+        "strength": 1,
+        "smoothness": 0.1
+      },
+      "title": "Lakes on the Map"
+    },
+    "beach": {
+      "id": "beach",
+      "type": "select/edge",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 1100
+      },
+      "params": {
+        "width": 0.018,
+        "feather": 0.008,
+        "invert": false
+      },
+      "title": "Beach"
+    },
+    "rock": {
+      "id": "rock",
+      "type": "select/slope",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 1320
+      },
+      "params": {
+        "slopeMin": 30,
+        "slopeMax": 90,
+        "feather": 8,
+        "radius": 0.005,
+        "invert": false
+      },
+      "title": "Lava Rock"
+    },
+    "landscape": {
+      "id": "landscape",
+      "type": "io/export-landscape",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 0
+      },
+      "params": {
+        "enabled": true,
+        "name": "Island",
+        "rangeMode": "measured",
+        "headroom": 0,
+        "heightMin": 0,
+        "heightMax": 1,
+        "dither": true,
+        "zeroAt": "seaLevel",
+        "origin": "center",
+        "baseLayer": "Grass",
+        "layerBlend": "advanced",
+        "layerFloor": 0.008,
+        "layerLimit": 0,
+        "partition": true,
+        "gridComponents": 4,
+        "regionComponents": 32
+      },
+      "title": "Landscape"
+    },
+    "colorMap": {
+      "id": "colorMap",
+      "type": "io/export-color",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 660
+      },
+      "params": {
+        "enabled": true,
+        "name": "IslandColor",
+        "dimension": "auto",
+        "content": "color"
+      },
+      "title": "Color Map"
+    },
+    "layerBeach": {
+      "id": "layerBeach",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 1100
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Sand",
+        "weightBlended": true
+      },
+      "title": "Sand Layer"
+    },
+    "layerRock": {
+      "id": "layerRock",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 1320
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Rock",
+        "weightBlended": true
+      },
+      "title": "Rock Layer"
+    },
+    "layerSeabed": {
+      "id": "layerSeabed",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 220
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Seabed",
+        "weightBlended": true
+      },
+      "title": "Seabed Layer"
+    },
+    "lakeMask": {
+      "id": "lakeMask",
+      "type": "io/export-mask",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 440
+      },
+      "params": {
+        "enabled": true,
+        "name": "Lakes",
+        "dimension": "auto",
+        "bits": "8"
+      },
+      "title": "Lake Mask"
+    }
+  },
+  "edges": {
+    "island-out--land-a": {
+      "id": "island-out--land-a",
+      "from": {
+        "node": "island",
+        "port": "out"
+      },
+      "to": {
+        "node": "land",
+        "port": "a"
+      }
+    },
+    "volcano-out--land-b": {
+      "id": "volcano-out--land-b",
+      "from": {
+        "node": "volcano",
+        "port": "out"
+      },
+      "to": {
+        "node": "land",
+        "port": "b"
+      }
+    },
+    "land-out--erosion-in": {
+      "id": "land-out--erosion-in",
+      "from": {
+        "node": "land",
+        "port": "out"
+      },
+      "to": {
+        "node": "erosion",
+        "port": "in"
+      }
+    },
+    "erosion-out--rain-in": {
+      "id": "erosion-out--rain-in",
+      "from": {
+        "node": "erosion",
+        "port": "out"
+      },
+      "to": {
+        "node": "rain",
+        "port": "in"
+      }
+    },
+    "rain-out--lakes-in": {
+      "id": "rain-out--lakes-in",
+      "from": {
+        "node": "rain",
+        "port": "out"
+      },
+      "to": {
+        "node": "lakes",
+        "port": "in"
+      }
+    },
+    "rain-out--sea-in": {
+      "id": "rain-out--sea-in",
+      "from": {
+        "node": "rain",
+        "port": "out"
+      },
+      "to": {
+        "node": "sea",
+        "port": "in"
+      }
+    },
+    "sea-out--flow-in": {
+      "id": "sea-out--flow-in",
+      "from": {
+        "node": "sea",
+        "port": "out"
+      },
+      "to": {
+        "node": "flow",
+        "port": "in"
+      }
+    },
+    "sea-out--color-in": {
+      "id": "sea-out--color-in",
+      "from": {
+        "node": "sea",
+        "port": "out"
+      },
+      "to": {
+        "node": "color",
+        "port": "in"
+      }
+    },
+    "flow-out--color-flow": {
+      "id": "flow-out--color-flow",
+      "from": {
+        "node": "flow",
+        "port": "out"
+      },
+      "to": {
+        "node": "color",
+        "port": "flow"
+      }
+    },
+    "color-out--colored-a": {
+      "id": "color-out--colored-a",
+      "from": {
+        "node": "color",
+        "port": "out"
+      },
+      "to": {
+        "node": "colored",
+        "port": "a"
+      }
+    },
+    "lakeBlue-out--colored-b": {
+      "id": "lakeBlue-out--colored-b",
+      "from": {
+        "node": "lakeBlue",
+        "port": "out"
+      },
+      "to": {
+        "node": "colored",
+        "port": "b"
+      }
+    },
+    "lakes-water--colored-mask": {
+      "id": "lakes-water--colored-mask",
+      "from": {
+        "node": "lakes",
+        "port": "water"
+      },
+      "to": {
+        "node": "colored",
+        "port": "mask"
+      }
+    },
+    "sea-water--beach-in": {
+      "id": "sea-water--beach-in",
+      "from": {
+        "node": "sea",
+        "port": "water"
+      },
+      "to": {
+        "node": "beach",
+        "port": "in"
+      }
+    },
+    "sea-out--rock-in": {
+      "id": "sea-out--rock-in",
+      "from": {
+        "node": "sea",
+        "port": "out"
+      },
+      "to": {
+        "node": "rock",
+        "port": "in"
+      }
+    },
+    "sea-out--landscape-in": {
+      "id": "sea-out--landscape-in",
+      "from": {
+        "node": "sea",
+        "port": "out"
+      },
+      "to": {
+        "node": "landscape",
+        "port": "in"
+      }
+    },
+    "colored-out--colorMap-in": {
+      "id": "colored-out--colorMap-in",
+      "from": {
+        "node": "colored",
+        "port": "out"
+      },
+      "to": {
+        "node": "colorMap",
+        "port": "in"
+      }
+    },
+    "beach-out--layerBeach-in": {
+      "id": "beach-out--layerBeach-in",
+      "from": {
+        "node": "beach",
+        "port": "out"
+      },
+      "to": {
+        "node": "layerBeach",
+        "port": "in"
+      }
+    },
+    "rock-out--layerRock-in": {
+      "id": "rock-out--layerRock-in",
+      "from": {
+        "node": "rock",
+        "port": "out"
+      },
+      "to": {
+        "node": "layerRock",
+        "port": "in"
+      }
+    },
+    "sea-water--layerSeabed-in": {
+      "id": "sea-water--layerSeabed-in",
+      "from": {
+        "node": "sea",
+        "port": "water"
+      },
+      "to": {
+        "node": "layerSeabed",
+        "port": "in"
+      }
+    },
+    "lakes-water--lakeMask-in": {
+      "id": "lakes-water--lakeMask-in",
+      "from": {
+        "node": "lakes",
+        "port": "water"
+      },
+      "to": {
+        "node": "lakeMask",
+        "port": "in"
+      }
+    }
+  },
+  "groups": {
+    "group-1": {
+      "id": "group-1",
+      "title": "Shape",
+      "color": "#79461d",
+      "rect": {
+        "x": -20,
+        "y": -44,
+        "w": 564,
+        "h": 428
+      }
+    },
+    "group-2": {
+      "id": "group-2",
+      "title": "Erosion",
+      "color": "#2b652b",
+      "rect": {
+        "x": 580,
+        "y": -44,
+        "w": 564,
+        "h": 208
+      }
+    },
+    "group-3": {
+      "id": "group-3",
+      "title": "Water",
+      "color": "#246283",
+      "rect": {
+        "x": 1180,
+        "y": -44,
+        "w": 264,
+        "h": 428
+      }
+    },
+    "group-4": {
+      "id": "group-4",
+      "title": "Color",
+      "color": "#6e6e23",
+      "rect": {
+        "x": 1480,
+        "y": 616,
+        "w": 864,
+        "h": 428
+      }
+    },
+    "group-5": {
+      "id": "group-5",
+      "title": "Layer Masks",
+      "color": "#3c3c83",
+      "rect": {
+        "x": 2080,
+        "y": 1056,
+        "w": 264,
+        "h": 428
+      }
+    },
+    "group-6": {
+      "id": "group-6",
+      "title": "Export",
+      "color": "#82354c",
+      "rect": {
+        "x": 2380,
+        "y": -44,
+        "w": 264,
+        "h": 1450
+      }
+    }
+  },
+  "ui": {
+    "view": {
+      "height": {
+        "node": "sea",
+        "port": "out"
+      },
+      "overlay": {
+        "ref": {
+          "node": "colored",
+          "port": "out"
+        },
+        "as": "color",
+        "opacity": 1
+      }
+    }
+  }
+}

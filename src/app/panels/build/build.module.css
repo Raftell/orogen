@@ -1,0 +1,263 @@
+/* The build panel. Every colour, space and font is a token of src/app/shell/theme.css (runtime.md 8.7 rule 4). */
+
+/* The panel is a column of the dock that the user makes as narrow or as wide as they like: its own width, not the
+   window's, decides how its rows are laid out (the rules at the end of this file). */
+.root { display: flex; flex-direction: column; height: 100%; min-width: 0; container: build / inline-size; }
+
+/* ---- the bar that is always in sight: start or cancel, and how the build stands ---- */
+.bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--og-space-4);
+  min-height: calc(var(--og-control-height) + 2 * var(--og-space-3));
+  padding: var(--og-space-3) var(--og-space-4) var(--og-space-3) var(--og-space-5);
+  border-bottom: 1px solid var(--og-border);
+  background: var(--og-bg-raised);
+}
+/* Two lines high whether the second is said or not: the first does not move when a build ends. */
+.barStatus { flex: 1; min-width: 0; min-height: calc(2 * var(--og-line-height)); }
+.barLine { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--og-font-weight-medium); }
+.barLine[data-tone='error'] { color: var(--og-error); }
+.barLine[data-tone='warning'] { color: var(--og-warning); }
+.barLine[data-tone='ok'] { color: var(--og-ok); }
+.barSub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+.barTools { display: flex; flex: none; align-items: center; gap: var(--og-space-1); }
+
+.scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 0 var(--og-space-5) var(--og-space-6); }
+
+/* ---- sections ---- */
+/* In a wide panel a row keeps the width at which a label and its value are read together. */
+.section { max-width: 600px; padding: var(--og-space-3) 0 var(--og-space-5); border-bottom: 1px solid var(--og-divider); }
+.section:last-child { border-bottom: 0; }
+.sectionHead {
+  display: flex;
+  align-items: center;
+  gap: var(--og-space-2);
+  width: 100%;
+  height: var(--og-row-height);
+  margin: 0 0 var(--og-space-1) calc(-1 * var(--og-space-2));
+  padding: 0 var(--og-space-2) 0 0;
+  border: 0;
+  border-radius: var(--og-radius);
+  background: transparent;
+  color: var(--og-text-dim);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+.sectionHead:hover { color: var(--og-text-secondary); }
+.sectionHead:focus-visible { outline: none; box-shadow: var(--og-focus-shadow); }
+.sectionTitle { font-size: var(--og-font-size-small); font-weight: var(--og-font-weight-bold); letter-spacing: 0.06em; text-transform: uppercase; }
+.sectionAside { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--og-font-size-small); text-align: right; }
+.sectionBody { display: flex; flex-direction: column; gap: var(--og-space-2); }
+
+/* ---- text ---- */
+.hint { margin: 0; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+.hint[data-tone='error'] { color: var(--og-error); }
+.path { font-family: var(--og-font-mono); overflow-wrap: anywhere; user-select: text; cursor: text; }
+.hints { display: flex; flex-direction: column; gap: var(--og-space-1); margin: 0 0 var(--og-space-2); padding-left: calc(var(--og-label-width) + var(--og-space-4)); }
+.rules { margin: var(--og-space-1) 0 0; padding: 0 0 0 var(--og-space-6); color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+.rules li { margin: 0 0 var(--og-space-1); }
+.strong { color: var(--og-text); font-weight: var(--og-font-weight-medium); }
+
+.note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--og-space-3);
+  margin: var(--og-space-1) 0;
+  padding: var(--og-space-3) var(--og-space-4);
+  border-radius: var(--og-radius);
+  background: var(--og-bg-sunken);
+  color: var(--og-text-secondary);
+  font-size: var(--og-font-size-small);
+}
+.note > svg { margin-top: 1px; color: var(--og-text-dim); }
+.note[data-tone='error'] { background: var(--og-error-bg); color: var(--og-text); }
+.note[data-tone='error'] > svg { color: var(--og-error); }
+.note[data-tone='warning'] { background: var(--og-warning-bg); color: var(--og-text); }
+.note[data-tone='warning'] > svg { color: var(--og-warning); }
+.note[data-tone='ok'] { background: var(--og-ok-bg); color: var(--og-text); }
+.note[data-tone='ok'] > svg { color: var(--og-ok); }
+.noteText { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.noteText p { margin: 0 0 var(--og-space-2); }
+.noteText p:last-child { margin: 0; }
+
+/* ---- settings ---- */
+.memory { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: var(--og-space-1) var(--og-space-4); min-width: 0; }
+.memoryText { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.memory .meter { flex: 1 1 48px; }
+.meter { flex: 1; min-width: 24px; height: 4px; border-radius: 2px; background: var(--og-bg-widget); overflow: hidden; }
+/* A share of a hundredth is still a mark on the bar. */
+.meterFill { min-width: 2px; height: 100%; background: var(--og-text-secondary); }
+.meterGap { min-width: 0; }
+.meter[data-level='tight'] .meterFill { background: var(--og-warning); }
+.meter[data-level='over'] .meterFill { background: var(--og-error); }
+.meter[data-kind='progress'] .meterFill { background: var(--og-accent); }
+.meter[data-kind='progress'][data-state='done'] .meterFill { background: var(--og-text-dim); }
+.meter[data-kind='progress'][data-state='stopped'] .meterFill { background: var(--og-border-strong); }
+.folder { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder[data-empty] { color: var(--og-text-dim); }
+
+/* ---- lists: stages, targets, files, values ---- */
+.list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.stage {
+  display: grid;
+  grid-template-columns: var(--og-icon-size) minmax(0, 1fr) 56px 36px 60px;
+  align-items: center;
+  column-gap: var(--og-space-3);
+  min-height: var(--og-row-height);
+}
+.stage[data-state='waiting'],
+.stage[data-state='skipped'] { color: var(--og-text-dim); }
+.stageLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stageSub { color: var(--og-text-dim); }
+.number { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.dim { color: var(--og-text-dim); }
+.mark { display: flex; align-items: center; justify-content: center; width: var(--og-icon-size); height: var(--og-icon-size); color: var(--og-text-dim); }
+.mark[data-state='done'] { color: var(--og-ok); }
+.mark[data-state='running'] { color: var(--og-accent-text); }
+.mark[data-state='stopped'] { color: var(--og-error); }
+.mark[data-state='stopped'][data-neutral] { color: var(--og-text-dim); }
+.dot { width: 6px; height: 6px; border: 1px solid currentColor; border-radius: 50%; }
+.dot[data-filled] { background: currentColor; }
+.subhead { margin: var(--og-space-4) 0 var(--og-space-1); color: var(--og-text-secondary); font-size: var(--og-font-size-small); font-weight: var(--og-font-weight-medium); }
+.subhead:first-child { margin-top: 0; }
+
+.target { padding: var(--og-space-2) 0; border-top: 1px solid var(--og-divider); }
+.target:first-child { border-top: 0; }
+.targetHead { display: flex; align-items: center; gap: var(--og-space-3); min-height: var(--og-control-height); }
+.targetTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--og-font-weight-medium); }
+.targetDetail { margin: 0 0 var(--og-space-1); overflow-wrap: anywhere; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+.pixels { flex: none; font-size: var(--og-font-size-small); }
+
+/* An export node before any plan: one row. */
+.export { display: flex; align-items: center; gap: var(--og-space-3); min-height: var(--og-row-height); }
+.export:not([data-enabled]) .exportWhat { color: var(--og-text-dim); }
+.exportWhat { display: flex; flex: 1; align-items: baseline; gap: var(--og-space-3); min-width: 0; }
+/* The name is what tells two layers apart: the title gives way to it, and the longest name leaves the title two fifths. */
+.exportTitle { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exportName { flex: 0 0 auto; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--og-font-weight-medium); }
+.exportSource { flex: 0 3 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+.tag {
+  flex: none;
+  padding: 0 var(--og-space-2);
+  border-radius: var(--og-radius-small);
+  background: var(--og-bg-widget);
+  color: var(--og-text-secondary);
+  font-size: var(--og-font-size-small);
+  white-space: nowrap;
+}
+.tag[data-tone='off'] { background: transparent; box-shadow: inset 0 0 0 1px var(--og-divider); color: var(--og-text-dim); }
+.tag[data-tone='warning'] { background: var(--og-warning-bg); color: var(--og-warning); }
+.file { display: grid; grid-template-columns: minmax(0, 1fr) auto 60px; align-items: baseline; column-gap: var(--og-space-4); min-height: 18px; padding-left: var(--og-space-4); }
+.fileName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fileFormat { color: var(--og-text-dim); font-size: var(--og-font-size-small); white-space: nowrap; }
+.total { display: flex; justify-content: space-between; gap: var(--og-space-4); padding-top: var(--og-space-3); border-top: 1px solid var(--og-divider); color: var(--og-text-secondary); }
+/* A sum that is a sentence ("1.2 MB and 18 files sized when written") takes a second line where it must. */
+.totalCount { flex: none; }
+.totalSum { min-width: 0; font-variant-numeric: tabular-nums; text-align: right; }
+
+.linkButton {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--og-space-2);
+  height: var(--og-control-height-small);
+  padding: 0 var(--og-space-3);
+  border: 0;
+  border-radius: var(--og-radius);
+  background: transparent;
+  color: var(--og-accent-text);
+  font: inherit;
+  font-size: var(--og-font-size-small);
+  cursor: default;
+}
+.linkButton:hover { background: var(--og-bg-hover); }
+.linkButton:focus-visible { outline: none; box-shadow: var(--og-focus-shadow); }
+.linkButton:disabled { color: var(--og-text-disabled); background: transparent; }
+
+/* ---- problems ---- */
+.problem { display: grid; grid-template-columns: var(--og-icon-size) minmax(0, 1fr); column-gap: var(--og-space-3); padding: var(--og-space-3) 0; border-top: 1px solid var(--og-divider); }
+.problem:first-child { border-top: 0; }
+.problem > svg { margin-top: 1px; }
+.problemBody { min-width: 0; }
+.problem[data-severity='error'] > svg { color: var(--og-error); }
+.problem[data-severity='warning'] > svg { color: var(--og-warning); }
+.problemHead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--og-space-4); }
+.problemTitle { flex: 1 1 auto; min-width: 0; font-weight: var(--og-font-weight-medium); }
+.problemCode { flex: none; color: var(--og-text-dim); font-family: var(--og-font-mono); font-size: var(--og-font-size-small); user-select: text; }
+.problemMessage { margin: var(--og-space-1) 0; color: var(--og-text-secondary); overflow-wrap: anywhere; user-select: text; }
+.problemAdvice { margin: 0; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+.problemTools { display: flex; margin: var(--og-space-1) 0 0 calc(-1 * var(--og-space-3)); }
+
+/* ---- the numbers Unreal needs ---- */
+.group { padding: var(--og-space-3) 0; border-top: 1px solid var(--og-divider); }
+.group:first-child { border-top: 0; padding-top: 0; }
+.groupHead { display: flex; align-items: baseline; justify-content: space-between; gap: var(--og-space-4); }
+.groupTitle { font-weight: var(--og-font-weight-medium); }
+.value {
+  display: grid;
+  grid-template-columns: minmax(0, 42%) minmax(0, 1fr) var(--og-control-height-small);
+  align-items: center;
+  column-gap: var(--og-space-3);
+  min-height: var(--og-control-height);
+}
+.valueLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--og-text-secondary); }
+.valueLabel[data-sub] { padding-left: var(--og-space-5); color: var(--og-text-dim); }
+.valueText { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; cursor: text; }
+/* What Unreal calls a thing is shown whole, on two lines if it must be. */
+.valueText[data-kind='words'] { padding: var(--og-space-1) 0; overflow-wrap: anywhere; white-space: normal; }
+.valueText[data-kind='number'] { font-family: var(--og-font-mono); font-size: var(--og-font-size-small); font-variant-numeric: tabular-nums; }
+.copy[data-copied] { color: var(--og-ok); }
+.actions { display: flex; flex-wrap: wrap; gap: var(--og-space-3); margin-top: var(--og-space-3); }
+
+/* ---- the import guide ---- */
+.guide { display: flex; flex-direction: column; gap: var(--og-space-5); user-select: text; }
+.guide h4 { margin: 0 0 var(--og-space-3); font-size: var(--og-font-size-large); font-weight: var(--og-font-weight-bold); }
+.guide p { margin: 0 0 var(--og-space-3); color: var(--og-text-secondary); }
+.guide ol, .guide ul { margin: 0; padding-left: var(--og-space-7); color: var(--og-text-secondary); }
+.guide li { margin: 0 0 var(--og-space-3); }
+.guide li > ul { margin-top: var(--og-space-2); }
+.guide code { padding: 0 var(--og-space-1); border-radius: var(--og-radius-small); background: var(--og-bg-sunken); color: var(--og-text); font-family: var(--og-font-mono); font-size: var(--og-font-size-small); }
+.guide strong { color: var(--og-text); font-weight: var(--og-font-weight-bold); }
+.guideValues { max-width: 520px; margin: var(--og-space-2) 0 0; padding: var(--og-space-2) var(--og-space-4); border-radius: var(--og-radius); background: var(--og-bg-sunken); color: var(--og-text); user-select: none; }
+
+/* ---- a narrow panel: 220 px in a window of 960, less when the user drags the column in ---- */
+@container build (max-width: 300px) {
+  /* The status takes a line of its own under the button: beside it there is room for three letters. */
+  .bar { flex-wrap: wrap; row-gap: var(--og-space-2); }
+  .barStatus { flex: 1 0 100%; order: 1; }
+  .barTools { margin-left: auto; }
+  .barLine, .barSub { white-space: normal; overflow-wrap: anywhere; }
+
+  /* A path that would take ten lines takes one: its end, which is what tells two folders apart, behind an ellipsis.
+     The whole path is in its tooltip, and is what a selection of the line copies. */
+  .path { display: block; overflow: hidden; direction: rtl; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+  .path > bdi { direction: ltr; unicode-bidi: isolate; }
+
+  .scroll { --og-label-width: 44%; }
+  .hints { padding-left: 0; }
+  .memoryText { white-space: normal; }
+
+  /* A progress row keeps its name, its share and its time; the bar that repeats the share goes. */
+  .stage { grid-template-columns: var(--og-icon-size) minmax(0, 1fr) auto auto; }
+  .stage > .meter, .stage > .meterGap { display: none; }
+  /* The name of a stage is read whole, on two lines where one is too short; a target's file is cut, as everywhere. */
+  .stage[data-build-stage] { align-items: baseline; padding: var(--og-space-1) 0; }
+  .stage[data-build-stage] > .mark { align-self: center; }
+  .stage[data-build-stage] > .stageLabel { white-space: normal; }
+
+  /* A file keeps its name and its size; the format is in the line above it. */
+  .file { grid-template-columns: minmax(0, 1fr) auto; padding-left: 0; }
+  .fileFormat { display: none; }
+  .pixels { display: none; }
+
+  /* What Unreal calls a field is read whole: the label on a line of its own, the value and its button under it. */
+  .value { grid-template-columns: minmax(0, 1fr) var(--og-control-height-small); row-gap: 0; padding: var(--og-space-1) 0; }
+  .valueLabel { grid-column: 1 / -1; white-space: normal; }
+  /* The file of a layer follows its layer: it needs no label of its own. */
+  .valueLabel[data-sub] { display: none; }
+
+  .exportSource { display: none; }
+}

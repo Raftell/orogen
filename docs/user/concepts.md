@@ -125,8 +125,9 @@ node gives the same result as the original until you change its seed.
 
 ## The project file
 
-A project is one text file with the extension `.orogen`, holding JSON. Until the desktop application exists
-you write it in a text editor. This is the whole of `examples/ridge.orogen` except three of its nodes:
+A project is one text file with the extension `.orogen`, holding JSON. The desktop application writes it when
+you save; it can also be written in a text editor. This is the whole of `docs/user/examples/ridge.orogen` except
+three of its nodes:
 
 ```json
 {

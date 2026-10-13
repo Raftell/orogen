@@ -1,0 +1,228 @@
+/* The library panel. Every value is a token of src/app/shell/theme.css. */
+
+.root { display: flex; flex-direction: column; box-sizing: border-box; width: 100%; height: 100%; min-height: 0; color: var(--og-text); }
+
+/* ---- the two tabs ---- */
+.tabs {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  gap: var(--og-space-1);
+  height: var(--og-tab-height);
+  padding: 0 var(--og-space-2) 0 var(--og-space-3);
+  border-bottom: 1px solid var(--og-border);
+  background: var(--og-bg-raised);
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--og-space-3);
+  margin: 0;
+  padding: 0 var(--og-space-4);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--og-text-secondary);
+  font: inherit;
+  cursor: default;
+  user-select: none;
+}
+.tab:hover { color: var(--og-text); }
+.tab[aria-selected='true'] { border-bottom-color: var(--og-accent); color: var(--og-text); }
+.tab:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--og-focus-ring); }
+.tabCount { color: var(--og-text-dim); font-size: var(--og-font-size-small); font-variant-numeric: tabular-nums; }
+.tabsEnd { display: flex; align-items: center; margin-left: auto; }
+
+.view { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.browser {
+  container-type: inline-size;
+  /* A row of the list: a title and one line of description. */
+  --library-row: calc(2 * var(--og-line-height) + var(--og-space-3));
+  /* What the details never take: the search field and four rows of the list. */
+  --library-list-least: calc(var(--og-control-height) + 2 * var(--og-space-3) + 4 * var(--library-row));
+}
+
+/* ---- search ---- */
+.search { position: relative; display: flex; flex: none; align-items: center; padding: var(--og-space-3) var(--og-space-4); }
+.searchIcon { position: absolute; left: calc(var(--og-space-4) + var(--og-space-3)); color: var(--og-text-dim); pointer-events: none; }
+.searchInput {
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--og-control-height);
+  padding: 0 calc(var(--og-control-height-small) + var(--og-space-3)) 0 calc(var(--og-icon-size) + var(--og-space-5));
+  border: 1px solid var(--og-border-widget);
+  border-radius: var(--og-radius);
+  background: var(--og-bg-sunken);
+  color: var(--og-text);
+  font: inherit;
+  outline: none;
+}
+.searchInput::placeholder { color: var(--og-text-dim); }
+.searchInput:hover { border-color: var(--og-border-strong); }
+.searchInput:focus { border-color: var(--og-focus-ring); box-shadow: 0 0 0 1px var(--og-focus-ring); }
+.searchInput::selection { background: var(--og-accent); color: var(--og-text-on-accent); }
+.searchClear { position: absolute; right: calc(var(--og-space-4) + var(--og-space-1)); display: flex; }
+
+/* ---- the list ---- */
+.list { position: relative; flex: 1; min-height: 0; overflow-y: auto; outline: none; }
+/* The keyboard is in the list and no row is selected yet: the list itself shows where it is. `:focus-within`, as
+   for the selected row below: it holds in a window that is not the active one, where `:focus` does not. */
+.list:focus-within:not(:has([aria-selected='true'])) { box-shadow: inset 0 0 0 1px var(--og-focus-ring); }
+.section {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--og-space-2);
+  box-sizing: border-box;
+  height: var(--og-row-height);
+  padding: 0 var(--og-space-4) 0 var(--og-space-2);
+  border-bottom: 1px solid var(--og-border);
+  background: var(--library-section, var(--og-bg-widget));
+  color: var(--og-category-text);
+  font-weight: var(--og-font-weight-medium);
+  cursor: default;
+  user-select: none;
+}
+.sectionTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sectionCount { flex: none; opacity: 0.75; font-size: var(--og-font-size-small); font-variant-numeric: tabular-nums; }
+
+.node {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: var(--library-row);
+  /* Clear of the panel's edge, where the dock's sash lies over the first pixels of a panel. */
+  margin-left: var(--og-space-2);
+  padding: var(--og-space-1) var(--og-space-4) var(--og-space-1) var(--og-space-3);
+  border-left: 3px solid var(--library-section, var(--og-border-strong));
+  cursor: default;
+  user-select: none;
+  scroll-margin-top: var(--og-row-height);
+}
+.node:hover { background: var(--og-bg-hover); }
+.node[aria-selected='true'] { background: var(--og-accent-muted); }
+.browser:focus-within .node[aria-selected='true'],
+.browser:focus-within .section[aria-selected='true'] { box-shadow: inset 0 0 0 1px var(--og-focus-ring); }
+.nodeHead { display: flex; align-items: baseline; gap: var(--og-space-4); min-width: 0; }
+.nodeTitle { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--og-font-weight-medium); }
+.nodeTitle strong { color: var(--og-accent-text); font-weight: var(--og-font-weight-bold); }
+.nodeMatch { flex: 0 1 auto; min-width: 0; max-width: 65%; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+.nodeDescription { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+.node[aria-selected='true'] .nodeDescription { color: var(--og-text-secondary); }
+
+.none { padding: var(--og-space-6) var(--og-space-5); color: var(--og-text-dim); text-align: center; }
+/* What was searched is said back on two lines at the most. */
+.noneTitle { display: -webkit-box; margin-bottom: var(--og-space-2); overflow: hidden; color: var(--og-text-secondary); overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+
+/* ---- the details of the node under the pointer, or of the selected one ---- */
+/* The bar between the list and the details: dragged, or moved by the arrow keys, it sets the height of the details. */
+.splitter {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  height: var(--og-space-3);
+  margin: calc(-1 * var(--og-space-3) / 2) 0;
+  cursor: row-resize;
+  outline: none;
+  touch-action: none;
+}
+.splitter::after { position: absolute; inset: calc(var(--og-space-3) / 2 - 1px) 0 auto; height: 2px; background: transparent; content: ''; }
+.splitter:hover::after, .splitter[data-dragging]::after { background: var(--og-border-strong); }
+.splitter:focus-visible::after { background: var(--og-focus-ring); }
+.details {
+  flex: none;
+  box-sizing: border-box;
+  /* The same height whatever it shows, so that the list does not move as the pointer does; a low panel keeps most of itself for the list. */
+  height: min(264px, 42%);
+  padding: var(--og-space-4) var(--og-space-5) var(--og-space-4);
+  border-top: 1px solid var(--og-border);
+  background: var(--og-bg-raised);
+  overflow-y: auto;
+  user-select: text;
+}
+/* A height the user chose gives way only to what the list needs at the least. */
+.details[data-sized] { height: var(--library-details-height); min-height: calc(3 * var(--og-row-height)); max-height: calc(100% - var(--library-list-least)); }
+.detailsHint { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--og-text-dim); text-align: center; user-select: none; }
+.detailsHead { display: flex; align-items: flex-start; gap: var(--og-space-4); min-width: 0; }
+/* A title of 24 characters is shown whole: it wraps where the panel is narrow. */
+.detailsTitle { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; font-size: var(--og-font-size-large); line-height: var(--og-control-height-small); font-weight: var(--og-font-weight-bold); }
+.detailsMeta { display: flex; align-items: center; gap: var(--og-space-3); min-width: 0; margin-top: var(--og-space-1); }
+.chip {
+  flex: none;
+  padding: 0 var(--og-space-3);
+  border-radius: var(--og-radius-small);
+  background: var(--library-section, var(--og-bg-widget));
+  color: var(--og-category-text);
+  font-size: var(--og-font-size-small);
+  white-space: nowrap;
+  user-select: none;
+}
+.detailsAdd { display: flex; flex: none; }
+.detailsAdd[data-preview] { visibility: hidden; }
+.detailsType { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--og-text-dim); font: var(--og-font-size-small) / var(--og-line-height) var(--og-font-mono); }
+.detailsText { margin: var(--og-space-3) 0 0; color: var(--og-text); }
+.ports { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--og-space-1) var(--og-space-5); margin-top: var(--og-space-4); }
+.portsTitle { color: var(--og-text-dim); font-size: var(--og-font-size-small); font-weight: var(--og-font-weight-bold); letter-spacing: 0.06em; text-transform: uppercase; }
+.portList { display: flex; flex-direction: column; gap: var(--og-space-1); margin: 0; padding: 0; list-style: none; }
+.port { display: flex; align-items: baseline; gap: var(--og-space-3); min-width: 0; }
+.portDot { flex: none; align-self: center; width: 7px; height: 7px; border-radius: 50%; background: var(--library-port, var(--og-port-height)); }
+.portName { flex: none; }
+.portKind { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+.portNone { color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+/* A narrow panel: the outputs go below the inputs, each port on a line of its own width. */
+@container (max-width: 280px) {
+  .ports { grid-template-columns: minmax(0, 1fr); gap: var(--og-space-3); }
+}
+.notes { margin: var(--og-space-4) 0 0; color: var(--og-text-secondary); font-size: var(--og-font-size-small); }
+.found { margin: var(--og-space-2) 0 0; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+.found b { color: var(--og-text-secondary); font-weight: var(--og-font-weight); }
+
+/* ---- examples ---- */
+.examples { flex: 1; min-height: 0; padding: var(--og-space-3) var(--og-space-4) var(--og-space-4); overflow-y: auto; outline: none; container-type: inline-size; }
+.examplesIntro { margin: var(--og-space-2) var(--og-space-1) var(--og-space-4); color: var(--og-text-secondary); }
+.exampleGrid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--og-space-3); }
+.example {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: var(--og-space-4);
+  padding: var(--og-space-3);
+  border: 1px solid var(--og-divider);
+  border-radius: var(--og-radius);
+  background: var(--og-bg-raised);
+  cursor: default;
+  user-select: none;
+}
+.example:hover { border-color: var(--og-border-strong); }
+.example[aria-selected='true'] { border-color: var(--og-accent); background: var(--og-accent-muted); }
+.examples:focus-within .example[aria-selected='true'] { box-shadow: 0 0 0 1px var(--og-focus-ring); }
+.examples:focus-within:not(:has([aria-selected='true'])) { box-shadow: inset 0 0 0 1px var(--og-focus-ring); }
+.examplePicture {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  border-radius: var(--og-radius-small);
+  background: var(--og-bg-canvas);
+  object-fit: cover;
+}
+.exampleBody { display: flex; flex-direction: column; min-width: 0; }
+.exampleTitle { margin: 0; font-size: var(--og-font-size-large); font-weight: var(--og-font-weight-bold); }
+.exampleText { margin: var(--og-space-1) 0 0; color: var(--og-text-secondary); font-size: var(--og-font-size-small); }
+.exampleFoot { display: flex; align-items: center; gap: var(--og-space-4); margin-top: auto; padding-top: var(--og-space-3); }
+.exampleSummary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+
+/* A wide place, as the dialog of "Open Example…" or a panel docked along the bottom: cards with the picture on top. */
+@container (min-width: 560px) {
+  .exampleGrid { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: var(--og-space-4); }
+  .example { grid-template-columns: minmax(0, 1fr); align-content: start; }
+}
+/* A narrow panel has no room for a text beside the picture: the picture goes on top there as well. */
+@container (max-width: 340px) {
+  .example { grid-template-columns: minmax(0, 1fr); align-content: start; }
+}
+.dialogExamples { max-height: min(640px, calc(100vh - 220px)); margin: calc(-1 * var(--og-space-3)) calc(-1 * var(--og-space-4)); }
+
+/* ---- the question about unsaved changes: the answer that discards stands apart from the other two ---- */
+.answerStart { margin-right: auto; }

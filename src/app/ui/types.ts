@@ -73,4 +73,9 @@ export interface AppServices {
   enabled(commandId: string): boolean;
   /** Shows a message in the notification area. */
   notify(notice: Notice): void;
+  /**
+   * Brings a panel's tab to the front of its group and gives the panel the focus, as a press on its tab does.
+   * A panel behind another tab is not in the document (8.7 rule 3): a command that needs its panel seen calls this first.
+   */
+  showPanel(id: PanelId): void;
 }

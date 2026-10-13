@@ -4,7 +4,7 @@
 import { useStore } from 'zustand';
 
 import type { NodeError } from '../../core/runtime.ts';
-import { Button, Dialog, Icon } from '../ui/index.ts';
+import { Button, Dialog, Icon, isFailure, nodeErrorText } from '../ui/index.ts';
 import { baseName, failedNodes } from './format.ts';
 import { Gallery } from './Gallery.tsx';
 import { PreferencesDialog } from './Preferences.tsx';
@@ -127,10 +127,10 @@ function ErrorList(props: { readonly shell: Shell }) {
         {failed.map((error) => {
           const detail = detailOf(error);
           return (
-            <li key={`node:${error.nodeId}`} className="og-list-item" data-error="node" data-node={error.nodeId}>
-              <Icon className="og-text-error" name="error" />
+            <li key={`node:${error.nodeId}`} className="og-list-item" data-error="node" data-node={error.nodeId} data-failure={isFailure(error) ? '' : undefined}>
+              <Icon className={isFailure(error) ? 'og-text-error' : 'og-text-warning'} name={isFailure(error) ? 'error' : 'warning'} />
               <div className="og-list-main">
-                <div className="og-list-title">{titleOf(error)}: {error.message}</div>
+                <div className="og-list-title">{titleOf(error)}: {nodeErrorText(error, registry)}</div>
                 <div className="og-list-note">{error.nodeType}, {error.kind}</div>
                 {detail ? <pre className="og-list-detail">{detail}</pre> : null}
               </div>

@@ -143,22 +143,50 @@ test('the panel registry lists the five panels, each a folder whose index export
   for (const id of ['graph', 'viewport']) assert.match(read(`src/app/panels/${id}/index.ts`), /keepMounted: true/);
 });
 
-test('a panel folder starts as a PanelDef with an empty component; two bring what the shell binds keys to', () => {
-  const declared = (id: string): string[] => [...read(`src/app/panels/${id}/index.ts`).matchAll(/\bid: '(\w+\.\w+)'/g)].map((found) => found[1]!);
-  assert.deepEqual(Object.fromEntries(PANEL_IDS.map((id) => [id, declared(id)])), {
-    graph: [],
-    // F6 and Mod+B are global bindings of the shell to these (8.8), and a binding to no command stops start-up.
-    viewport: ['viewport.toggleTop'],
-    inspector: [],
-    library: [],
-    build: ['build.start', 'build.cancel'],
-  });
-  for (const id of ['graph', 'inspector', 'library', 'build']) {
-    const files = fs.readdirSync(path.join(ROOT, 'src/app/panels', id)).sort();
-    assert.equal(files.length, 2, `${id}: ${files.join(', ')}`);
-    const component = read(`src/app/panels/${id}/${files.find((file) => file.endsWith('.tsx'))!}`);
-    assert.match(component, /return <EmptyState title="\w+">[^<]+<\/EmptyState>;/, `the component of ${id} is the empty state`);
+test('no panel folder is a placeholder: each brings a component of its own, its commands under its name, and the keys of 8.8 in its scope', () => {
+  /** A panel declares its commands, keys and menu entries in its index.ts or in a commands.ts beside it. */
+  const declaring = (id: string): string => ['index.ts', 'commands.ts']
+    .map((file) => path.join('src/app/panels', id, file))
+    .filter((file) => fs.existsSync(path.join(ROOT, file)))
+    .map(read)
+    .join('\n');
+  const commandsOf = (id: string): string[] => [...declaring(id).matchAll(/\bid: '(\w+\.\w+)'/g)].map((found) => found[1]!);
+  const keysOf = (id: string): string[] => [...declaring(id).matchAll(/\{ key: '([^']+)', command: '([\w.]+)', scope: '(\w+)' \}/g)].map((found) => `${found[1]} ${found[2]} ${found[3]}`);
+
+  for (const id of PANEL_IDS) {
+    // The starting state of 8.10 rule 1 is over: no panel is the empty state, and each is more than its two first files.
+    const folder = path.join(ROOT, 'src/app/panels', id);
+    const files = fs.readdirSync(folder);
+    assert.ok(files.length > 2, `${id} is more than a PanelDef and a component: ${files.join(', ')}`);
+    const index = read(`src/app/panels/${id}/index.ts`);
+    const component = /component: (\w+),/.exec(index)![1]!;
+    assert.doesNotMatch(read(`src/app/panels/${id}/${component}.tsx`), /return <EmptyState title="\w+">[^<]+<\/EmptyState>;\s*\}\s*$/, `the component of ${id} is not the empty state`);
+    const commands = commandsOf(id);
+    assert.ok(commands.length > 0, `${id} declares commands`);
+    // 8.8 rule 1: the owner of a command is the prefix of its id.
+    for (const command of commands) assert.ok(command.startsWith(`${id}.`), `${command} is declared by ${id}`);
+    assert.equal(new Set(commands).size, commands.length, `${id} declares each command once`);
   }
+
+  // The shell's global bindings name commands of two panels; a binding to no command stops start-up (8.8 rule 4).
+  assert.ok(commandsOf('viewport').includes('viewport.toggleTop'));
+  assert.ok(commandsOf('build').includes('build.start') && commandsOf('build').includes('build.cancel'));
+
+  // The default bindings of 8.8 that are a panel's: each row of the contract's table is declared in that panel's scope.
+  const table = RUNTIME.slice(RUNTIME.indexOf('| Key | Command | Scope |'), RUNTIME.indexOf('### 8.9 Libraries'));
+  const rows = [...table.matchAll(/^\| (.+?) \| (.+?) \| (\w+) \|$/gm)].slice(1);
+  let panelRows = 0;
+  for (const [, keyCell, commandCell, scope] of rows) {
+    if (scope === 'global') continue;
+    panelRows++;
+    const command = /`([\w.]+)`/.exec(commandCell!)![1]!;
+    for (const [, key] of keyCell!.matchAll(/`([^`]+)`/g)) {
+      assert.ok(keysOf(scope!).includes(`${key} ${command} ${scope}`), `${scope} binds ${key} to ${command} (runtime.md 8.8)`);
+    }
+  }
+  assert.equal(panelRows, 11, 'the table of 8.8 has eleven rows of panel bindings');
+  // And a panel binds keys in no scope but its own.
+  for (const id of PANEL_IDS) for (const bound of keysOf(id)) assert.ok(bound.endsWith(` ${id}`), `${id} binds in its own scope: ${bound}`);
 });
 
 test('src/app/ui exports the shared controls and the types of a panel', () => {

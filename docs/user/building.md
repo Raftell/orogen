@@ -35,9 +35,12 @@ The [node reference](nodes.md#io) lists every parameter. Rules:
 node src/cli/main.ts build docs/user/examples/ridge.orogen --out D:\Build\Ridge
 ```
 
-[The command-line page](command-line.md#build) lists the options and exit codes. In the desktop application
-**Engine → Build…** (`Ctrl+B`) asks for an output folder and runs the same pipeline; its Build panel, with the
-settings, the plan and the list of files, is not yet built.
+[The command-line page](command-line.md#build) lists the options and exit codes. In the desktop application the
+**Build** panel runs the same pipeline: it has the resolution, the output folder of the project, **Build**
+(`Ctrl+B`, also **Engine → Build**) and **Cancel**, the progress, the list of files that were written and the
+values Unreal's import panel asks for, read from the manifest. The first build of a project asks for its
+output folder; later builds use the same one until you choose another
+([the desktop application](application.md#build)).
 
 ### The output folder belongs to Orogen
 

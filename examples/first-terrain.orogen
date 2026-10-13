@@ -1,0 +1,128 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4032,
+    "heightRange": 1008,
+    "seed": 1,
+    "buildResolution": 4033,
+    "previewLevel": 2,
+    "seaLevel": 0
+  },
+  "nodes": {
+    "mountain": {
+      "id": "mountain",
+      "type": "generate/mountain",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {
+        "center": [
+          0.5,
+          0.5
+        ],
+        "size": 0.9,
+        "height": 0.9,
+        "sharpness": 0.5,
+        "ridges": 0.5,
+        "erosion": 0.6,
+        "seed": 0
+      }
+    },
+    "erosion": {
+      "id": "erosion",
+      "type": "simulate/hydraulic-erosion",
+      "version": 1,
+      "position": {
+        "x": 300,
+        "y": 0
+      },
+      "params": {
+        "size": 0.05,
+        "duration": 2,
+        "rain": 0.24,
+        "capacity": 1,
+        "downcutting": 0.5,
+        "deposition": 1,
+        "removal": 0.4,
+        "talus": 45,
+        "detail": 0,
+        "seed": 0
+      }
+    },
+    "landscape": {
+      "id": "landscape",
+      "type": "io/export-landscape",
+      "version": 1,
+      "position": {
+        "x": 600,
+        "y": 0
+      },
+      "params": {
+        "enabled": true,
+        "name": "Mountain",
+        "rangeMode": "measured",
+        "headroom": 0,
+        "heightMin": 0,
+        "heightMax": 1,
+        "dither": true,
+        "zeroAt": "seaLevel",
+        "origin": "center",
+        "baseLayer": "Base",
+        "layerBlend": "advanced",
+        "layerFloor": 0.008,
+        "layerLimit": 0,
+        "partition": true,
+        "gridComponents": 4,
+        "regionComponents": 32
+      }
+    }
+  },
+  "edges": {
+    "mountain-out--erosion-in": {
+      "id": "mountain-out--erosion-in",
+      "from": {
+        "node": "mountain",
+        "port": "out"
+      },
+      "to": {
+        "node": "erosion",
+        "port": "in"
+      }
+    },
+    "erosion-out--landscape-in": {
+      "id": "erosion-out--landscape-in",
+      "from": {
+        "node": "erosion",
+        "port": "out"
+      },
+      "to": {
+        "node": "landscape",
+        "port": "in"
+      }
+    }
+  },
+  "groups": {
+    "group-1": {
+      "id": "group-1",
+      "title": "Shape, Erode, Export",
+      "color": "#79461d",
+      "rect": {
+        "x": -20,
+        "y": -44,
+        "w": 864,
+        "h": 208
+      }
+    }
+  },
+  "ui": {
+    "view": {
+      "height": {
+        "node": "erosion",
+        "port": "out"
+      }
+    }
+  }
+}

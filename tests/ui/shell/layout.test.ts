@@ -65,10 +65,13 @@ test('layout: the default arrangement has the viewport above the graph, the insp
     await appears(app, '[data-panel="library"]');
     await vanishes(app, '[data-panel="inspector"]');
     assert.equal(await app.eval<string>(`orogenTest.ctx.ui.getState().focusedPanel`), 'library', 'choosing a tab gives its panel the focus');
-    assert.equal(await app.eval<string>(`shellTest.text('[data-panel="library"] .og-empty-title')`), 'Library');
+    // Each tab shows its own panel, and none is the empty state a panel folder began as.
+    await appears(app, '[data-panel="library"] [data-library="root"]');
     await pressTab(app, 'Build');
-    await appears(app, '[data-panel="build"]');
-    assert.equal(await app.eval<string>(`shellTest.text('[data-panel="build"] .og-empty-title')`), 'Build');
+    await appears(app, '[data-panel="build"] [data-build="panel"]');
+    await vanishes(app, '[data-panel="library"]');
+    assert.equal(await app.eval<string>(`orogenTest.ctx.ui.getState().focusedPanel`), 'build');
+    assert.equal(await app.eval<number>(`document.querySelectorAll('[data-panel] .og-empty-title').length`), 0, 'no panel is a placeholder');
     t.diagnostic(`capture: ${await capture(app, 'layout-default-build-tab')}`);
 
     // The layout names the renderer of each panel: 'always' for the two that own a canvas.

@@ -1847,7 +1847,7 @@ type CameraState =
   | { readonly kind: 'orbit';
       readonly target: readonly [number, number, number];   // metres, in the frame of engine.md 1.8
       readonly yaw: number;                                  // degrees; the viewing direction, by the direction convention of engine.md 1.8
-      readonly pitch: number;                                // degrees the camera looks down, 0 .. 89.9
+      readonly pitch: number;                                // degrees the camera looks down, −89.9 .. 89.9; below 0 it looks up, as a camera that flies does
       readonly distance: number;                             // metres from the target
       readonly fovY: number }                                // degrees
   | { readonly kind: 'top';
@@ -1865,6 +1865,13 @@ interface PickResult {
   readonly uv: readonly [number, number];
   readonly height: number;                                   // normalised
   readonly position: readonly [number, number, number];      // metres
+}
+
+/** What the renderer of src/viewport/ reads of a display beside the members of ViewportDisplay. Each has a default. */
+interface DisplayOptions extends ViewportDisplay {
+  readonly shading?: 'material' | 'clay';                    // the 3D view where no colour is draped: the default material, or one matte clay. Default 'material'
+  readonly topStyle?: 'hillshade' | 'grey' | 'overlay';      // the top view: shaded relief, the heights as grey, or the overlay alone as the image it is. Default 'hillshade'
+  readonly palette?: 'red' | 'blue' | 'green' | 'grey' | 'viridis' | 'magma' | 'turbo';   // the colours of a 'mask' or 'heat' overlay. Default 'red'
 }
 
 /** What the interface calls. */
@@ -1909,7 +1916,7 @@ An orbit camera with `yaw` 0 looks along +X and has +Y on its right, as in
 Unreal, whose frame is +X forward, +Y right, +Z up.
 
 1. **Same device, no copy.** The renderer draws from the engine's textures. Nothing is read back to display a terrain.
-2. **`setContent` is synchronous.** When it returns, the renderer uses no view of the previous content, which the session may release at once. The session calls it when a result is shown; when a loan for a bound port begins, changes or ends, which the evaluator reports through `onLoans` (5.2, 5.11), with the lent texture in place of the published one; and with `null` when the device is lost. A loan is shown only for the node and port the view names and only when its kind is the kind the view asks for (7.4 rule 1); otherwise the shown content stays.
+2. **`setContent` is synchronous.** When it returns, the renderer uses no view of the previous content, which the session may release at once. The session calls it when a result is shown; when a loan for a bound port begins, changes or ends, which the evaluator reports through `onLoans` (5.2, 5.11), with the lent texture in place of the published one; and with `null` when the device is lost. A loan is shown only for the node and port the view names and only when its kind is the kind the view asks for (7.4 rule 1); otherwise the shown content stays. **A step back keeps the picture.** When the loans of a node end, the session gives the renderer the content it showed before them, the same object, or `null` when it showed none, and the node's result follows when its evaluation has ended. Measured in a session with the renderer of `src/viewport/`: a frame is drawn in between, which is the earlier terrain flashing up after the last step of an erosion. A renderer that is given a content it was given before, or `null` after a content, therefore keeps the picture it has drawn, without using any view of what it replaced: until the next content, until the camera, the display or the size changes, and for 400 ms at the longest, after which it draws what it was given (5.11 rule 5).
 3. **Reading fields.** Fields are bound with `sampleType: 'unfilterable-float'` and read with `textureLoad`, never with a filtering sampler. A field is addressed by `uv` with the vertex-centred mapping `texel = uv × (size − 1)` and interpolated by hand, so the height and the overlay may differ in size, and a loan of any size can stand in for either.
 4. **Read-only.** The renderer never writes, clears or destroys a pool texture. Whatever it derives from the content (pyramids, light maps) lives in textures of its own, registered with `ledger.reserve`.
 5. **Its own encoder.** The renderer encodes and submits its frames itself. It follows the error-scope rule (5.8) and estimates no submission of its own above the preview slice target (3.5): longer work is spread over frames.
@@ -1917,6 +1924,8 @@ Unreal, whose frame is +X forward, +Y right, +Z up.
 7. **Hidden windows.** In a window that was never shown, the page's `requestAnimationFrame` fires once per second; the worker's fires at the display rate. Nothing in the viewport path waits for a page frame.
 8. **Size.** The canvas's backing size is `round(width × dpr)` by `round(height × dpr)`, clamped to `caps.limits.maxTextureDimension2D`. The canvas element is transferred once; when the interface creates a new element it calls `attach` again.
 9. **A window that cannot present.** Measured under a virtual display (Xvfb, where Chromium composites without a GPU): the first frame drawn to a WebGPU canvas costs the device. No shared image can back the swap chain, the GPU process destroys the device (`Device was destroyed.`), and every device recovery opens goes the same way with its first frame, until recovery gives up (7.8 rule 3). A renderer therefore confirms the first frame it draws: mapping a buffer is the one call a lost device refuses (5.9), and the GPU process answers in the order asked, so a mapping asked for after the frame and granted says that the frame did no harm. A renderer whose device is lost before any frame of its was confirmed draws nothing for the rest of its life, on any canvas, and says so once with `console.warn`: everything else of the application works, and the viewport stays empty.
+10. **Display options.** `setDisplay` takes a `ViewportDisplay`, and the session and the client pass it on as the object it is, so the members of `DisplayOptions` reach the renderer with it. The renderer brings every member into its range and takes the default for one that is missing or of another type; a display without them is drawn with the defaults. `DisplayOptions` is declared in `src/viewport/display.ts` and, because `src/app/` imports nothing from `src/viewport/` (8.4), a second time in `src/app/panels/viewport/model.ts`; `tests/ui/viewport/unit/display.test.ts` holds the two to each other. `PickResult.position` is the terrain's own: its height is `height × heightRange`, whatever `verticalScale` the picture has.
+11. **Pick.** `pick` answers for the picture of the camera last set: it resolves when the frame that is due has been drawn (rule 6) and the GPU has found the first point of the bound height field on the ray of that pixel. It resolves `null` beside the terrain, when nothing is bound, and on a lost device; with an overlay alone it finds the flat plane (7.4 rule 5) at height 0.
 
 ### 7.6 Builds
 
@@ -2255,7 +2264,7 @@ stays readable in `plan`, `problems` and `result` until the next one starts.
 1. `transact` runs the recipe with immer's `produceWithPatches`. The recipe calls the commands of 4.6 and nothing else touches the draft. A recipe that changes nothing has no effect at all.
 2. A transaction with patches adds a history entry, clears `future`, increments `revision` and sets `unsaved`. The entry's `selectionBefore` is the selection when the transaction begins, its `selectionAfter` the selection when the recipe returns, without the ids of nodes the document no longer holds: a command that selects what it made sets the selection inside its recipe. A recipe that throws changes nothing, and the error reaches the caller. `unsaved` is `false` again when undo or redo arrives at the state that was loaded or last saved. `markSaved(path, revision)` with a revision that is no longer the document's, because the document changed while the file was written, sets the path and leaves the project unsaved, at every place of the history: the file holds a state no undo is known to lead back to. The shell writes the file again when the document changed meanwhile, three times at the most, and then says that the file lacks the last changes.
 3. **Merging.** A transaction is merged into the last entry instead of adding one when both have the same non-null `mergeKey` and either a gesture with that key is in progress or less than 600 ms have passed since the entry's `time`. The merged entry's forward patches are the old ones followed by the new; its inverse patches are the new ones followed by the old.
-4. **Gestures.** `beginGesture(key)` on pointer down, `endGesture()` on pointer up. `EngineClient` calls `beginGesture` and `endGesture` of the engine (7.1) when `DocState.gesture` begins and ends. Everything transacted with that key in between is one undo step, however long the drag, and a step of its own: the first transaction of a gesture merges into an entry that was there before the gesture only by the 600 ms of rule 3. Keys: `param:<nodeId>:<name>` for a parameter control, `move:<id of the drag>` for moving nodes, `group:<groupId>` for moving or resizing a group.
+4. **Gestures.** `beginGesture(key)` on pointer down, `endGesture()` on pointer up. `EngineClient` calls `beginGesture` and `endGesture` of the engine (7.1) when `DocState.gesture` begins and ends. Everything transacted with that key in between is one undo step, however long the drag, and a step of its own: the first transaction of a gesture merges into an entry that was there before the gesture only by the 600 ms of rule 3. Keys: `param:<nodeId>:<name>` for a parameter control, with the ids joined by `+` when the inspector edits a parameter of several selected nodes at once (`param:<idA>+<idB>:<name>`), `setting:<name>` for a project setting the inspector edits, `move:<id of the drag>` for moving nodes, `group:<groupId>` for moving or resizing a group.
 5. **Not undoable.** `undoable: false` adds no entry and leaves `future` intact. It is used for, and only for, `setView`, `setGraphViewport`, and `setSettings` of `buildResolution` or `previewLevel`. Such a transaction touches no other path, and no undoable transaction touches those paths; that is what keeps earlier patches applicable. A transaction that breaks this throws and changes nothing. Changes under `ui` do not set `unsaved`; a change of `buildResolution` or `previewLevel` sets it until the next save.
 6. `undo` applies the last entry's inverse patches and moves it to `future`; `redo` the reverse. Both increment `revision`, restore the entry's selection and end any gesture.
 7. The history holds at most 500 entries and at most 64 MiB of patches; the oldest are dropped.
@@ -2350,8 +2359,10 @@ interface PlatformApi {
 }
 ```
 
-Project files are small JSON and go through this bridge as text. Nothing else
-does: imported images and exported files are handled in the engine worker.
+Project files are small JSON and go through this bridge as text. So do the
+manifest and the report of a build, which the build panel reads once the build
+has written them (8.7). Nothing else does: imported images and the other
+exported files are handled in the engine worker.
 `readTextFile` and `writeTextFile` take absolute paths and reject for any
 other, and for a file above 64 MiB. Preferences are one JSON file in the
 user-data folder; a member that is not of its type takes its default, and
@@ -2379,15 +2390,20 @@ interface PanelDef {
 panel imports them from (rule 2). A panel's component takes no props: it
 reaches the `CommandContext` with `useCommandContext()` and the shell's
 services (the key and the title of a command, whether it is enabled, the
-notification area) with `useApp()`, both of `src/app/ui/`.
+notification area, and `showPanel(id)`, which brings a panel's tab to the front
+of its group and gives the panel the focus) with `useApp()`, both of
+`src/app/ui/`. A panel behind another tab is not in the document (rule 3): a
+command that shows something in its panel calls `showPanel` with its own id
+first, and a command that acts on what its panel shows is disabled while the
+panel is hidden.
 
 | Panel | Contents | Reads | Writes |
 | --- | --- | --- | --- |
 | `graph` | the node graph, the add-node palette, groups, clipboard, node thumbnails and status | `docStore`, `engineStore` per node, thumbnails | transactions; selection |
 | `viewport` | the canvas, camera control, overlays, the height readout | `engineStore` view state, `docStore` settings and view | `EngineClient.viewport`; `setView` |
 | `inspector` | the parameters of the selected node, generated from its `ParamDef`s; project settings | `docStore`, selection | transactions with gestures |
-| `library` | the node catalogue by category, with search | the node registry (`CommandContext.registry`, 8.8) | starts an add-node drag |
-| `build` | build settings, start and cancel, progress, the plan and its problems, the list of written files, errors | `engineStore` build state (8.5) | `EngineClient.build`, `cancelBuild` |
+| `library` | the node catalogue by category, with search and the recently used nodes; the example projects, which are the files of `examples/` that `examples/index.json` lists, packed into the page by the build | the node registry (`CommandContext.registry`, 8.8); `docStore`, for the nodes that are added | starts an add-node drag and asks for a node to be added; opens an example with `docStore.load(doc, null)`, a new project without a file, after asking when the project has unsaved changes: the shell's question with its three answers, of which "Save" runs the command `file.save` and opens the example once `DocState.unsaved` is false |
+| `build` | build settings (the build resolution, the output folder of each project, which the panel keeps by the path of the project's file in the page's `localStorage`, as it keeps which of its sections are folded), start and cancel, progress, the plan and its problems, the list of written files, the numbers Unreal needs as the manifest states them, errors | `engineStore` build state (8.5), and the client's events for what that state does not keep (when each stage began, the folder a build was asked for); `docStore` settings and export nodes; the manifest and the report of a build, as text through the bridge (8.6) | `EngineClient.build`, `cancelBuild`; `setSettings` of `buildResolution`, not undoable (8.5 rule 5); the selection, for the node of a problem or of a target |
 
 1. Each panel is a folder `src/app/panels/<id>/` whose `index.ts` exports its `PanelDef` as `panel`. `src/app/registry.ts`, the panel registry (not the node registry of 5.1), imports the five and exports them as a list; it is written once and then frozen.
 2. A panel imports from `src/app/state/`, `src/app/engine/`, `src/app/ui/`, `src/app/platform.ts` and the core's entry modules `runtime.ts` and `api.ts`; it takes the node registry from `CommandContext` (8.8). It never imports another panel or `src/app/shell/`. Panels affect each other only through the stores and through commands.
@@ -2396,6 +2412,8 @@ notification area) with `useApp()`, both of `src/app/ui/`.
 5. The inspector has one control per `ParamDef` kind, in `src/app/panels/inspector/controls/<kind>.tsx`. A new kind is a change to `engine.md`. The curve control draws with `evalCurve` and the gradient control with `bakeGradient` (`engine.md` 4.9), so what the user sees is what kernels get. The control of a direction (`unit: 'angle'`, range 0..360) draws 0° pointing right and 90° pointing down, as the top view shows it (`engine.md` 1.8). A control is hidden while its `visibleWhen` does not hold (`engine.md` 4.3).
 6. The inspector shows a `length` or `height` value in metres beside the stored value and accepts either (`engine.md` 1.6); it stores the fraction.
 7. The dock layout is saved to the preferences with a schema version, as `{ version, dock }` with `dock` in dockview's own form. A layout that fails to load is replaced by the default from the panels' `placement`: one of another version, one that does not hold exactly the panels of the registry, and one dockview refuses. In a `placement`, a `direction` without `relativeTo` is that edge of the whole layout, and a panel without either is the first, which fills it. A panel cannot be closed. Pop-out windows are not used: a WebGPU canvas moved to another window's document is untested.
+8. **From the library into the graph.** Neither panel imports the other (rule 2), so the two agree on what the document's own events carry. The library starts an add-node drag as an HTML drag whose `dataTransfer` holds the type `application/x-orogen-node` with the node type id as its text, and `effectAllowed` `'copy'`; the graph takes a drag of that type and adds the node with its middle at the drop position, or into the wire it is dropped on when the node can go into it. "Add this node now" from outside the graph (a double click or Enter in the library) is a `CustomEvent` named `orogen:add-node`, dispatched on `window` with `detail: { type: string }`; the graph adds that node at the centre of its visible area and selects it. A type the registry lacks adds nothing and is said in the notification area.
+9. **One node, one word.** What several panels say of one node they say alike, from `src/app/ui/node-text.ts`: a port is named by `portLabel` (its label, else its name with a capital), and a node's error by `nodeErrorText`. A node whose error is `missing-input` (5.3) is unfinished, not failed (`isFailure`): every node is in that state between being added and being wired. The graph and the inspector read it off the document and say "Missing input: <label>" in the colour of a warning, the viewport says "Missing input" and keeps its last picture, and the status bar counts such nodes apart from the nodes that failed ("1 node lacks an input"). An error of any other kind is drawn as an error in all four, and both leave all four together when the cause is gone.
 
 ### 8.8 Commands and keys
 
@@ -2432,10 +2450,10 @@ interface MenuEntry {
 
 1. Every user action that is not direct manipulation is a command: menus, the palette, keys and buttons all call `run(commandId)`. A command's owner is the prefix of its id: a panel id, or `file`, `edit`, `view`, `engine` for the shell.
 2. **Keys.** A key is written as modifiers in the order `Mod`, `Ctrl`, `Alt`, `Shift`, then a key name derived from `KeyboardEvent.code`: `KeyB` → `B`, `Digit0` → `0`, otherwise the code itself (`Tab`, `Delete`, `F2`, `Backquote`, `Home`). `Mod` is Control on Windows and Linux. Bindings are independent of the keyboard layout.
-3. **Dispatch.** One listener, owned by the shell. A binding scoped to the focused panel wins over a `global` one. While a text field has focus, only bindings with `Mod` or a function key are considered, and `Mod+Z`, `Mod+Shift+Z`, `Mod+Y`, `Mod+A`, `Mod+C`, `Mod+X`, `Mod+V` are left to the field; a number field of `src/app/ui/` that has the focus counts as one. While a dialog, the palette, a menu or a popover is open, no binding runs: the keyboard is theirs. Copy, cut and paste in the graph are handled through the DOM clipboard events, not through bindings.
+3. **Dispatch.** One listener, owned by the shell. A binding scoped to the focused panel wins over a `global` one. While a text field has focus, only bindings with `Mod` or a function key are considered, and `Mod+Z`, `Mod+Shift+Z`, `Mod+Y`, `Mod+A`, `Mod+C`, `Mod+X`, `Mod+V` are left to the field. A control that uses plain keys for itself and holds no typed text (a number field of `src/app/ui/` that shows its value, a list) counts as a text field for plain keys only: it has no undo and no clipboard of its own, so the seven keys run their commands there, and `Mod+Z` undoes a value that was just dragged. A number field whose entry is open is a text field. While a dialog, the palette, a menu or a popover is open, no binding runs: the keyboard is theirs. Copy, cut and paste in the graph are handled through the DOM clipboard events, not through bindings.
 4. **Registration.** At start-up the shell collects commands, bindings and menu entries from the panel registry and from its own list. Two commands with one id, a binding or a menu entry to an unknown command, or two bindings with the same key and scope stop start-up with a message naming both owners; so do a command whose id does not begin with its owner (rule 1) and a binding of a panel in another scope than its own.
 5. **User keys.** `Preferences.keymap` replaces the default keys of a command by the one it names, in the scope they had; `''` leaves the command without a key. A default binding of another command with that key in that scope gives way. The palette, the menus and tooltips show the current key.
-6. **The edit commands.** `edit.cut`, `edit.copy`, `edit.paste`, `edit.delete` and `edit.selectAll` are the shell's and go where the focus is: to the text field that has it; else to the focused panel, as its command `<panel>.<name>` (`graph.delete`, `graph.selectAll`) when the panel declares one, and for cut, copy and paste otherwise as the DOM clipboard event of that name, dispatched at the panel's focused element with a `clipboardData` of its own. What a panel puts there as `text/plain` on cut or copy, having prevented the default, is written to the clipboard; on paste the clipboard's text is in it.
+6. **The edit commands.** `edit.cut`, `edit.copy`, `edit.paste`, `edit.delete` and `edit.selectAll` are the shell's and go where the focus is: to the text field that has it; else to the focused panel, as its command `<panel>.<name>` (`graph.delete`, `graph.selectAll`) when the panel declares one, in which case the edit command is enabled exactly when that command is; and for cut, copy and paste otherwise as the DOM clipboard event of that name, dispatched at the panel's focused element with a `clipboardData` of its own. What a panel puts there as `text/plain` on cut or copy, having prevented the default, is written to the clipboard; on paste the clipboard's text is in it.
 7. **Menus.** The menus of the menu bar are `File`, `Edit`, `View` and `Engine`, then the menus that panels name, then `Help`. A panel adds an item to any of them with a `MenuEntry` of its `PanelDef`.
 8. **The engine's commands.** `engine.togglePause` pauses and resumes previews. `engine.retryDevice` is enabled while `device.state` is `'failed'`: an engine that lost its device is asked to recover it (`retryDevice`, 7.8 rule 3), and one that never had a device (`device.caps` is `null`: its worker stopped, 8.3) gets another worker. `engine.restart` ends the engine worker, whether it answers or not, and connects another (8.5); it is always enabled, and the shell says in the notification area that it happened.
 
@@ -2461,6 +2479,7 @@ others in that scope; `global` bindings are the shell's.
 | `F2` | `graph.rename` | graph |
 | `Mod+0`, `Home` | `graph.fit` | graph |
 | `F` | `viewport.frame` | viewport |
+| `Home` | `viewport.resetView` (the direction a new session looks from, on the whole terrain) | viewport |
 
 ### 8.9 Libraries
 
@@ -2547,7 +2566,7 @@ tests/
 | graph panel | `src/app/panels/graph/**` | |
 | viewport | `src/app/panels/viewport/**`, `src/viewport/**` | |
 | inspector panel | `src/app/panels/inspector/**` | |
-| library panel | `src/app/panels/library/**` | |
+| library panel | `src/app/panels/library/**`, `examples/**` (the example projects, their pictures and `index.json`; `tests/graphs/examples.test.ts` evaluates and builds them) | |
 | build panel | `src/app/panels/build/**` | |
 
 Each application owner also owns `tests/ui/<owner>/**` under its own name

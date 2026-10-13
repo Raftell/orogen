@@ -1,0 +1,479 @@
+/*
+ * The graph panel. Colours, spacing and fonts are the custom properties of src/app/shell/theme.css (runtime.md
+ * 8.7 rule 4). The sizes of a node are those of geometry.ts: GraphPanel sets them on the root as --graph-*,
+ * so the style sheet and the arithmetic of ports and wires cannot disagree.
+ *
+ * Nothing at rest has a shadow, a filter or an animation: three hundred nodes are painted on every pan.
+ */
+
+.root {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--og-graph-bg);
+  color: var(--og-text);
+  font: var(--og-font-weight) var(--og-font-size) / var(--og-line-height) var(--og-font-ui);
+  user-select: none;
+  outline: none;
+
+  --xy-background-color: var(--og-graph-bg);
+  --xy-background-pattern-color: var(--og-graph-grid);
+  --xy-edge-stroke: var(--og-wire);
+  --xy-edge-stroke-width: 2;
+  --xy-edge-stroke-selected: var(--og-selection);
+  --xy-connectionline-stroke: var(--og-wire);
+  --xy-connectionline-stroke-width: 2;
+  --xy-selection-background-color: var(--og-accent-muted);
+  --xy-selection-border: 1px solid var(--og-accent);
+  --xy-minimap-background-color: var(--og-bg-app);
+  --xy-minimap-mask-background-color: var(--og-bg-backdrop);
+  --xy-minimap-mask-stroke-color: var(--og-border-strong);
+  --xy-minimap-mask-stroke-width: 1;
+  --xy-minimap-node-background-color: var(--og-bg-widget);
+  --xy-handle-background-color: var(--og-wire);
+}
+
+.surface { position: absolute; inset: 0; }
+
+.root :global(.react-flow__pane),
+.root :global(.react-flow__pane.selection),
+.root :global(.react-flow__node),
+.root :global(.react-flow__node.selectable),
+.root :global(.react-flow__node.draggable),
+.root :global(.react-flow__edge.selectable) { cursor: default; }
+.root :global(.react-flow__pane.dragging),
+.root :global(.react-flow__node.draggable.dragging) { cursor: grabbing; }
+.root[data-panning] :global(.react-flow__pane) { cursor: grab; }
+.root[data-cutting] :global(.react-flow__pane),
+.root[data-cutting] :global(.react-flow__node) { cursor: crosshair; }
+
+/*
+ * After a box was drawn the library lays a rectangle over the selected nodes, to drag them by. It would also
+ * take every click meant for one of them or for the canvas between them; any selected node drags them all as well.
+ */
+.root :global(.react-flow__nodesselection) { display: none; }
+
+/* ---- a node ---- */
+
+.node {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border: var(--graph-border) solid var(--og-node-border);
+  border-radius: var(--og-radius);
+  background: var(--og-node-bg);
+  --graph-category: var(--og-bg-widget);
+}
+.node[data-category='generate'] { --graph-category: var(--og-category-generate); }
+.node[data-category='adjust'] { --graph-category: var(--og-category-adjust); }
+.node[data-category='filter'] { --graph-category: var(--og-category-filter); }
+.node[data-category='simulate'] { --graph-category: var(--og-category-simulate); }
+.node[data-category='select'] { --graph-category: var(--og-category-select); }
+.node[data-category='color'] { --graph-category: var(--og-category-color); }
+.node[data-category='surface'] { --graph-category: var(--og-category-surface); }
+.node[data-category='io'] { --graph-category: var(--og-category-io); }
+.node[data-category='ref'] { --graph-category: var(--og-category-ref); }
+
+.node[data-selected] { outline: 2px solid var(--og-selection); outline-offset: 0; }
+.node[data-failed] { border-color: var(--og-error); }
+/* Dragged over a wire it can go into: dropped here, the node is put into that wire. */
+.root[data-inserting] .node[data-selected] { outline: 2px dashed var(--og-accent-hover); }
+.node[data-failed][data-selected] { outline-color: var(--og-selection); }
+
+.header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--og-space-2);
+  box-sizing: border-box;
+  height: var(--graph-header);
+  padding: 0 var(--og-space-2) 0 var(--og-space-4);
+  border-radius: calc(var(--og-radius) - 1px) calc(var(--og-radius) - 1px) 0 0;
+  background: var(--graph-category);
+  color: var(--og-category-text);
+}
+.title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--og-font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.node[data-bypassed] .title { text-decoration: line-through; }
+.node[data-bypassed] .header { background: color-mix(in srgb, var(--graph-category) 45%, var(--og-node-bg)); color: var(--og-text-secondary); }
+.node[data-bypassed] .thumbnail,
+.node[data-bypassed] .ports { opacity: 0.45; }
+
+.badges { display: flex; flex: none; align-items: center; gap: var(--og-space-1); }
+.badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--og-radius-small);
+  color: var(--og-category-text);
+  pointer-events: all;
+}
+.badge :global(.og-icon) { width: 13px; height: 13px; }
+.badge[data-badge='error'] { background: var(--og-error); color: var(--og-text-on-accent); }
+.badge[data-badge='shown'][data-shown='overlay'] { opacity: 0.6; }
+.badge[data-badge='bypass'] { width: auto; padding: 0 var(--og-space-2); background: var(--og-bg-sunken); color: var(--og-text-secondary); font-size: var(--og-font-size-small); }
+
+/* The share of a running node that is done, along the lower edge of its header. */
+.progress {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--og-accent-hover);
+  transform-origin: 0 50%;
+}
+
+.body {
+  display: flex;
+  box-sizing: border-box;
+  padding: var(--graph-pad) 0;
+}
+/* The inputs have the width their labels need (flow.ts sets it), the outputs what the thumbnail leaves of the rest. */
+.ports { display: flex; flex: 1 1 0; flex-direction: column; min-width: 0; }
+.ports[data-side='in'] { flex: 0 0 auto; }
+/* Without a thumbnail the two columns keep their sides. */
+.ports[data-side='out'] { margin-left: auto; }
+.port {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: var(--graph-row);
+  min-width: 0;
+  padding: 0 var(--og-space-3) 0 calc(var(--graph-handle) / 2 + var(--og-space-2));
+  color: var(--og-text-secondary);
+  font-size: var(--og-font-size-small);
+}
+.ports[data-side='out'] .port { justify-content: flex-end; padding: 0 calc(var(--graph-handle) / 2 + var(--og-space-2)) 0 var(--og-space-3); }
+.portLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.port[data-optional]:not([data-connected]) { color: var(--og-text-dim); }
+.port[data-missing] { color: var(--og-warning); }
+
+.thumbnail {
+  flex: none;
+  width: var(--graph-thumb);
+  height: var(--graph-thumb);
+  background: var(--og-bg-sunken);
+  outline: 1px solid var(--og-node-border);
+}
+.thumbnail canvas { display: block; width: 100%; height: 100%; }
+.thumbnail[data-thumbnail='empty'] canvas { visibility: hidden; }
+.thumbnail[data-stale] canvas { opacity: 0.55; }
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--og-space-3);
+  box-sizing: border-box;
+  height: var(--graph-footer);
+  padding: 0 var(--og-space-3) 0 var(--og-space-4);
+  border-top: 1px solid var(--og-divider);
+  border-radius: 0 0 calc(var(--og-radius) - 1px) calc(var(--og-radius) - 1px);
+  color: var(--og-text-dim);
+  font-size: var(--og-font-size-small);
+  line-height: 1;
+}
+.status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: all; }
+.node[data-status='running'] .status { color: var(--og-accent-text); }
+/* Red: the node itself failed. Amber: it cannot run yet, for want of a wire or of a node before it. */
+.node[data-status='error'] .status { color: var(--og-error); }
+.node[data-status='missing'] .status,
+.node[data-status='skipped'] .status { color: var(--og-warning); }
+.dot { flex: none; box-sizing: border-box; width: 6px; height: 6px; border-radius: 50%; background: var(--og-text-disabled); }
+.node[data-status='done'] .dot { background: var(--og-ok); }
+.node[data-status='cached'] .dot { border: 1.5px solid var(--og-ok); background: transparent; }
+.node[data-status='running'] .dot,
+.node[data-status='waiting'] .dot { background: var(--og-accent); }
+.node[data-status='error'] .dot { background: var(--og-error); }
+.node[data-status='missing'] .dot,
+.node[data-status='skipped'] .dot { background: var(--og-warning); }
+.node[data-status='bypassed'] .dot { border: 1.5px solid var(--og-text-dim); background: transparent; }
+
+/* ---- ports: the dot is the library's handle ---- */
+
+.root :global(.react-flow__handle).handle {
+  width: var(--graph-handle);
+  height: var(--graph-handle);
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--og-node-border);
+  border-radius: 50%;
+  background: var(--graph-tone);
+  --graph-tone: var(--og-wire);
+}
+.root :global(.react-flow__handle).handle:hover { border-color: var(--og-text); }
+.handle[data-tone='height'] { --graph-tone: var(--og-port-height); }
+.handle[data-tone='mask'] { --graph-tone: var(--og-port-mask); }
+.handle[data-tone='data'] { --graph-tone: var(--og-port-data); }
+.handle[data-tone='color'] { --graph-tone: var(--og-port-color); }
+.root :global(.react-flow__handle).handle[data-missing] { border: 2px solid var(--og-warning); background: var(--og-node-bg); }
+.root :global(.react-flow__handle).handle[data-optional]:not([data-connected]) { background: color-mix(in srgb, var(--graph-tone) 45%, var(--og-node-bg)); }
+/* While a wire is dragged, the ports it may end at stand out and the others step back. */
+.root :global(.react-flow__handle.valid).handle { border-color: var(--og-text); outline: 2px solid var(--og-accent); }
+
+/* ---- the name being edited ---- */
+.rename:global(.og-text-field) {
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+  padding: 0 var(--og-space-2);
+  font-size: var(--og-font-size);
+  pointer-events: all;
+}
+
+/* ---- wires ---- */
+
+.wire { --graph-tone: var(--og-wire); stroke: var(--graph-tone); stroke-width: 2; fill: none; }
+.wire[data-tone='height'] { --graph-tone: var(--og-port-height); }
+.wire[data-tone='mask'] { --graph-tone: var(--og-port-mask); }
+.wire[data-tone='data'] { --graph-tone: var(--og-port-data); }
+.wire[data-tone='color'] { --graph-tone: var(--og-port-color); }
+.root :global(.react-flow__edge.selected) .wire { stroke: var(--og-selection); stroke-width: 3; }
+.root :global(.react-flow__edge:hover) .wire { stroke-width: 3; }
+.wire[data-drop] { stroke: var(--og-accent-hover); stroke-width: 4; }
+.wireHit { stroke: transparent; stroke-width: 14; fill: none; pointer-events: stroke; }
+/* The wire whose end is being dragged to another input: it stays in sight, as what will go. */
+.root :global(.react-flow__edge[data-moving]) .wire { opacity: 0.3; stroke-dasharray: 3 5; }
+.connection { stroke-width: 2; fill: none; stroke-dasharray: 5 4; }
+.connection[data-valid='true'] { stroke-dasharray: none; }
+.connection[data-valid='false'] { stroke: var(--og-error); }
+
+/* ---- groups ---- */
+
+.frame {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--graph-group);
+  border-radius: var(--og-radius-large);
+  background: color-mix(in srgb, var(--graph-group) 14%, transparent);
+  --graph-group: var(--og-border-strong);
+}
+.frame[data-selected] { outline: 2px solid var(--og-selection); outline-offset: 0; }
+.frameHeader {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: var(--graph-group-header);
+  padding: 0 var(--og-space-4);
+  border-radius: calc(var(--og-radius-large) - 1px) calc(var(--og-radius-large) - 1px) 0 0;
+  background: color-mix(in srgb, var(--graph-group) 55%, var(--og-graph-bg));
+  color: var(--og-text);
+  font-weight: var(--og-font-weight-medium);
+  pointer-events: all;
+}
+.frameTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frameTitle[data-unnamed] { color: var(--og-text-secondary); font-weight: var(--og-font-weight); }
+.frameGrip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 0 0 calc(var(--og-radius-large) - 1px) 0;
+  background: linear-gradient(135deg, transparent 50%, var(--graph-group) 50%);
+  cursor: nwse-resize;
+  pointer-events: all;
+}
+
+/* ---- level of detail: what is too small to read is not drawn (ui-stack.md a.8) ---- */
+
+.root[data-lod='mid'] .portLabel,
+.root[data-lod='far'] .portLabel,
+.root[data-lod='mid'] .status,
+.root[data-lod='far'] .status,
+.root[data-lod='mid'] .dot,
+.root[data-lod='far'] .dot,
+.root[data-lod='far'] .title,
+.root[data-lod='far'] .badges,
+.root[data-lod='far']:not([data-group-titles]) .frameTitle,
+.root[data-lod='far'] .thumbnail canvas { display: none; }
+/*
+ * Far out the nodes are blocks without names, and what says what they are is the group they stand in: its name is
+ * drawn at the screen's size, from the middle of the group's header, which leaves the nodes below it free.
+ */
+.root[data-lod='far'][data-group-titles] .frameHeader { overflow: visible; }
+/* The scale itself is written on each name by the controller (sayZoom): it is the inverse of the zoom. */
+.root[data-lod='far'][data-group-titles] .frameTitle {
+  flex: none;
+  overflow: visible;
+  transform-origin: left center;
+  font-size: var(--og-font-size-small);
+  pointer-events: none;
+}
+.root[data-lod='far'] .node,
+.root[data-lod='far'] .header { border-radius: 0; }
+/*
+ * Far out a node is a few pixels high and its header a line: the whole node takes the colour of its category, so
+ * that the graph reads as blocks of what its parts do. A wire of two pixels would be a third of one there: it is
+ * drawn one pixel wide whatever the zoom.
+ */
+.root[data-lod='far'] .node { background: color-mix(in srgb, var(--graph-category) 62%, var(--og-node-bg)); }
+.root[data-lod='far'] .thumbnail,
+.root[data-lod='far'] .footer { visibility: hidden; }
+.root[data-lod='far'] .wire { vector-effect: non-scaling-stroke; stroke-width: 1px; }
+.root[data-lod='far'] :global(.react-flow__edge.selected) .wire { stroke-width: 2px; }
+
+/* ---- what lies over the graph ---- */
+
+.toolbar {
+  position: absolute;
+  top: var(--og-space-4);
+  left: var(--og-space-4);
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: var(--og-space-1);
+  padding: var(--og-space-1);
+  border: 1px solid var(--og-border);
+  border-radius: var(--og-radius);
+  background: var(--og-bg-raised);
+}
+.zoom { min-width: 40px; padding: 0 var(--og-space-3); color: var(--og-text-dim); font-size: var(--og-font-size-small); font-variant-numeric: tabular-nums; text-align: right; }
+
+.empty {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--og-space-3);
+  color: var(--og-text-dim);
+  pointer-events: none;
+}
+.emptyTitle { color: var(--og-text-secondary); font-size: var(--og-font-size-large); }
+.key {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 var(--og-space-2);
+  border: 1px solid var(--og-border-widget);
+  border-radius: var(--og-radius);
+  color: var(--og-text-secondary);
+  font-size: var(--og-font-size-small);
+  text-align: center;
+}
+
+.refusal {
+  position: absolute;
+  z-index: 8;
+  max-width: 280px;
+  padding: var(--og-space-2) var(--og-space-4);
+  border: 1px solid var(--og-error);
+  border-radius: var(--og-radius);
+  background: var(--og-bg-tooltip);
+  color: var(--og-text);
+  font-size: var(--og-font-size-small);
+  pointer-events: none;
+  transform: translate(12px, 12px);
+}
+
+.stroke { position: absolute; inset: 0; z-index: 7; width: 100%; height: 100%; pointer-events: none; }
+.stroke polyline { fill: none; stroke: var(--og-error); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.stroke .pending { stroke-dasharray: 5 4; }
+
+.root :global(.react-flow__minimap) { margin: var(--og-space-4); border: 1px solid var(--og-border); border-radius: var(--og-radius); overflow: hidden; }
+.root :global(.react-flow__minimap-node) { stroke: none; }
+
+/* ---- the add-node palette ---- */
+
+/* Drawn over the window, outside the panel: its place and size are set on the element (AddNodePalette.tsx). */
+.palette {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  border-radius: var(--og-radius-large);
+  background: var(--og-bg-popup);
+  box-shadow: var(--og-shadow-popup);
+  color: var(--og-text);
+  font: var(--og-font-weight) var(--og-font-size) / var(--og-line-height) var(--og-font-ui);
+  user-select: none;
+}
+.paletteSearch {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--og-space-4);
+  padding: var(--og-space-3) var(--og-space-5);
+  border-bottom: 1px solid var(--og-divider);
+  color: var(--og-text-dim);
+}
+.paletteInput {
+  flex: 1;
+  min-width: 0;
+  height: var(--og-control-height);
+  border: 0;
+  background: transparent;
+  color: var(--og-text);
+  font: inherit;
+  font-size: var(--og-font-size-large);
+  outline: none;
+}
+.paletteInput::placeholder { color: var(--og-text-dim); }
+.paletteWire { flex: none; max-width: 45%; overflow: hidden; color: var(--og-text-dim); font-size: var(--og-font-size-small); text-overflow: ellipsis; white-space: nowrap; }
+.paletteMain { display: flex; flex: 1; min-height: 0; }
+.paletteCategories {
+  flex: none;
+  width: 150px;
+  margin: 0;
+  padding: var(--og-space-2) 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--og-divider);
+  list-style: none;
+}
+.paletteCategory {
+  display: flex;
+  align-items: center;
+  gap: var(--og-space-3);
+  height: var(--og-row-height);
+  padding: 0 var(--og-space-4);
+  color: var(--og-text-secondary);
+  white-space: nowrap;
+}
+.paletteCategory:hover { background: var(--og-bg-hover); }
+.paletteCategory[aria-selected='true'] { background: var(--og-accent-muted); color: var(--og-text); }
+.paletteCategoryName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.paletteCount { color: var(--og-text-dim); font-size: var(--og-font-size-small); font-variant-numeric: tabular-nums; }
+.swatch { flex: none; box-sizing: border-box; width: 10px; height: 10px; border: 1px solid var(--og-border-widget); border-radius: var(--og-radius-small); background: var(--og-bg-widget); }
+.swatch[data-category='generate'] { background: var(--og-category-generate); }
+.swatch[data-category='adjust'] { background: var(--og-category-adjust); }
+.swatch[data-category='filter'] { background: var(--og-category-filter); }
+.swatch[data-category='simulate'] { background: var(--og-category-simulate); }
+.swatch[data-category='select'] { background: var(--og-category-select); }
+.swatch[data-category='color'] { background: var(--og-category-color); }
+.swatch[data-category='surface'] { background: var(--og-category-surface); }
+.swatch[data-category='io'] { background: var(--og-category-io); }
+.swatch[data-category='ref'] { background: var(--og-category-ref); }
+.paletteList { flex: 1; min-width: 0; margin: 0; padding: var(--og-space-2) 0; overflow-y: auto; list-style: none; }
+.paletteItem { display: flex; align-items: center; gap: var(--og-space-4); height: var(--og-row-height); padding: 0 var(--og-space-5) 0 var(--og-space-4); white-space: nowrap; }
+.paletteItem[aria-selected='true'] { background: var(--og-accent); color: var(--og-text-on-accent); }
+.paletteItemTitle { flex: none; max-width: 70%; overflow: hidden; text-overflow: ellipsis; }
+.paletteItemTitle b { color: var(--og-accent-text); font-weight: var(--og-font-weight-bold); }
+.paletteItem[aria-selected='true'] .paletteItemTitle b { color: inherit; text-decoration: underline; }
+.paletteItemNote { flex: 1; min-width: 0; overflow: hidden; color: var(--og-text-dim); font-size: var(--og-font-size-small); text-align: right; text-overflow: ellipsis; }
+.paletteItem[aria-selected='true'] .paletteItemNote { color: inherit; opacity: 0.85; }
+.paletteEmpty { flex: 1; padding: var(--og-space-6); color: var(--og-text-dim); text-align: center; }
+.paletteDetail {
+  flex: none;
+  box-sizing: border-box;
+  height: 62px;
+  padding: var(--og-space-3) var(--og-space-5);
+  overflow: hidden;
+  border-top: 1px solid var(--og-divider);
+  color: var(--og-text-secondary);
+  user-select: text;
+}
+.paletteDetailPorts { margin-top: var(--og-space-1); overflow: hidden; color: var(--og-text-dim); font-size: var(--og-font-size-small); text-overflow: ellipsis; white-space: nowrap; }

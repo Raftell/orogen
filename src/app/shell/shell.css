@@ -163,6 +163,8 @@ input, textarea { user-select: text; }
 .og-status-button:focus-visible { outline: none; box-shadow: var(--og-focus-shadow); }
 .og-status-button.og-status-error,
 .og-status-button.og-status-error:hover { color: var(--og-error); }
+.og-status-button.og-status-warning,
+.og-status-button.og-status-warning:hover { color: var(--og-warning); }
 .og-meter { flex: none; width: 72px; height: 4px; border-radius: 2px; background: var(--og-bg-widget); overflow: hidden; }
 .og-meter-fill { height: 100%; background: var(--og-text-dim); }
 .og-meter[data-level='high'] .og-meter-fill { background: var(--og-warning); }

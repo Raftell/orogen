@@ -1,0 +1,498 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4032,
+    "heightRange": 1008,
+    "seed": 8,
+    "buildResolution": 4033,
+    "previewLevel": 2,
+    "seaLevel": 0
+  },
+  "nodes": {
+    "swell": {
+      "id": "swell",
+      "type": "generate/fractal-noise",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {
+        "mode": "fbm",
+        "size": 0.6,
+        "octaves": 5,
+        "gain": 0.45,
+        "lacunarity": 2,
+        "warpStrength": 0,
+        "warpSize": 0.5,
+        "seed": 0
+      },
+      "title": "Highland Swell"
+    },
+    "level": {
+      "id": "level",
+      "type": "adjust/levels",
+      "version": 1,
+      "position": {
+        "x": 300,
+        "y": 0
+      },
+      "params": {
+        "inMin": 0,
+        "inMax": 1,
+        "gamma": 1,
+        "outMin": 0.35,
+        "outMax": 0.65,
+        "clamp": true
+      },
+      "title": "Highland Level"
+    },
+    "old": {
+      "id": "old",
+      "type": "generate/crater-field",
+      "version": 1,
+      "position": {
+        "x": 600,
+        "y": 0
+      },
+      "params": {
+        "count": 200,
+        "radiusMin": 0.012,
+        "radiusMax": 0.13,
+        "depth": 0.16,
+        "height": 0.5,
+        "flatten": 1,
+        "seed": 0
+      },
+      "title": "Old Craters"
+    },
+    "basin": {
+      "id": "basin",
+      "type": "generate/crater",
+      "version": 1,
+      "position": {
+        "x": 900,
+        "y": 0
+      },
+      "params": {
+        "center": [
+          0.4,
+          0.56
+        ],
+        "radius": 0.2,
+        "depth": 0.2,
+        "rim": 0.07,
+        "peak": 0.55,
+        "ejecta": 0.6,
+        "height": 0.5,
+        "flatten": 1,
+        "seed": 0
+      },
+      "title": "Great Basin"
+    },
+    "young": {
+      "id": "young",
+      "type": "generate/crater-field",
+      "version": 1,
+      "position": {
+        "x": 1200,
+        "y": 0
+      },
+      "params": {
+        "count": 420,
+        "radiusMin": 0.004,
+        "radiusMax": 0.022,
+        "depth": 0.03,
+        "height": 0.5,
+        "flatten": 0.6,
+        "seed": 4
+      },
+      "title": "Young Craters"
+    },
+    "slump": {
+      "id": "slump",
+      "type": "simulate/thermal-erosion",
+      "version": 1,
+      "position": {
+        "x": 1500,
+        "y": 0
+      },
+      "params": {
+        "talus": 33,
+        "size": 0.004,
+        "strength": 1,
+        "removal": 0
+      },
+      "title": "Slumped Walls"
+    },
+    "dust": {
+      "id": "dust",
+      "type": "simulate/sediment",
+      "version": 1,
+      "position": {
+        "x": 1800,
+        "y": 0
+      },
+      "params": {
+        "thickness": 0.004,
+        "repose": 25,
+        "size": 0.02
+      },
+      "title": "Dust Blanket"
+    },
+    "color": {
+      "id": "color",
+      "type": "color/natural",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 220
+      },
+      "params": {
+        "mode": "desert",
+        "variation": 0.3,
+        "seed": 0
+      },
+      "title": "Barren Colors"
+    },
+    "dustMask": {
+      "id": "dustMask",
+      "type": "adjust/levels",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 440
+      },
+      "params": {
+        "inMin": 0.002,
+        "inMax": 0.01,
+        "gamma": 1,
+        "outMin": 0,
+        "outMax": 1,
+        "clamp": true
+      },
+      "title": "Deep Dust"
+    },
+    "walls": {
+      "id": "walls",
+      "type": "select/slope",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 660
+      },
+      "params": {
+        "slopeMin": 26,
+        "slopeMax": 90,
+        "feather": 6,
+        "radius": 0.005,
+        "invert": false
+      },
+      "title": "Crater Walls"
+    },
+    "landscape": {
+      "id": "landscape",
+      "type": "io/export-landscape",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 0
+      },
+      "params": {
+        "enabled": true,
+        "name": "Highland",
+        "rangeMode": "measured",
+        "headroom": 0,
+        "heightMin": 0,
+        "heightMax": 1,
+        "dither": true,
+        "zeroAt": "seaLevel",
+        "origin": "center",
+        "baseLayer": "Regolith",
+        "layerBlend": "advanced",
+        "layerFloor": 0.008,
+        "layerLimit": 0,
+        "partition": true,
+        "gridComponents": 4,
+        "regionComponents": 32
+      },
+      "title": "Landscape"
+    },
+    "colorMap": {
+      "id": "colorMap",
+      "type": "io/export-color",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 220
+      },
+      "params": {
+        "enabled": true,
+        "name": "HighlandColor",
+        "dimension": "auto",
+        "content": "color"
+      },
+      "title": "Color Map"
+    },
+    "layerDust": {
+      "id": "layerDust",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 440
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Dust",
+        "weightBlended": true
+      },
+      "title": "Dust Layer"
+    },
+    "layerRock": {
+      "id": "layerRock",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 660
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Rock",
+        "weightBlended": true
+      },
+      "title": "Rock Layer"
+    }
+  },
+  "edges": {
+    "swell-out--level-in": {
+      "id": "swell-out--level-in",
+      "from": {
+        "node": "swell",
+        "port": "out"
+      },
+      "to": {
+        "node": "level",
+        "port": "in"
+      }
+    },
+    "level-out--old-in": {
+      "id": "level-out--old-in",
+      "from": {
+        "node": "level",
+        "port": "out"
+      },
+      "to": {
+        "node": "old",
+        "port": "in"
+      }
+    },
+    "old-out--basin-in": {
+      "id": "old-out--basin-in",
+      "from": {
+        "node": "old",
+        "port": "out"
+      },
+      "to": {
+        "node": "basin",
+        "port": "in"
+      }
+    },
+    "basin-out--young-in": {
+      "id": "basin-out--young-in",
+      "from": {
+        "node": "basin",
+        "port": "out"
+      },
+      "to": {
+        "node": "young",
+        "port": "in"
+      }
+    },
+    "young-out--slump-in": {
+      "id": "young-out--slump-in",
+      "from": {
+        "node": "young",
+        "port": "out"
+      },
+      "to": {
+        "node": "slump",
+        "port": "in"
+      }
+    },
+    "slump-out--dust-in": {
+      "id": "slump-out--dust-in",
+      "from": {
+        "node": "slump",
+        "port": "out"
+      },
+      "to": {
+        "node": "dust",
+        "port": "in"
+      }
+    },
+    "dust-out--color-in": {
+      "id": "dust-out--color-in",
+      "from": {
+        "node": "dust",
+        "port": "out"
+      },
+      "to": {
+        "node": "color",
+        "port": "in"
+      }
+    },
+    "dust-depth--dustMask-in": {
+      "id": "dust-depth--dustMask-in",
+      "from": {
+        "node": "dust",
+        "port": "depth"
+      },
+      "to": {
+        "node": "dustMask",
+        "port": "in"
+      }
+    },
+    "dust-out--walls-in": {
+      "id": "dust-out--walls-in",
+      "from": {
+        "node": "dust",
+        "port": "out"
+      },
+      "to": {
+        "node": "walls",
+        "port": "in"
+      }
+    },
+    "dust-out--landscape-in": {
+      "id": "dust-out--landscape-in",
+      "from": {
+        "node": "dust",
+        "port": "out"
+      },
+      "to": {
+        "node": "landscape",
+        "port": "in"
+      }
+    },
+    "color-out--colorMap-in": {
+      "id": "color-out--colorMap-in",
+      "from": {
+        "node": "color",
+        "port": "out"
+      },
+      "to": {
+        "node": "colorMap",
+        "port": "in"
+      }
+    },
+    "dustMask-out--layerDust-in": {
+      "id": "dustMask-out--layerDust-in",
+      "from": {
+        "node": "dustMask",
+        "port": "out"
+      },
+      "to": {
+        "node": "layerDust",
+        "port": "in"
+      }
+    },
+    "walls-out--layerRock-in": {
+      "id": "walls-out--layerRock-in",
+      "from": {
+        "node": "walls",
+        "port": "out"
+      },
+      "to": {
+        "node": "layerRock",
+        "port": "in"
+      }
+    }
+  },
+  "groups": {
+    "group-1": {
+      "id": "group-1",
+      "title": "Highland",
+      "color": "#79461d",
+      "rect": {
+        "x": -20,
+        "y": -44,
+        "w": 564,
+        "h": 208
+      }
+    },
+    "group-2": {
+      "id": "group-2",
+      "title": "Impacts",
+      "color": "#79461d",
+      "rect": {
+        "x": 580,
+        "y": -44,
+        "w": 864,
+        "h": 208
+      }
+    },
+    "group-3": {
+      "id": "group-3",
+      "title": "Weathering",
+      "color": "#2b652b",
+      "rect": {
+        "x": 1480,
+        "y": -44,
+        "w": 564,
+        "h": 208
+      }
+    },
+    "group-4": {
+      "id": "group-4",
+      "title": "Color",
+      "color": "#6e6e23",
+      "rect": {
+        "x": 2080,
+        "y": 176,
+        "w": 264,
+        "h": 208
+      }
+    },
+    "group-5": {
+      "id": "group-5",
+      "title": "Layer Masks",
+      "color": "#3c3c83",
+      "rect": {
+        "x": 2080,
+        "y": 396,
+        "w": 264,
+        "h": 428
+      }
+    },
+    "group-6": {
+      "id": "group-6",
+      "title": "Export",
+      "color": "#82354c",
+      "rect": {
+        "x": 2380,
+        "y": -44,
+        "w": 264,
+        "h": 790
+      }
+    }
+  },
+  "ui": {
+    "view": {
+      "height": {
+        "node": "dust",
+        "port": "out"
+      },
+      "overlay": {
+        "ref": {
+          "node": "color",
+          "port": "out"
+        },
+        "as": "color",
+        "opacity": 1
+      }
+    }
+  }
+}

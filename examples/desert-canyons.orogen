@@ -1,0 +1,672 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4032,
+    "heightRange": 1008,
+    "seed": 5,
+    "buildResolution": 4033,
+    "previewLevel": 2,
+    "seaLevel": 0
+  },
+  "nodes": {
+    "canyon": {
+      "id": "canyon",
+      "type": "generate/canyon",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {
+        "size": 0.3,
+        "depth": 0.5,
+        "width": 0.16,
+        "branching": 0.75,
+        "levels": 5,
+        "erosion": 0.6,
+        "seed": 0
+      },
+      "title": "Canyonlands"
+    },
+    "strata": {
+      "id": "strata",
+      "type": "surface/strata",
+      "version": 1,
+      "position": {
+        "x": 300,
+        "y": 0
+      },
+      "params": {
+        "thickness": 0.1,
+        "angle": 0,
+        "tilt": 15,
+        "strength": 1,
+        "slopeMin": 15,
+        "warpStrength": 0.4,
+        "warpSize": 0.3,
+        "radius": 0.004,
+        "seed": 0
+      },
+      "title": "Rock Beds"
+    },
+    "dunes": {
+      "id": "dunes",
+      "type": "generate/dunes",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 220
+      },
+      "params": {
+        "mode": "transverse",
+        "size": 0.065,
+        "angle": 20,
+        "height": 0.06,
+        "irregularity": 0.55,
+        "seed": 0
+      },
+      "title": "Dunes"
+    },
+    "basin": {
+      "id": "basin",
+      "type": "adjust/math",
+      "version": 1,
+      "position": {
+        "x": 300,
+        "y": 220
+      },
+      "params": {
+        "mode": "add",
+        "value": 0.06
+      },
+      "title": "Basin Level"
+    },
+    "side": {
+      "id": "side",
+      "type": "generate/gradient",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 440
+      },
+      "params": {
+        "mode": "linear",
+        "angle": 50,
+        "size": 1,
+        "offset": [
+          0,
+          0
+        ]
+      },
+      "title": "Erg Side"
+    },
+    "step": {
+      "id": "step",
+      "type": "adjust/levels",
+      "version": 1,
+      "position": {
+        "x": 300,
+        "y": 440
+      },
+      "params": {
+        "inMin": 0.47,
+        "inMax": 0.57,
+        "gamma": 1,
+        "outMin": 0,
+        "outMax": 1,
+        "clamp": true
+      },
+      "title": "Escarpment Line"
+    },
+    "erg": {
+      "id": "erg",
+      "type": "filter/warp",
+      "version": 1,
+      "position": {
+        "x": 600,
+        "y": 440
+      },
+      "params": {
+        "distance": 0.09,
+        "size": 0.25,
+        "octaves": 3,
+        "guideRadius": 0.03,
+        "seed": 0
+      },
+      "title": "Ragged Edge"
+    },
+    "rockOnly": {
+      "id": "rockOnly",
+      "type": "adjust/invert",
+      "version": 1,
+      "position": {
+        "x": 900,
+        "y": 440
+      },
+      "params": {
+        "pivot": 0.5
+      },
+      "title": "Rock Only"
+    },
+    "land": {
+      "id": "land",
+      "type": "adjust/combine",
+      "version": 1,
+      "position": {
+        "x": 900,
+        "y": 0
+      },
+      "params": {
+        "mode": "mix",
+        "strength": 1,
+        "smoothness": 0.1
+      },
+      "title": "Plateau Meets Erg"
+    },
+    "rain": {
+      "id": "rain",
+      "type": "simulate/hydraulic-erosion",
+      "version": 1,
+      "position": {
+        "x": 1200,
+        "y": 0
+      },
+      "params": {
+        "size": 0.05,
+        "duration": 1,
+        "rain": 0.15,
+        "capacity": 1,
+        "downcutting": 0.5,
+        "deposition": 1,
+        "removal": 0.4,
+        "talus": 45,
+        "detail": 0,
+        "seed": 0
+      },
+      "title": "Flash Floods"
+    },
+    "thermal": {
+      "id": "thermal",
+      "type": "simulate/thermal-erosion",
+      "version": 1,
+      "position": {
+        "x": 1500,
+        "y": 0
+      },
+      "params": {
+        "talus": 40,
+        "size": 0.005,
+        "strength": 1,
+        "removal": 0
+      },
+      "title": "Talus Slopes"
+    },
+    "color": {
+      "id": "color",
+      "type": "color/natural",
+      "version": 1,
+      "position": {
+        "x": 1800,
+        "y": 220
+      },
+      "params": {
+        "mode": "desert",
+        "variation": 0.5,
+        "seed": 0
+      },
+      "title": "Desert Colors"
+    },
+    "sandColor": {
+      "id": "sandColor",
+      "type": "color/constant",
+      "version": 1,
+      "position": {
+        "x": 1800,
+        "y": 440
+      },
+      "params": {
+        "color": [
+          0.6,
+          0.38,
+          0.17
+        ]
+      },
+      "title": "Sand Color"
+    },
+    "colored": {
+      "id": "colored",
+      "type": "adjust/combine",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 220
+      },
+      "params": {
+        "mode": "mix",
+        "strength": 0.75,
+        "smoothness": 0.1
+      },
+      "title": "Sand on the Erg"
+    },
+    "cliffs": {
+      "id": "cliffs",
+      "type": "select/slope",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 660
+      },
+      "params": {
+        "slopeMin": 40,
+        "slopeMax": 90,
+        "feather": 6,
+        "radius": 0.005,
+        "invert": false
+      },
+      "title": "Cliffs"
+    },
+    "landscape": {
+      "id": "landscape",
+      "type": "io/export-landscape",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 0
+      },
+      "params": {
+        "enabled": true,
+        "name": "Desert",
+        "rangeMode": "measured",
+        "headroom": 0,
+        "heightMin": 0,
+        "heightMax": 1,
+        "dither": true,
+        "zeroAt": "seaLevel",
+        "origin": "center",
+        "baseLayer": "Gravel",
+        "layerBlend": "advanced",
+        "layerFloor": 0.008,
+        "layerLimit": 0,
+        "partition": true,
+        "gridComponents": 4,
+        "regionComponents": 32
+      },
+      "title": "Landscape"
+    },
+    "colorMap": {
+      "id": "colorMap",
+      "type": "io/export-color",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 220
+      },
+      "params": {
+        "enabled": true,
+        "name": "DesertColor",
+        "dimension": "auto",
+        "content": "color"
+      },
+      "title": "Color Map"
+    },
+    "layerSand": {
+      "id": "layerSand",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 440
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Sand",
+        "weightBlended": true
+      },
+      "title": "Sand Layer"
+    },
+    "layerRock": {
+      "id": "layerRock",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 660
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Rock",
+        "weightBlended": true
+      },
+      "title": "Rock Layer"
+    }
+  },
+  "edges": {
+    "canyon-out--strata-in": {
+      "id": "canyon-out--strata-in",
+      "from": {
+        "node": "canyon",
+        "port": "out"
+      },
+      "to": {
+        "node": "strata",
+        "port": "in"
+      }
+    },
+    "dunes-out--basin-in": {
+      "id": "dunes-out--basin-in",
+      "from": {
+        "node": "dunes",
+        "port": "out"
+      },
+      "to": {
+        "node": "basin",
+        "port": "in"
+      }
+    },
+    "side-out--step-in": {
+      "id": "side-out--step-in",
+      "from": {
+        "node": "side",
+        "port": "out"
+      },
+      "to": {
+        "node": "step",
+        "port": "in"
+      }
+    },
+    "step-out--erg-in": {
+      "id": "step-out--erg-in",
+      "from": {
+        "node": "step",
+        "port": "out"
+      },
+      "to": {
+        "node": "erg",
+        "port": "in"
+      }
+    },
+    "erg-out--rockOnly-in": {
+      "id": "erg-out--rockOnly-in",
+      "from": {
+        "node": "erg",
+        "port": "out"
+      },
+      "to": {
+        "node": "rockOnly",
+        "port": "in"
+      }
+    },
+    "strata-out--land-a": {
+      "id": "strata-out--land-a",
+      "from": {
+        "node": "strata",
+        "port": "out"
+      },
+      "to": {
+        "node": "land",
+        "port": "a"
+      }
+    },
+    "basin-out--land-b": {
+      "id": "basin-out--land-b",
+      "from": {
+        "node": "basin",
+        "port": "out"
+      },
+      "to": {
+        "node": "land",
+        "port": "b"
+      }
+    },
+    "erg-out--land-mask": {
+      "id": "erg-out--land-mask",
+      "from": {
+        "node": "erg",
+        "port": "out"
+      },
+      "to": {
+        "node": "land",
+        "port": "mask"
+      }
+    },
+    "land-out--rain-in": {
+      "id": "land-out--rain-in",
+      "from": {
+        "node": "land",
+        "port": "out"
+      },
+      "to": {
+        "node": "rain",
+        "port": "in"
+      }
+    },
+    "rockOnly-out--rain-mask": {
+      "id": "rockOnly-out--rain-mask",
+      "from": {
+        "node": "rockOnly",
+        "port": "out"
+      },
+      "to": {
+        "node": "rain",
+        "port": "mask"
+      }
+    },
+    "rain-out--thermal-in": {
+      "id": "rain-out--thermal-in",
+      "from": {
+        "node": "rain",
+        "port": "out"
+      },
+      "to": {
+        "node": "thermal",
+        "port": "in"
+      }
+    },
+    "thermal-out--color-in": {
+      "id": "thermal-out--color-in",
+      "from": {
+        "node": "thermal",
+        "port": "out"
+      },
+      "to": {
+        "node": "color",
+        "port": "in"
+      }
+    },
+    "rain-flow--color-flow": {
+      "id": "rain-flow--color-flow",
+      "from": {
+        "node": "rain",
+        "port": "flow"
+      },
+      "to": {
+        "node": "color",
+        "port": "flow"
+      }
+    },
+    "color-out--colored-a": {
+      "id": "color-out--colored-a",
+      "from": {
+        "node": "color",
+        "port": "out"
+      },
+      "to": {
+        "node": "colored",
+        "port": "a"
+      }
+    },
+    "sandColor-out--colored-b": {
+      "id": "sandColor-out--colored-b",
+      "from": {
+        "node": "sandColor",
+        "port": "out"
+      },
+      "to": {
+        "node": "colored",
+        "port": "b"
+      }
+    },
+    "erg-out--colored-mask": {
+      "id": "erg-out--colored-mask",
+      "from": {
+        "node": "erg",
+        "port": "out"
+      },
+      "to": {
+        "node": "colored",
+        "port": "mask"
+      }
+    },
+    "thermal-out--cliffs-in": {
+      "id": "thermal-out--cliffs-in",
+      "from": {
+        "node": "thermal",
+        "port": "out"
+      },
+      "to": {
+        "node": "cliffs",
+        "port": "in"
+      }
+    },
+    "thermal-out--landscape-in": {
+      "id": "thermal-out--landscape-in",
+      "from": {
+        "node": "thermal",
+        "port": "out"
+      },
+      "to": {
+        "node": "landscape",
+        "port": "in"
+      }
+    },
+    "colored-out--colorMap-in": {
+      "id": "colored-out--colorMap-in",
+      "from": {
+        "node": "colored",
+        "port": "out"
+      },
+      "to": {
+        "node": "colorMap",
+        "port": "in"
+      }
+    },
+    "erg-out--layerSand-in": {
+      "id": "erg-out--layerSand-in",
+      "from": {
+        "node": "erg",
+        "port": "out"
+      },
+      "to": {
+        "node": "layerSand",
+        "port": "in"
+      }
+    },
+    "cliffs-out--layerRock-in": {
+      "id": "cliffs-out--layerRock-in",
+      "from": {
+        "node": "cliffs",
+        "port": "out"
+      },
+      "to": {
+        "node": "layerRock",
+        "port": "in"
+      }
+    }
+  },
+  "groups": {
+    "group-1": {
+      "id": "group-1",
+      "title": "Canyons",
+      "color": "#79461d",
+      "rect": {
+        "x": -20,
+        "y": -44,
+        "w": 564,
+        "h": 208
+      }
+    },
+    "group-2": {
+      "id": "group-2",
+      "title": "Dune Field",
+      "color": "#79461d",
+      "rect": {
+        "x": -20,
+        "y": 176,
+        "w": 564,
+        "h": 208
+      }
+    },
+    "group-3": {
+      "id": "group-3",
+      "title": "Where the Dunes Lie",
+      "color": "#3c3c83",
+      "rect": {
+        "x": -20,
+        "y": 396,
+        "w": 1164,
+        "h": 208
+      }
+    },
+    "group-4": {
+      "id": "group-4",
+      "title": "Erosion",
+      "color": "#2b652b",
+      "rect": {
+        "x": 880,
+        "y": -44,
+        "w": 864,
+        "h": 208
+      }
+    },
+    "group-5": {
+      "id": "group-5",
+      "title": "Color",
+      "color": "#6e6e23",
+      "rect": {
+        "x": 1780,
+        "y": 176,
+        "w": 564,
+        "h": 428
+      }
+    },
+    "group-6": {
+      "id": "group-6",
+      "title": "Layer Masks",
+      "color": "#3c3c83",
+      "rect": {
+        "x": 2080,
+        "y": 616,
+        "w": 264,
+        "h": 208
+      }
+    },
+    "group-7": {
+      "id": "group-7",
+      "title": "Export",
+      "color": "#82354c",
+      "rect": {
+        "x": 2380,
+        "y": -44,
+        "w": 264,
+        "h": 790
+      }
+    }
+  },
+  "ui": {
+    "view": {
+      "height": {
+        "node": "thermal",
+        "port": "out"
+      },
+      "overlay": {
+        "ref": {
+          "node": "colored",
+          "port": "out"
+        },
+        "as": "color",
+        "opacity": 1
+      }
+    }
+  }
+}

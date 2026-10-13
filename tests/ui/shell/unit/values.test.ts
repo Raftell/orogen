@@ -10,6 +10,9 @@ import { createKeymap } from '../../../../src/app/shell/keys.ts';
 import { initialSize, LAYOUT_VERSION, placementOrder, savedDock } from '../../../../src/app/shell/layout.ts';
 import { buildMenus } from '../../../../src/app/shell/menu.ts';
 import { fromDisplay, fromHex, linearToSrgb, srgbToLinear, toDisplay, toHex } from '../../../../src/app/ui/color.ts';
+import { isFailure, nodeErrorText, portLabel } from '../../../../src/app/ui/node-text.ts';
+import { nodes as productNodes } from '../../../../src/core/nodes/index.ts';
+import { createRegistry } from '../../../../src/core/runtime.ts';
 import { reduceEngineEvents } from '../../../../src/app/state/engine-store.ts';
 import type { CommandDef, PanelDef } from '../../../../src/app/ui/types.ts';
 import type { GraphDoc, NodeError } from '../../../../src/core/runtime.ts';
@@ -103,6 +106,20 @@ test('the errors to show are those of the nodes the document holds, in its order
   assert.deepEqual(failedNodes(engine.nodes, {}), []);
   // The undo that brings the node back finds its error where it was.
   assert.deepEqual(failedNodes(engine.nodes, { ...held, gone: node('gone') }).map((failed) => failed.nodeId), ['first', 'second', 'gone']);
+});
+
+test('a node that lacks a wire is unfinished, not failed, and its input is named by its label', () => {
+  const registry = createRegistry(productNodes);
+  const error = (kind: NodeError['kind'], message: string, nodeType = 'surface/terraces'): NodeError => ({ nodeId: 'n', nodeType, kind, message });
+  // The engine names the port (runtime.md 5.3); a person reads its label, in the words the graph uses.
+  assert.equal(nodeErrorText(error('missing-input', 'missing input "in"'), registry), 'Missing input: In');
+  assert.equal(nodeErrorText(error('missing-input', 'missing input "a"', 'adjust/combine'), registry), 'Missing input: A');
+  assert.equal(nodeErrorText(error('missing-input', 'missing input "gone"'), registry), 'Missing input: gone', 'a port the type does not have is named as the engine names it');
+  assert.equal(nodeErrorText(error('missing-input', 'missing input "in"', 'no/such-type'), registry), 'Missing input: in');
+  assert.equal(nodeErrorText(error('io', 'File not found: a.png'), registry), 'File not found: a.png', 'every other error is said as the engine says it');
+  assert.equal(isFailure(error('missing-input', 'missing input "in"')), false);
+  for (const kind of ['io', 'param', 'cycle', 'unknown-type', 'version'] as const) assert.equal(isFailure(error(kind, 'x')), true, kind);
+  assert.deepEqual([portLabel({ name: 'in' }), portLabel({ name: 'flow', label: 'Flow map' })], ['In', 'Flow map']);
 });
 
 // ---- the menu bar ----

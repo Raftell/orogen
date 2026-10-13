@@ -3,7 +3,7 @@
 
 import { useStore } from 'zustand';
 
-import { Icon } from '../ui/index.ts';
+import { Icon, isFailure } from '../ui/index.ts';
 import type { EngineState } from '../state/engine-store.ts';
 import { adapterName, failedNodes, formatBytes, formatDuration } from './format.ts';
 import type { Shell } from './shell.ts';
@@ -77,7 +77,9 @@ function Progress(props: { readonly shell: Shell }) {
 function View(props: { readonly shell: Shell }) {
   const { engineState, doc } = props.shell.ctx;
   const view = useStore(engineState, (state) => state.view);
-  const computing = useStore(engineState, (state) => state.evaluation !== null);
+  // What computes the view is an evaluation for it: a build and an evaluation for thumbnails bring no newer picture,
+  // and the viewport's own word for a picture behind them is "Out of date" as well.
+  const computing = useStore(engineState, (state) => state.evaluation !== null && (state.evaluation.purpose === 'view' || state.evaluation.purpose === 'draft'));
   const sent = useStore(doc, (state) => state.engineRevision);
   if (!view) return null;
   // 7.3 rule 7: what is shown is behind the document, or coarser than the preview. Behind with nothing being
@@ -114,19 +116,25 @@ function Errors(props: { readonly shell: Shell }) {
   const { shell } = props;
   // Of the nodes the document holds: the engine's last word on a deleted node is no error to show.
   const held = useStore(shell.ctx.doc, (state) => state.doc.nodes);
-  const failed = useStore(shell.ctx.engineState, (state) => failedNodes(state.nodes, held).length);
+  const failed = useStore(shell.ctx.engineState, (state) => failedNodes(state.nodes, held).filter(isFailure).length);
+  // A node that was asked for and lacks a wire is unfinished, not failed: said, and not in the colour of an error.
+  const unwired = useStore(shell.ctx.engineState, (state) => failedNodes(state.nodes, held).filter((error) => !isFailure(error)).length);
   const logged = useStore(shell.state, (state) => state.log.length);
-  if (failed === 0 && logged === 0) return null;
+  if (failed === 0 && unwired === 0 && logged === 0) return null;
+  const tone = failed > 0 ? 'error' : unwired > 0 ? 'warning' : null;
   return (
     <button
       type="button"
-      className={failed > 0 ? 'og-status-button og-status-error' : 'og-status-button'}
+      className={tone === null ? 'og-status-button' : `og-status-button og-status-${tone}`}
       data-status="errors"
+      data-tone={tone ?? undefined}
       data-command="view.showErrors"
       onClick={() => shell.runner.run('view.showErrors')}
     >
-      <Icon name={failed > 0 ? 'error' : 'info'} />
-      {failed > 0 ? `${failed} node${failed === 1 ? '' : 's'} failed` : 'Messages'}
+      <Icon name={tone ?? 'info'} />
+      {failed > 0 ? `${failed} node${failed === 1 ? '' : 's'} failed`
+        : unwired > 0 ? `${unwired} node${unwired === 1 ? ' lacks' : 's lack'} an input`
+          : 'Messages'}
     </button>
   );
 }

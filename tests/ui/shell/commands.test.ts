@@ -20,28 +20,54 @@ test('commands: the menu bar offers the commands of the shell and of the panels,
     await ready(app);
     await docked(app);
     await settled(app);
+    // 8.8 rule 7: the shell's menus, then those the panels name.
+    const titles = await app.eval<string[]>(`shellTest.texts('.og-menubar-item')`);
+    assert.deepEqual(titles, ['File', 'Edit', 'View', 'Engine', 'Viewport', 'Graph', 'Inspector', 'Library']);
     const menus: Record<string, string[]> = {};
     const keys: Record<string, string | null> = {};
-    for (const title of ['File', 'Edit', 'View', 'Engine']) {
+    for (const title of titles) {
       const items = await openMenu(app, title);
       menus[title] = items.map((item) => `${item.id}${item.enabled ? '' : ' (disabled)'}`);
       for (const item of items) keys[item.id!] = item.key;
       if (title === 'File') t.diagnostic(`capture: ${await capture(app, 'menu-file')}`);
       await closeMenu(app);
     }
+    // The default project at start: one node, nothing selected, the graph in front with the focus, the inspector
+    // in front of the library and the build panel.
     assert.deepEqual(menus, {
-      File: ['file.new', 'file.open', 'file.openRecent (disabled)', 'file.save', 'file.saveAs', 'file.exit'],
-      // Nothing to undo; the graph has the focus and takes clipboard events, and declares neither delete nor select all yet.
-      Edit: ['edit.undo (disabled)', 'edit.redo (disabled)', 'edit.cut', 'edit.copy', 'edit.paste', 'edit.delete (disabled)', 'edit.selectAll (disabled)', 'edit.preferences'],
-      View: ['view.commandPalette', 'view.resetLayout', 'view.showErrors', 'viewport.toggleTop (disabled)'],
+      File: ['file.new', 'file.open', 'file.openRecent (disabled)', 'library.browseExamples', 'file.save', 'file.saveAs', 'file.exit'],
+      // Nothing to undo. The graph has the focus: it takes the clipboard events, has nothing selected to delete, and a node to select.
+      Edit: ['edit.undo (disabled)', 'edit.redo (disabled)', 'edit.cut', 'edit.copy', 'edit.paste', 'edit.delete (disabled)', 'edit.selectAll', 'edit.preferences'],
+      View: ['view.commandPalette', 'view.resetLayout', 'view.showErrors', 'viewport.toggleTop'],
       Engine: ['engine.togglePause', 'engine.retryDevice (disabled)', 'engine.restart', 'build.start', 'build.cancel (disabled)'],
+      Viewport: [
+        'viewport.frame', 'viewport.resetView', 'viewport.toggleTop', 'viewport.shadingMaterial', 'viewport.shadingClay', 'viewport.topHillshade', 'viewport.topHeight',
+        'viewport.topOverlay', 'viewport.toggleSea', 'viewport.resetSun', 'viewport.resetVerticalScale', 'viewport.nextPalette', 'viewport.removeOverlay (disabled)',
+      ],
+      Graph: [
+        'graph.addNode', 'graph.insertNode (disabled)', 'graph.duplicate (disabled)', 'graph.rename (disabled)', 'graph.toggleBypass (disabled)', 'graph.toggleCollapse (disabled)',
+        'graph.group (disabled)', 'graph.selectContents (disabled)', 'graph.useAsTerrain (disabled)', 'graph.toggleViewLock', 'graph.fit', 'graph.toggleMinimap',
+      ],
+      Inspector: [
+        'inspector.rename (disabled)', 'inspector.toggleBypass (disabled)', 'inspector.resetParameter (disabled)', 'inspector.resetAll (disabled)', 'inspector.randomizeSeed',
+        'inspector.reloadFiles (disabled)', 'inspector.expandAll (disabled)', 'inspector.collapseAll (disabled)',
+      ],
+      // The library is behind the inspector: what shows one of its lists brings it to the front, what acts on a list is disabled.
+      Library: [
+        'library.search', 'library.addNode (disabled)', 'library.showNodes', 'library.showExamples', 'library.expandAll (disabled)', 'library.collapseAll',
+        'library.clearRecent (disabled)', 'library.openExample (disabled)',
+      ],
     });
-    // The keys of runtime.md 8.8, as a person reads them.
+    // The keys of runtime.md 8.8, as a person reads them. A key of a panel's scope is shown in that panel's menu.
     assert.deepEqual(
       Object.fromEntries(Object.entries(keys).filter(([, shown]) => shown !== null)),
       {
         'file.new': 'Ctrl+N', 'file.open': 'Ctrl+O', 'file.save': 'Ctrl+S', 'file.saveAs': 'Ctrl+Shift+S', 'edit.undo': 'Ctrl+Z', 'edit.redo': 'Ctrl+Shift+Z',
         'edit.preferences': 'Ctrl+,', 'view.commandPalette': 'Ctrl+Shift+P', 'viewport.toggleTop': 'F6', 'engine.togglePause': '`', 'build.start': 'Ctrl+B',
+        'viewport.frame': 'F', 'viewport.resetView': 'Home',
+        'graph.addNode': 'Tab', 'graph.duplicate': 'Ctrl+D', 'graph.rename': 'F2', 'graph.toggleBypass': 'B', 'graph.toggleCollapse': 'H', 'graph.group': 'Ctrl+G',
+        'graph.useAsTerrain': 'G', 'graph.toggleViewLock': 'F', 'graph.fit': 'Ctrl+0', 'graph.toggleMinimap': 'M',
+        'inspector.rename': 'F2', 'inspector.toggleBypass': 'B', 'library.search': 'Ctrl+F',
       },
     );
   });
@@ -119,6 +145,8 @@ test('commands: every entry of the Edit, View and Engine menus reaches its effec
     assert.equal(await seedOf(app), 3);
 
     // ---- Edit: cut, copy and paste reach the focused panel as DOM clipboard events (8.8 rule 3) ----
+    // The desktop's clipboard is the user's own: what the page would write there is kept in the page.
+    await app.eval(`void (navigator.clipboard.writeText = () => Promise.resolve(), navigator.clipboard.readText = () => Promise.resolve(''))`);
     await app.eval(`void (window.clipboardEvents = [], ['cut', 'copy', 'paste'].forEach((type) => document.querySelector('[data-panel="graph"]').addEventListener(type, (event) => {
       window.clipboardEvents.push(type + ':' + (event.clipboardData instanceof DataTransfer));
     })))`);
@@ -198,7 +226,9 @@ test('commands: every entry of the Edit, View and Engine menus reaches its effec
       if (!window.statusSeen.purposes.includes(purpose)) window.statusSeen.purposes.push(purpose);
       if (node && !window.statusSeen.nodes.includes(node)) window.statusSeen.nodes.push(node);
     }).observe(document.querySelector('[data-shell="statusbar"]'), { subtree: true, childList: true, attributes: true, characterData: true }))`);
+    // The build panel keeps the folder a project was built into (8.7): another folder is chosen by its command.
     await app.eval(`void orogenTest.shell.answers.chooseFolder.push(${quote(out)})`);
+    await run(app, 'build.chooseFolder');
     await choose(app, 'Engine', 'build.start');
     await app.waitFor(`orogenTest.ctx.engineState.getState().build.result?.outDir === ${quote(out)} && !orogenTest.ctx.engineState.getState().build.running`, EVALUATION_BACKSTOP_MS);
     const result = await app.eval<{ status: string; files: { path: string }[] }>(`orogenTest.ctx.engineState.getState().build.result`);
@@ -343,7 +373,15 @@ test('commands: the palette finds a command by a few of its letters and runs it'
     assert.equal(ids.includes('view.commandPalette'), false, 'the palette does not offer itself');
     assert.deepEqual(listed.find((entry) => entry.id === 'edit.undo'), { id: 'edit.undo', disabled: false, key: 'Ctrl+Z' });
     assert.deepEqual(listed.find((entry) => entry.id === 'edit.redo'), { id: 'edit.redo', disabled: true, key: 'Ctrl+Shift+Z' });
-    assert.equal(listed.find((entry) => entry.id === 'viewport.toggleTop')?.disabled, true);
+    assert.equal(listed.find((entry) => entry.id === 'viewport.toggleTop')?.disabled, false);
+    // Read from top to bottom, the list is the whole list: every command of the shell and of the five panels but the palette's own.
+    const declared = await app.eval<string[]>(`[...document.querySelectorAll('.og-menubar-item')].map((item) => item.getAttribute('data-menu'))`);
+    assert.ok(declared.length === 8 && listed.length > 70, `${listed.length} commands are listed`);
+    for (const id of ['graph.fit', 'graph.toggleMinimap', 'inspector.collapseAll', 'library.browseExamples', 'build.cancel', 'build.importGuide', 'build.selectProblemNode', 'viewport.removeOverlay']) assert.ok(ids.includes(id), id);
+    assert.equal(new Set(ids).size, ids.length, 'each once');
+    // Two panels have a command of one title: the list says whose each is.
+    const owners = await app.eval<Record<string, string>>(`Object.fromEntries([...document.querySelectorAll('.og-palette-item')].map((item) => [item.getAttribute('data-id'), item.querySelector('.og-palette-item-note')?.textContent ?? '']))`);
+    assert.deepEqual([owners['graph.delete'], owners['edit.delete'], owners['inspector.toggleBypass'], owners['graph.toggleBypass'], owners['build.start']], ['Graph', 'Edit', 'Inspector', 'Graph', 'Build']);
 
     // Typed letters narrow the list, the best match first; the letters need not be together.
     await app.eval(`void shellTest.type('.og-palette-input', 'undo')`);

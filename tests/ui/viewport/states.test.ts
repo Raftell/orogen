@@ -1,0 +1,136 @@
+// Every state of the viewport, in the real application (runtime.md 7.3, 7.4 rule 5, 7.8, 8.5): nothing bound, a
+// draft during a gesture and its refinement, a node that fails upstream while the last picture stays, a lost
+// GPU process and its recovery on a new canvas, and an engine worker that is replaced. What the panel says of
+// each is asserted; that the picture is there is asserted through a pick, which the worker answers for what it
+// has drawn.
+//
+// The captures are written for a person: test-output/ui/viewport/states-01 … states-06.
+
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+
+import type { CameraState } from '../../../src/core/runtime.ts';
+import { launchApp } from '../../helpers/index.ts';
+import { gpuProcesses } from '../platform/rig.ts';
+import { attr, camera, canvasSize, capture, EVALUATION_BACKSTOP_MS, makeDoc, PAGE_BACKSTOP_MS, pick, prepare, quote, run, settled, setView, show } from './rig.ts';
+
+const HEIGHT = { node: 'range', port: 'out' };
+const NODES = {
+  range: { type: 'generate/mountain-range' },
+  missing: { type: 'io/import-field', params: { file: '/no/such/folder/heights.png' } },
+};
+
+test('the states of the viewport: nothing bound, a draft and its refinement, a failing node, a lost device and a restarted engine', async (t) => {
+  const app = await launchApp({ profile: 'core' });
+  const statusText = (): Promise<string> => app.eval<string>(`viewportTest.statusText()`);
+  const cover = (): Promise<string | null> => app.eval<string | null>(`document.querySelector('[data-viewport="cover"]')?.textContent ?? null`);
+  try {
+    await prepare(app);
+    const size = await canvasSize(app);
+    let mid: readonly [number, number] = [size.width / 2, size.height * 0.55];
+
+    // ---- nothing bound ----
+    await app.eval(`void orogenTest.ctx.doc.getState().load(${quote(makeDoc(NODES, undefined, { buildResolution: 2017, previewLevel: 1 }))}, null)`);
+    await app.waitFor(`viewportTest.attr('data-status') === 'empty' && orogenTest.ctx.engineState.getState().evaluation === null`, EVALUATION_BACKSTOP_MS);
+    assert.match((await cover())!, /^Nothing to show/);
+    assert.equal(await pick(app, mid[0], mid[1]), null);
+    assert.equal(await statusText(), '', 'and nothing is claimed in the toolbar');
+    t.diagnostic(`capture: ${await capture(app, 'states-01-nothing-bound')}`);
+
+    // ---- bound ----
+    await setView(app, { height: HEIGHT });
+    assert.equal(await attr(app, 'data-status'), 'shown');
+    assert.equal(await cover(), null);
+    assert.equal(await statusText(), '1009 × 1009');
+    // A pixel that shows the range itself, not the plain it stands on: the highest of a few.
+    let shown = await pick(app, mid[0], mid[1]);
+    for (let i = 0; i < 25; i++) {
+      const at = [size.width * (0.3 + 0.1 * (i % 5)), size.height * (0.3 + 0.1 * Math.floor(i / 5))] as const;
+      const hit = await pick(app, at[0], at[1]);
+      if (hit && (!shown || hit.height > shown.height)) [shown, mid] = [hit, at];
+    }
+    assert.ok(shown !== null && shown.height > 0.15, `the terrain is drawn: ${JSON.stringify(shown)}`);
+
+    // ---- a draft during a gesture, then the refinement ----
+    await app.eval(`void (orogenTest.ctx.doc.getState().beginGesture('param:range:height'),
+      orogenTest.ctx.doc.getState().transact('Mountain Range: Height', (draft) => { draft.nodes.range.params.height = 0.4; }, { mergeKey: 'param:range:height' }))`);
+    await app.waitFor(`(() => {
+      const engine = orogenTest.ctx.engineState.getState();
+      return engine.evaluation === null && engine.view !== null && engine.view.draft && engine.view.revision >= orogenTest.ctx.doc.getState().engineRevision;
+    })()`, EVALUATION_BACKSTOP_MS);
+    await app.waitFor(`viewportTest.attr('data-status') === 'draft'`, PAGE_BACKSTOP_MS);
+    const drafted = await statusText();
+    assert.match(drafted, /^Draft(253|505) × \1$/, `the toolbar says what is shown: ${drafted}`);
+    const coarse = await pick(app, mid[0], mid[1]);
+    assert.ok(coarse !== null && Math.abs(coarse.height - shown.height) > 1e-4, 'the draft is drawn: the terrain is lower under the same pixel');
+    t.diagnostic(`capture: ${await capture(app, 'states-02-draft')}`);
+    await app.eval(`void orogenTest.ctx.doc.getState().endGesture()`);
+    await app.waitFor(`orogenTest.ctx.engineState.getState().view?.draft === false`, EVALUATION_BACKSTOP_MS);
+    await settled(app);
+    assert.equal(await attr(app, 'data-status'), 'shown');
+    assert.equal(await statusText(), '1009 × 1009');
+    const refined = await pick(app, mid[0], mid[1]);
+    assert.ok(refined !== null && Math.abs(refined.height - coarse.height) < 0.05, 'the refinement is the same terrain, finer');
+
+    // ---- the shown node fails: the panel says so, and the last picture stays ----
+    await app.eval(`void orogenTest.ctx.doc.getState().transact('View', (draft) => { draft.ui.view = { height: { node: 'missing', port: 'out' } }; }, { undoable: false })`);
+    await app.waitFor(`orogenTest.ctx.engineState.getState().evaluation === null && orogenTest.ctx.engineState.getState().nodes.missing?.state === 'error'`, EVALUATION_BACKSTOP_MS);
+    await app.waitFor(`viewportTest.attr('data-status') === 'error'`, PAGE_BACKSTOP_MS);
+    assert.match(await statusText(), /^Node failed/);
+    const kept = await pick(app, mid[0], mid[1]);
+    assert.ok(kept !== null && Math.abs(kept.height - refined.height) < 1e-6, 'what was on screen is still there (7.3 rule 6)');
+    t.diagnostic(`capture: ${await capture(app, 'states-03-node-failed')}`);
+    await setView(app, { height: HEIGHT });
+    assert.equal(await attr(app, 'data-status'), 'shown');
+
+    // ---- the GPU process is gone: a new device, a new canvas, the same terrain (7.8) ----
+    if (process.platform === 'linux') {
+      const pids = gpuProcesses();
+      assert.equal(pids.length, 1, `one application, one GPU process: ${pids.join(', ')}`);
+      await app.eval(`void (window.viewportCanvas = document.querySelector('[data-viewport="canvas"] canvas'), window.viewportEvents = [],
+        orogenTest.ctx.engine.subscribe((e) => { if (e.type === 'device-lost' || e.type === 'device-ready') window.viewportEvents.push(e.type); }),
+        new MutationObserver(() => window.viewportEvents.push('status:' + viewportTest.attr('data-status'))).observe(document.querySelector('[data-viewport="root"]'), { attributes: true, attributeFilter: ['data-status'] }))`);
+      process.kill(pids[0]!, 'SIGKILL');
+      await app.waitFor(`window.viewportEvents.includes('device-ready')`, EVALUATION_BACKSTOP_MS);
+      await settled(app);
+      await app.waitFor(`viewportTest.attr('data-status') === 'shown'`, PAGE_BACKSTOP_MS);
+      const events = await app.eval<string[]>(`window.viewportEvents`);
+      assert.ok(events.includes('status:lost'), `the panel said that the device was lost: ${events.join(', ')}`);
+      assert.equal(await app.eval<boolean>(`(() => {
+        const canvas = document.querySelector('[data-viewport="canvas"] canvas');
+        return canvas !== null && canvas !== window.viewportCanvas && !window.viewportCanvas.isConnected;
+      })()`), true, 'a canvas element of its own for the new device (7.8 rule 6)');
+      const back = await pick(app, mid[0], mid[1]);
+      assert.ok(back !== null && Math.abs(back.height - refined.height) < 1e-4 && Math.abs(back.uv[0] - refined.uv[0]) < 1e-4, 'the same terrain under the same pixel, on the new device');
+      t.diagnostic(`capture: ${await capture(app, 'states-04-after-device-loss')}`);
+    }
+
+    // ---- the engine worker is replaced: the new one is told the camera and the display again (8.5) ----
+    await run(app, 'viewport.toggleTop');
+    await run(app, 'viewport.topHeight');
+    const top = await camera(app) as Extract<CameraState, { kind: 'top' }>;
+    await app.eval(`void (window.viewportCanvas = document.querySelector('[data-viewport="canvas"] canvas'), orogenTest.ctx.run('engine.restart'))`);
+    await app.waitFor(`document.querySelector('[data-viewport="canvas"] canvas') !== window.viewportCanvas`, PAGE_BACKSTOP_MS);
+    t.diagnostic(`the panel while the engine starts: "${await cover()}"`);
+    await app.waitFor(`orogenTest.ctx.engineState.getState().device.state === 'ready'`, EVALUATION_BACKSTOP_MS);
+    await settled(app);
+    await app.waitFor(`viewportTest.attr('data-status') === 'shown'`, PAGE_BACKSTOP_MS);
+    assert.equal(await attr(app, 'data-mode'), 'top');
+    // A pick in the top view: the uv under a pixel is the camera's arithmetic, so the new worker has the camera.
+    const [x, y] = [Math.round(size.width * 0.45), Math.round(size.height * 0.4)];
+    const hit = await pick(app, x, y);
+    const u = top.center[0] + (x / size.width - 0.5) * top.span, v = top.center[1] + (y / size.height - 0.5) * top.span * (size.height / size.width);
+    assert.ok(hit !== null && Math.abs(hit.uv[0] - u) < 1e-5 && Math.abs(hit.uv[1] - v) < 1e-5, `the new engine draws the top view: ${JSON.stringify(hit)} for ${u} ${v}`);
+    t.diagnostic(`capture: ${await capture(app, 'states-05-after-engine-restart')}`);
+    await run(app, 'viewport.toggleTop');
+    await run(app, 'viewport.topHillshade');
+    t.diagnostic(`capture: ${await capture(app, 'states-06-back-in-3d')}`);
+
+    // Restarting the engine is said by the shell as a notice; nothing here is an error of the application.
+    assert.deepEqual(await app.errors(), []);
+  } catch (thrown) {
+    await app.close().catch(() => {});
+    throw thrown;
+  }
+  await app.close();
+});

@@ -1,3 +1,126 @@
-.host { position: absolute; inset: 0; background: var(--og-bg-canvas); }
-.canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
-.label { position: absolute; top: var(--og-space-4); left: var(--og-space-5); color: var(--og-text-dim); pointer-events: none; }
+/* The viewport panel. Every value is a token of src/app/shell/theme.css; the widths at which the toolbar lets a
+   control go are the panel's own arithmetic. */
+
+.root { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--og-bg-canvas); container-type: inline-size; }
+
+/* ---- the toolbar ---- */
+.toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--og-space-4);
+  box-sizing: border-box;
+  min-width: 0;
+  height: calc(var(--og-control-height) + 2 * var(--og-space-2));
+  padding: 0 var(--og-space-4);
+  border-bottom: 1px solid var(--og-border);
+  background: var(--og-bg-raised);
+  overflow: hidden;
+  white-space: nowrap;
+}
+/* The controls keep their width and are cut at the end of what the state leaves them; the state is never cut. */
+.controls { display: flex; flex: 0 1 auto; align-items: center; gap: var(--og-space-4); min-width: 0; height: 100%; overflow: hidden; padding: 0 var(--og-space-1); margin: 0 calc(-1 * var(--og-space-1)); }
+.segment { display: flex; flex: none; border-radius: var(--og-radius); background: var(--og-bg-sunken); }
+.segmentButton {
+  height: var(--og-control-height-small);
+  min-width: 34px;
+  margin: var(--og-space-1);
+  padding: 0 var(--og-space-4);
+  border: 0;
+  border-radius: var(--og-radius-small);
+  background: transparent;
+  color: var(--og-text-secondary);
+  font: inherit;
+  font-size: var(--og-font-size-small);
+  cursor: default;
+}
+.segmentButton + .segmentButton { margin-left: 0; }
+.segmentButton:hover { color: var(--og-text); background: var(--og-bg-hover); }
+.segmentButton[aria-pressed='true'] { background: var(--og-bg-widget-active); color: var(--og-text); }
+.segmentButton:focus-visible { outline: none; box-shadow: var(--og-focus-shadow); }
+.shading { display: flex; flex: none; }
+.toolbar .select { flex: none; width: 104px; height: var(--og-control-height-small); font-size: var(--og-font-size-small); }
+.toolbar .menuButton { flex: none; }
+/* An overlay that is drawn is said on its button: the picture is not the terrain's own colors. */
+.toolbar .menuButton[data-active] { color: var(--og-accent-text); }
+.sun { display: flex; flex: none; }
+.scale { flex: none; width: 112px; }
+.scale > * { height: var(--og-control-height-small); font-size: var(--og-font-size-small); }
+.check { display: inline-flex; flex: none; font-size: var(--og-font-size-small); }
+.frame { display: inline-flex; flex: none; }
+
+/* ---- what is shown: the output's name, the state, the resolution ---- */
+/* The state and the resolution keep their width; the controls keep theirs while both fit; the name has what is left. */
+.subject { display: flex; flex: 1 1 0; justify-content: flex-end; min-width: 0; font-size: var(--og-font-size-small); }
+.subjectName { display: flex; align-items: center; gap: var(--og-space-2); min-width: 0; max-width: 320px; color: var(--og-text-secondary); }
+.subjectText { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lock { flex: none; width: var(--og-font-size); height: var(--og-font-size); color: var(--og-text-dim); }
+.status {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--og-space-4);
+  color: var(--og-text-dim);
+  font-size: var(--og-font-size-small);
+  font-variant-numeric: tabular-nums;
+}
+.statusText { flex: none; padding: 0 var(--og-space-3); border-radius: var(--og-radius-small); line-height: var(--og-control-height-small); color: var(--og-text-secondary); background: var(--og-bg-widget); }
+.status[data-state='draft'] .statusText,
+.status[data-state='stale'] .statusText,
+.status[data-state='unwired'] .statusText,
+.status[data-state='updating'] .statusText { color: var(--og-warning); background: var(--og-warning-bg); }
+.status[data-state='error'] .statusText,
+.status[data-state='overlayError'] .statusText,
+.status[data-state='lost'] .statusText,
+.status[data-state='failed'] .statusText { color: var(--og-error); background: var(--og-error-bg); }
+/* An evaluation of a few milliseconds says nothing: the word appears when the state has lasted. */
+@keyframes appear { from { visibility: hidden; } to { visibility: visible; } }
+.status[data-state='updating'] .statusText { animation: appear 0s linear 0.25s both; }
+.status[data-state='stale'] .statusText { animation: appear 0s linear 0.6s both; }
+.resolution { flex: none; color: var(--og-text-secondary); }
+
+/* A narrow panel: the name goes first, since the graph marks the node too; then what the Viewport menu also holds. */
+@container (max-width: 780px) { .subjectName { display: none; } }
+@container (max-width: 700px) { .frame, .check { display: none; } }
+@container (max-width: 600px) { .shading { display: none; } }
+@container (max-width: 490px) { .scale { display: none; } }
+@container (max-width: 370px) { .resolution { display: none; } }
+@container (max-width: 290px) { .sun { display: none; } }
+
+/* ---- what opens under the toolbar ---- */
+.popover { width: 244px; }
+.popoverActions { display: flex; justify-content: flex-end; padding-top: var(--og-space-3); }
+.hint { padding: var(--og-space-2) 0; color: var(--og-text-dim); font-size: var(--og-font-size-small); white-space: normal; }
+.value { display: block; min-width: 0; overflow: hidden; color: var(--og-text); text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- the picture and what lies over it ---- */
+.stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.host { position: absolute; inset: 0; background: var(--og-bg-canvas); outline: none; touch-action: none; user-select: none; }
+.host:focus-visible { box-shadow: inset 0 0 0 1px var(--og-focus-ring); }
+.canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; }
+.cover { position: absolute; inset: 0; display: flex; background: var(--og-bg-canvas); pointer-events: none; }
+.readout,
+.note {
+  position: absolute;
+  left: var(--og-space-4);
+  bottom: var(--og-space-4);
+  display: flex;
+  align-items: baseline;
+  gap: var(--og-space-3);
+  max-width: calc(100% - 2 * var(--og-space-4));
+  box-sizing: border-box;
+  padding: var(--og-space-2) var(--og-space-4);
+  border-radius: var(--og-radius);
+  background: var(--og-bg-tooltip);
+  color: var(--og-text);
+  font-size: var(--og-font-size-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0.92;
+}
+.note { left: 50%; transform: translateX(-50%); color: var(--og-text-secondary); }
+.readoutLabel { color: var(--og-text-dim); }
+.readoutLabel:not(:first-child) { margin-left: var(--og-space-4); }
+.readoutDim { color: var(--og-text-dim); }

@@ -301,6 +301,23 @@ test('controls: the colour swatch opens a picker that takes a drag, a hex code a
     assert.deepEqual(await value(app, 'events'), ['color:start', 'color:end'], 'a drag in the picker is one gesture');
     t.diagnostic(`capture: ${await capture(app, 'controls-color')}`);
 
+    // A drag that leaves the popover and is let go over the page behind it is one gesture too: the release is
+    // heard wherever it happens, and the caller's gesture is not left open.
+    await app.eval(`void orogenTest.shell.gallery.setState({ events: [] })`);
+    await app.eval(`void (() => {
+      const inside = document.querySelector('.react-colorful__saturation .react-colorful__interactive');
+      const fire = (target, type, x, y, buttons) => target.dispatchEvent(new PointerEvent(type, {
+        bubbles: true, cancelable: true, composed: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons, clientX: x, clientY: y,
+      }));
+      fire(inside, 'pointerdown', ${area.x + 20}, ${area.y + 20}, 1);
+      fire(inside, 'pointermove', ${area.x + 60}, ${area.y + 30}, 1);
+      fire(document.body, 'pointerup', 5, 5, 0);
+    })()`);
+    assert.deepEqual(await value(app, 'events'), ['color:start', 'color:end'], 'a drag released outside the popover ends its gesture');
+    // And the next press begins another.
+    await app.eval(`void shellTest.press('.react-colorful__saturation .react-colorful__interactive', { clientX: ${area.x + 10}, clientY: ${area.y + 10} })`);
+    assert.deepEqual(await value(app, 'events'), ['color:start', 'color:end', 'color:start', 'color:end']);
+
     // Escape closes the picker and leaves the dialog.
     await key(app, 'Escape', {}, '[data-ui="color-picker"]');
     await vanishes(app, '[data-ui="color-picker"]');

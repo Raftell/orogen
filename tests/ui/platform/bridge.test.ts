@@ -21,6 +21,9 @@ test('bridge: a document saved through the bridge reads back equal, and opens as
   await withApp({ profile: 'core' }, async (app) => {
     await ready(app);
     await show(app, mountainDoc().doc);
+    // The graph panel fits a project that brings no viewport and keeps the fit in the document's interface state
+    // (runtime.md 8.7): the document is whole, and is what a user would save, once that is there.
+    await app.waitFor(`orogenTest.ctx.doc.getState().doc.ui.graphViewport !== undefined`);
     text = serializeDoc(await app.eval<GraphDoc>(`orogenTest.ctx.doc.getState().doc`));
     await app.eval(`orogenTest.ctx.platform.writeTextFile(${quote(file)}, ${quote(text)})`);
     const back = await app.eval<string>(`orogenTest.ctx.platform.readTextFile(${quote(file)})`);
@@ -40,6 +43,9 @@ test('bridge: a document saved through the bridge reads back equal, and opens as
     assert.equal(await app.eval<string>(`orogenTest.ctx.platform.launchProject`), file);
     assert.ok(serializeDoc(await app.eval<GraphDoc>(`orogenTest.ctx.doc.getState().doc`)) === text, 'the opened document is the saved one');
     await shown(app, await sentRevision(app));
+    // And it stays the saved one: the graph shows the viewport the file brought and fits nothing over it.
+    await app.eval(`new Promise((resolve) => setTimeout(resolve, 1500))`);
+    assert.ok(serializeDoc(await app.eval<GraphDoc>(`orogenTest.ctx.doc.getState().doc`)) === text, 'the opened document is still the saved one when the panels have settled');
   });
 });
 

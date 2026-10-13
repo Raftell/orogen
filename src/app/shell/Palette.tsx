@@ -31,16 +31,19 @@ function entriesOf(shell: Shell, mode: PaletteMode): Entry[] {
     }));
   }
   const keymap = shell.keymap();
+  const panelTitles = new Map<string, string>(shell.panels.map((panel) => [panel.id, panel.title]));
   return shell.commands.commands
     // The palette does not offer itself.
     .filter(({ def }) => def.id !== 'view.commandPalette')
     .map(({ def }) => {
       const key = keymap.keysOf(def.id)[0];
+      const prefix = def.id.slice(0, def.id.indexOf('.'));
       return {
         id: def.id,
         title: def.title.replace(/…$/, ''),
         extra: def.id,
-        note: null,
+        // Whose command it is: "Delete" and "Rename" are commands of more than one panel.
+        note: panelTitles.get(prefix) ?? prefix.charAt(0).toUpperCase() + prefix.slice(1),
         keyLabel: key === undefined ? null : formatKey(key, shell.keyPlatform),
         enabled: shell.runner.enabled(def.id),
         run: () => shell.runner.run(def.id),
@@ -48,13 +51,18 @@ function entriesOf(shell: Shell, mode: PaletteMode): Entry[] {
     });
 }
 
-/** Entries shown at once; typing narrows the list. */
+/** Matches shown for what was typed. */
 const SHOWN_MAX = 60;
+/**
+ * Entries listed while nothing is typed: every command of the shell and of the five panels (about eighty), so
+ * that a list read from top to bottom is the whole list. A bound, not a page: nothing is behind it.
+ */
+const LISTED_MAX = 400;
 
 interface Row { readonly entry: Entry; readonly title: ReactNode }
 
 function rowsOf(entries: readonly Entry[], query: string): Row[] {
-  if (query.trim() === '') return entries.slice(0, SHOWN_MAX).map((entry) => ({ entry, title: entry.title }));
+  if (query.trim() === '') return entries.slice(0, LISTED_MAX).map((entry) => ({ entry, title: entry.title }));
   return fuzzysort.go(query.trim(), entries, { keys: ['title', 'extra'], limit: SHOWN_MAX, threshold: 0.2 }).map((found) => {
     const inTitle = found[0];
     const title = inTitle && inTitle.score > 0 ? inTitle.highlight((match, index) => <b key={index}>{match}</b>) : found.obj.title;

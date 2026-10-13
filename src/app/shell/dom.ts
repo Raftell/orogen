@@ -20,12 +20,18 @@ const PANEL = '[data-panel]';
 
 const TEXT_INPUTS: ReadonlySet<string> = new Set(['text', 'search', 'url', 'tel', 'email', 'password', 'number', '']);
 
-/** An element that takes typed text, or one that uses plain keys for itself. */
-export function isTextField(target: EventTarget | null): boolean {
+/** An element that holds typed text: it has an undo, a selection and a clipboard of its own. */
+export function holdsText(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target instanceof HTMLTextAreaElement) return true;
   if (target instanceof HTMLInputElement) return TEXT_INPUTS.has(target.type);
-  if (target.isContentEditable) return true;
+  return target.isContentEditable;
+}
+
+/** An element that takes typed text, or one that uses plain keys for itself. */
+export function isTextField(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (holdsText(target)) return true;
   // A number field that has the focus takes digits and arrows; a list takes letters to find an item.
   const role = target.getAttribute('role');
   return role === 'spinbutton' || role === 'combobox' || role === 'listbox';
@@ -112,7 +118,7 @@ export function createShellDom(ui: StoreApi<UiState>): ShellDom {
         if (dialog !== null || palette !== null || inChrome(event.target)) return;
         const key = keyOf(event, shell.keyPlatform);
         if (key === null) return;
-        const command = shell.keymap().resolve(key, { focusedPanel: ui.getState().focusedPanel, textField: isTextField(event.target) });
+        const command = shell.keymap().resolve(key, { focusedPanel: ui.getState().focusedPanel, textField: isTextField(event.target), typing: holdsText(event.target) });
         if (command === null) return;
         event.preventDefault();
         event.stopPropagation();

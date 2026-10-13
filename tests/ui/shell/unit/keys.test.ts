@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  createKeymap, formatKey, isKey, keyName, keyOf, normalizeKey, reachesBindingsFromTextField,
+  createKeymap, formatKey, isKey, keyName, keyOf, normalizeKey, reachesBindingsFromControl, reachesBindingsFromTextField,
   type KeyEventLike, type KeymapCommand, type OwnedBinding,
 } from '../../../../src/app/shell/keys.ts';
 
@@ -98,6 +98,21 @@ test('in a text field a plain key is typed, Mod+S saves, and Delete deletes a ch
   assert.equal(keymap.resolve('Mod+Shift+Z', { focusedPanel: 'graph', textField: true }), null);
   assert.equal(keymap.resolve('Mod+Y', { focusedPanel: 'graph', textField: true }), null);
   assert.equal(keymap.resolve('Mod+B', { focusedPanel: 'inspector', textField: true }), 'build.start');
+});
+
+test('a number field that shows its value, or a list, keeps plain keys and has no undo of its own: Mod+Z and Mod+Y are the application\'s there', () => {
+  for (const key of ['Mod+Z', 'Mod+Shift+Z', 'Mod+Y', 'Mod+A', 'Mod+S', 'F2', 'F6']) assert.equal(reachesBindingsFromControl(key), true, key);
+  for (const key of ['B', 'Tab', 'Delete', 'Backquote', 'Shift+A', 'Alt+B', 'Home', 'ArrowUp', 'Enter']) assert.equal(reachesBindingsFromControl(key), false, key);
+  const keymap = createKeymap(DEFAULTS, COMMANDS);
+  // The value was dragged, the field has the focus: redo is the document's, and so is undo.
+  assert.equal(keymap.resolve('Mod+Shift+Z', { focusedPanel: 'inspector', textField: true, typing: false }), 'edit.redo');
+  assert.equal(keymap.resolve('Mod+Y', { focusedPanel: 'inspector', textField: true, typing: false }), 'edit.redo');
+  assert.equal(keymap.resolve('Mod+S', { focusedPanel: 'inspector', textField: true, typing: false }), 'file.save');
+  // Its plain keys stay its own: B is no bypass and Delete no deletion while it has the focus.
+  assert.equal(keymap.resolve('B', { focusedPanel: 'graph', textField: true, typing: false }), null);
+  assert.equal(keymap.resolve('Delete', { focusedPanel: 'graph', textField: true, typing: false }), null);
+  // An entry that is being typed is a text field as any other.
+  assert.equal(keymap.resolve('Mod+Shift+Z', { focusedPanel: 'inspector', textField: true, typing: true }), null);
 });
 
 test('keysOf lists the keys of a command, the first being the one shown', () => {

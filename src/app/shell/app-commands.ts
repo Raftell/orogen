@@ -50,6 +50,8 @@ export interface ShellCommandHost {
   readonly edit: EditHost;
   readonly testMode: boolean;
   hasCommand(id: string): boolean;
+  /** Whether a command would run now. Without it a panel's edit command counts as enabled whenever it is declared. */
+  commandEnabled?(id: string): boolean;
   recent(): readonly string[];
   paused(): boolean;
   setPaused(paused: boolean): void;
@@ -70,7 +72,11 @@ export function shellCommands(host: ShellCommandHost): CommandDef[] {
     return {
       id: `edit.${action}`,
       title: EDIT_TITLES[action],
-      enabled: (ctx) => route(ctx.ui.getState().focusedPanel) !== null,
+      enabled(ctx) {
+        const target = route(ctx.ui.getState().focusedPanel);
+        // "Delete" with nothing selected in the graph is the graph's own disabled command, and is shown as that.
+        return target !== null && (target.to !== 'command' || (host.commandEnabled?.(target.id) ?? true));
+      },
       run(ctx) {
         const target = route(ctx.ui.getState().focusedPanel);
         if (target?.to === 'text-field') host.edit.inTextField(action);

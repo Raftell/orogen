@@ -1,0 +1,608 @@
+{
+  "format": "orogen",
+  "version": 1,
+  "settings": {
+    "terrainSize": 4032,
+    "heightRange": 1008,
+    "seed": 3,
+    "buildResolution": 4033,
+    "previewLevel": 2,
+    "seaLevel": 0
+  },
+  "nodes": {
+    "noise": {
+      "id": "noise",
+      "type": "generate/fractal-noise",
+      "version": 1,
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "params": {
+        "mode": "fbm",
+        "size": 0.4,
+        "octaves": 5,
+        "gain": 0.4,
+        "lacunarity": 2,
+        "warpStrength": 0.2,
+        "warpSize": 0.5,
+        "seed": 0
+      },
+      "title": "Rolling Ground"
+    },
+    "low": {
+      "id": "low",
+      "type": "adjust/levels",
+      "version": 1,
+      "position": {
+        "x": 300,
+        "y": 0
+      },
+      "params": {
+        "inMin": 0,
+        "inMax": 1,
+        "gamma": 1,
+        "outMin": 0.05,
+        "outMax": 0.3,
+        "clamp": true
+      },
+      "title": "Hill Height"
+    },
+    "valleys": {
+      "id": "valleys",
+      "type": "simulate/fluvial-erosion",
+      "version": 1,
+      "position": {
+        "x": 600,
+        "y": 0
+      },
+      "params": {
+        "size": 0.125,
+        "duration": 0.6,
+        "concavity": 0.4,
+        "talus": 18,
+        "uplift": 0,
+        "lakeFill": 0,
+        "detail": 0,
+        "seed": 0
+      },
+      "title": "Valleys"
+    },
+    "rivers": {
+      "id": "rivers",
+      "type": "simulate/rivers",
+      "version": 1,
+      "position": {
+        "x": 900,
+        "y": 0
+      },
+      "params": {
+        "catchment": 0.004,
+        "valleyDepth": 0.02,
+        "riverWidth": 0.022,
+        "riverDepth": 0.012,
+        "bank": 18,
+        "seed": 0
+      },
+      "title": "Rivers"
+    },
+    "lakes": {
+      "id": "lakes",
+      "type": "simulate/lakes",
+      "version": 1,
+      "position": {
+        "x": 1200,
+        "y": 0
+      },
+      "params": {
+        "minDepth": 0.004,
+        "minSize": 0.03
+      },
+      "title": "Lakes"
+    },
+    "water": {
+      "id": "water",
+      "type": "adjust/combine",
+      "version": 1,
+      "position": {
+        "x": 1500,
+        "y": 880
+      },
+      "params": {
+        "mode": "maximum",
+        "strength": 1,
+        "smoothness": 0.1
+      },
+      "title": "Rivers and Lakes"
+    },
+    "flow": {
+      "id": "flow",
+      "type": "simulate/flow",
+      "version": 1,
+      "position": {
+        "x": 1500,
+        "y": 440
+      },
+      "params": {
+        "routing": "single",
+        "seed": 0
+      },
+      "title": "Drainage"
+    },
+    "color": {
+      "id": "color",
+      "type": "color/natural",
+      "version": 1,
+      "position": {
+        "x": 1800,
+        "y": 440
+      },
+      "params": {
+        "mode": "temperate",
+        "variation": 0.5,
+        "seed": 0
+      },
+      "title": "Temperate Colors"
+    },
+    "blue": {
+      "id": "blue",
+      "type": "color/constant",
+      "version": 1,
+      "position": {
+        "x": 1500,
+        "y": 660
+      },
+      "params": {
+        "color": [
+          0.04,
+          0.13,
+          0.2
+        ]
+      },
+      "title": "Water Blue"
+    },
+    "colored": {
+      "id": "colored",
+      "type": "adjust/combine",
+      "version": 1,
+      "position": {
+        "x": 2100,
+        "y": 440
+      },
+      "params": {
+        "mode": "mix",
+        "strength": 1,
+        "smoothness": 0.1
+      },
+      "title": "Water on the Map"
+    },
+    "banks": {
+      "id": "banks",
+      "type": "select/distance",
+      "version": 1,
+      "position": {
+        "x": 1800,
+        "y": 1100
+      },
+      "params": {
+        "distance": 0.012,
+        "mode": "outside",
+        "invert": false
+      },
+      "title": "Banks"
+    },
+    "woods": {
+      "id": "woods",
+      "type": "select/slope",
+      "version": 1,
+      "position": {
+        "x": 1800,
+        "y": 220
+      },
+      "params": {
+        "slopeMin": 17,
+        "slopeMax": 50,
+        "feather": 4,
+        "radius": 0.005,
+        "invert": false
+      },
+      "title": "Wooded Slopes"
+    },
+    "landscape": {
+      "id": "landscape",
+      "type": "io/export-landscape",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 0
+      },
+      "params": {
+        "enabled": true,
+        "name": "Hills",
+        "rangeMode": "measured",
+        "headroom": 0,
+        "heightMin": 0,
+        "heightMax": 1,
+        "dither": true,
+        "zeroAt": "seaLevel",
+        "origin": "center",
+        "baseLayer": "Meadow",
+        "layerBlend": "advanced",
+        "layerFloor": 0.008,
+        "layerLimit": 0,
+        "partition": true,
+        "gridComponents": 4,
+        "regionComponents": 32
+      },
+      "title": "Landscape"
+    },
+    "layerMud": {
+      "id": "layerMud",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 1100
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Riverbank",
+        "weightBlended": true
+      },
+      "title": "Riverbank Layer"
+    },
+    "colorMap": {
+      "id": "colorMap",
+      "type": "io/export-color",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 440
+      },
+      "params": {
+        "enabled": true,
+        "name": "HillsColor",
+        "dimension": "auto",
+        "content": "color"
+      },
+      "title": "Color Map"
+    },
+    "layerWoods": {
+      "id": "layerWoods",
+      "type": "io/export-layer",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 220
+      },
+      "params": {
+        "enabled": true,
+        "layer": "Forest",
+        "weightBlended": true
+      },
+      "title": "Forest Layer"
+    },
+    "waterMask": {
+      "id": "waterMask",
+      "type": "io/export-mask",
+      "version": 1,
+      "position": {
+        "x": 2400,
+        "y": 880
+      },
+      "params": {
+        "enabled": true,
+        "name": "Water",
+        "dimension": "auto",
+        "bits": "8"
+      },
+      "title": "Water Mask"
+    }
+  },
+  "edges": {
+    "noise-out--low-in": {
+      "id": "noise-out--low-in",
+      "from": {
+        "node": "noise",
+        "port": "out"
+      },
+      "to": {
+        "node": "low",
+        "port": "in"
+      }
+    },
+    "low-out--valleys-in": {
+      "id": "low-out--valleys-in",
+      "from": {
+        "node": "low",
+        "port": "out"
+      },
+      "to": {
+        "node": "valleys",
+        "port": "in"
+      }
+    },
+    "valleys-out--rivers-in": {
+      "id": "valleys-out--rivers-in",
+      "from": {
+        "node": "valleys",
+        "port": "out"
+      },
+      "to": {
+        "node": "rivers",
+        "port": "in"
+      }
+    },
+    "rivers-out--lakes-in": {
+      "id": "rivers-out--lakes-in",
+      "from": {
+        "node": "rivers",
+        "port": "out"
+      },
+      "to": {
+        "node": "lakes",
+        "port": "in"
+      }
+    },
+    "rivers-river--water-a": {
+      "id": "rivers-river--water-a",
+      "from": {
+        "node": "rivers",
+        "port": "river"
+      },
+      "to": {
+        "node": "water",
+        "port": "a"
+      }
+    },
+    "lakes-water--water-b": {
+      "id": "lakes-water--water-b",
+      "from": {
+        "node": "lakes",
+        "port": "water"
+      },
+      "to": {
+        "node": "water",
+        "port": "b"
+      }
+    },
+    "lakes-out--flow-in": {
+      "id": "lakes-out--flow-in",
+      "from": {
+        "node": "lakes",
+        "port": "out"
+      },
+      "to": {
+        "node": "flow",
+        "port": "in"
+      }
+    },
+    "lakes-out--color-in": {
+      "id": "lakes-out--color-in",
+      "from": {
+        "node": "lakes",
+        "port": "out"
+      },
+      "to": {
+        "node": "color",
+        "port": "in"
+      }
+    },
+    "flow-out--color-flow": {
+      "id": "flow-out--color-flow",
+      "from": {
+        "node": "flow",
+        "port": "out"
+      },
+      "to": {
+        "node": "color",
+        "port": "flow"
+      }
+    },
+    "color-out--colored-a": {
+      "id": "color-out--colored-a",
+      "from": {
+        "node": "color",
+        "port": "out"
+      },
+      "to": {
+        "node": "colored",
+        "port": "a"
+      }
+    },
+    "blue-out--colored-b": {
+      "id": "blue-out--colored-b",
+      "from": {
+        "node": "blue",
+        "port": "out"
+      },
+      "to": {
+        "node": "colored",
+        "port": "b"
+      }
+    },
+    "water-out--colored-mask": {
+      "id": "water-out--colored-mask",
+      "from": {
+        "node": "water",
+        "port": "out"
+      },
+      "to": {
+        "node": "colored",
+        "port": "mask"
+      }
+    },
+    "water-out--banks-in": {
+      "id": "water-out--banks-in",
+      "from": {
+        "node": "water",
+        "port": "out"
+      },
+      "to": {
+        "node": "banks",
+        "port": "in"
+      }
+    },
+    "lakes-out--woods-in": {
+      "id": "lakes-out--woods-in",
+      "from": {
+        "node": "lakes",
+        "port": "out"
+      },
+      "to": {
+        "node": "woods",
+        "port": "in"
+      }
+    },
+    "lakes-out--landscape-in": {
+      "id": "lakes-out--landscape-in",
+      "from": {
+        "node": "lakes",
+        "port": "out"
+      },
+      "to": {
+        "node": "landscape",
+        "port": "in"
+      }
+    },
+    "banks-out--layerMud-in": {
+      "id": "banks-out--layerMud-in",
+      "from": {
+        "node": "banks",
+        "port": "out"
+      },
+      "to": {
+        "node": "layerMud",
+        "port": "in"
+      }
+    },
+    "colored-out--colorMap-in": {
+      "id": "colored-out--colorMap-in",
+      "from": {
+        "node": "colored",
+        "port": "out"
+      },
+      "to": {
+        "node": "colorMap",
+        "port": "in"
+      }
+    },
+    "woods-out--layerWoods-in": {
+      "id": "woods-out--layerWoods-in",
+      "from": {
+        "node": "woods",
+        "port": "out"
+      },
+      "to": {
+        "node": "layerWoods",
+        "port": "in"
+      }
+    },
+    "water-out--waterMask-in": {
+      "id": "water-out--waterMask-in",
+      "from": {
+        "node": "water",
+        "port": "out"
+      },
+      "to": {
+        "node": "waterMask",
+        "port": "in"
+      }
+    }
+  },
+  "groups": {
+    "group-1": {
+      "id": "group-1",
+      "title": "Shape",
+      "color": "#79461d",
+      "rect": {
+        "x": -20,
+        "y": -44,
+        "w": 564,
+        "h": 208
+      }
+    },
+    "group-2": {
+      "id": "group-2",
+      "title": "Erosion",
+      "color": "#2b652b",
+      "rect": {
+        "x": 580,
+        "y": -44,
+        "w": 264,
+        "h": 208
+      }
+    },
+    "group-3": {
+      "id": "group-3",
+      "title": "Rivers and Lakes",
+      "color": "#246283",
+      "rect": {
+        "x": 880,
+        "y": -44,
+        "w": 564,
+        "h": 208
+      }
+    },
+    "group-4": {
+      "id": "group-4",
+      "title": "Forest Mask",
+      "color": "#3c3c83",
+      "rect": {
+        "x": 1780,
+        "y": 176,
+        "w": 264,
+        "h": 208
+      }
+    },
+    "group-5": {
+      "id": "group-5",
+      "title": "Color",
+      "color": "#6e6e23",
+      "rect": {
+        "x": 1480,
+        "y": 396,
+        "w": 864,
+        "h": 428
+      }
+    },
+    "group-6": {
+      "id": "group-6",
+      "title": "Water Masks",
+      "color": "#3c3c83",
+      "rect": {
+        "x": 1480,
+        "y": 836,
+        "w": 564,
+        "h": 428
+      }
+    },
+    "group-7": {
+      "id": "group-7",
+      "title": "Export",
+      "color": "#82354c",
+      "rect": {
+        "x": 2380,
+        "y": -44,
+        "w": 264,
+        "h": 1230
+      }
+    }
+  },
+  "ui": {
+    "view": {
+      "height": {
+        "node": "lakes",
+        "port": "out"
+      },
+      "overlay": {
+        "ref": {
+          "node": "colored",
+          "port": "out"
+        },
+        "as": "color",
+        "opacity": 1
+      }
+    }
+  }
+}

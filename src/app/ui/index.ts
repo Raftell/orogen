@@ -31,6 +31,7 @@ export type { TextFieldProps } from './TextField.tsx';
 export { Tooltip, TooltipProvider } from './Tooltip.tsx';
 export type { TooltipProps } from './Tooltip.tsx';
 
+export { isFailure, nodeErrorText, portLabel } from './node-text.ts';
 export { fromDisplay, fromHex, linearToSrgb, srgbToLinear, toDisplay, toHex } from './color.ts';
 export type { Rgb } from './color.ts';
 export {

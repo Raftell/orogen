@@ -1419,6 +1419,9 @@ Facts that shape them:
 | Timers in the main process are never throttled | `waitFor` polls from the main process |
 | A window that was never shown does not have the system's focus: `document.hasFocus()` is false, `element.focus()` moves `document.activeElement`, and Chromium dispatches no `focus`, `blur`, `focusin` or `focusout` event (measured) | A control does not leave to a focus event what Enter or Escape must do as well. A test that needs one dispatches it |
 | What `capturePage()` copies in such a window can be older than the page: measured, a picture taken 1.3 s after a change showed parts of the page as they were before it, in the first seconds of the application above all | A capture waits for two page frames and a second more (`tests/ui/shell/rig.ts`); it is still a picture for a person (rule 1) |
+| In a window that was never shown, `window.resizeTo(w, h)` ends the GPU process within a frame (`device-lost`: "A valid external Instance reference no longer exists"), and the recovery that follows fails now and then with "No WebGPU adapter is available" (measured independently for four panels; a killed GPU process, by contrast, recovers in under a second). Whether a visible window that the user resizes does the same is not known | A test never resizes the window. A panel is given another size through the dock's layout (`orogenTest.shell.dock.restore` with other sizes), which is harmless. Resizing a visible window is on the list of what must be checked by hand on both machines |
+| In such a window `:focus` and `:focus-visible` do not match the element that `document.activeElement` names; `:focus-within` does (measured) | A focus ring cannot be captured or asserted there. That a control draws one is held by a lint of its style sheet, and looked at in a visible window |
+| A `DataTransfer` that a script made ignores what is assigned to its `effectAllowed` (measured: it stays `'none'`) | A test of a drag records the assignment itself (`tests/ui/library/rig.ts`) |
 | Input is synthesised in the page (`dispatchEvent`): the desktop sends none to a window that is not shown. A press is `pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click`; a submenu and a tooltip of `@base-ui/react` open on the pointer events of a hover, not on a press (measured) | `tests/ui/shell/rig.ts` installs these as `shellTest` in the page; the tests of a panel may import it |
 
 Rules:
@@ -1445,9 +1448,34 @@ application goes on, and the report ends with the node; the GPU process is
 killed and the terrain comes back (`runtime.md` 7.8; Linux); the engine worker
 is ended and `engine.restart` brings the terrain back on a new canvas
 (`runtime.md` 8.5). It writes twelve captures, `journey-01` to `journey-12`.
-It is the one test that has two applications running at once (8.3), from the
-start of the second until it has shown the file; each has a GPU process of its
-own.
+It is one of two tests that have two applications running at once (8.3), from
+the start of the second until it has shown the file; each has a GPU process of
+its own.
+
+The `gate-*.test.ts` files of `tests/ui/shell/` use the finished application
+as its user does, with all five panels, and write no store: every step is
+input synthesised in the page (`tests/ui/shell/gate-rig.ts` installs the
+panels' own input functions side by side). `gate-journey` goes from the first
+start through an example, an edit, a build at 1009, the Unreal numbers against
+the manifest on disk, a save and a second application that shows the same
+picture, and then makes a project from nothing; `gate-consistency` holds one
+node to one title, colour and status in the graph, the library and the
+inspector, the selection to what the inspector and the viewport show, and an
+error to the graph, the inspector and the status bar at once; `gate-commands`
+chooses every item of the View, Engine, Viewport, Graph, Inspector and Library
+menus and presses every default key of `runtime.md` 8.8 in its scope and
+outside it; `gate-robustness` uses a project of 300 nodes and kills the GPU
+process, and restarts the engine, in the middle of a drag. Their captures are
+under `test-output/ui/gate-*/`.
+
+`tests/ui/shell/heavy/build-4033.ts` builds the alpine example at
+4033 × 4033 from the application and uses the interface while the build runs.
+It is no file of a layer (its name ends in no `.test.ts`): it needs more memory
+than the guard allows by default. It is run by itself, after `npm run build`:
+
+```
+tools/guard --lock --mem=6G --timeout=3600 node --test --test-concurrency=1 --test-timeout=3000000 tests/ui/shell/heavy/build-4033.ts
+```
 Its window-free counterpart is `tests/ui/shell/unit/foundation.test.ts`: the
 members of the stores, the engine client, the bridge and a `PanelDef` against
 the declarations this contract prints, the five panel folders, the exports of

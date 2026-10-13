@@ -10,7 +10,7 @@ import type { PlatformApi, Preferences } from '../platform.ts';
 import type { DocState } from '../state/doc-store.ts';
 import type { EngineState } from '../state/engine-store.ts';
 import type { UiState } from '../state/ui-store.ts';
-import type { AppServices, CommandContext, Notice, PanelDef } from '../ui/types.ts';
+import type { AppServices, CommandContext, Notice, PanelDef, PanelId } from '../ui/types.ts';
 import { shellSource, type EditHost, type PaletteMode } from './app-commands.ts';
 import {
   createCommandRegistry, createCommandRunner, panelSources, type CommandRegistry, type CommandRunner, type RegisteredCommand,
@@ -108,6 +108,8 @@ export interface Shell {
   /** Answers the question the dialog of kind 'unsaved' asks. */
   answerUnsaved(answer: UnsavedAnswer): void;
   resetLayout(): void;
+  /** The dock, while it is there: what `AppServices.showPanel` reaches. Null when it is gone. */
+  attachDock(dock: { show(id: PanelId): void } | null): void;
   /** Starts listening to the engine and the main process. Returns the function that stops it. */
   connect(): () => void;
 }
@@ -197,6 +199,7 @@ export function createShell(options: ShellOptions): Shell {
       edit: host.edit,
       testMode: platform.testMode,
       hasCommand: (id) => commands.get(id) !== undefined,
+      commandEnabled: (id) => runner.enabled(id),
       recent: () => state.getState().preferences.recent,
       paused: () => state.getState().paused,
       setPaused,
@@ -228,8 +231,12 @@ export function createShell(options: ShellOptions): Shell {
     return keymap.value;
   }
 
+  let dock: { show(id: PanelId): void } | null = null;
   const services: AppServices = {
     ctx,
+    showPanel(id) {
+      dock?.show(id);
+    },
     keyLabel(commandId) {
       const key = currentKeymap().keysOf(commandId)[0];
       return key === undefined ? null : formatKey(key, keyPlatform);
@@ -288,6 +295,9 @@ export function createShell(options: ShellOptions): Shell {
     },
     answerUnsaved,
     resetLayout: () => runner.run('view.resetLayout'),
+    attachDock(handle) {
+      dock = handle;
+    },
 
     connect() {
       const stops = [
