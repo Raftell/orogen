@@ -227,7 +227,8 @@ window again. A device that was found and failed says *Graphics device failed* w
 **Software rendering** is offered in that window: **Restart with Software Rendering** asks what closing asks
 about unsaved changes, then ends Orogen and starts it again on Chromium's software adapter, with the project
 that was open. Everything works there and everything is slow, many times slower than on a graphics card: it is
-for opening and checking a project, not for builds. It lasts until Orogen is closed; the next start is on the
+for opening and checking a project, not for builds. On Windows this is unverified: on a test machine without a
+graphics card, Chromium still offered WebGPU no adapter in software mode. It lasts until Orogen is closed; the next start is on the
 graphics card again. (The window and the question are tested; the restart itself is tested on Linux only, and
 whether Chromium gives the software adapter on a Windows machine without a usable card is what the CI's
 Windows package check says.)
