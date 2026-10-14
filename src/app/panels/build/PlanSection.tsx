@@ -1,13 +1,15 @@
-// What a build writes. Once the pipeline has planned (the first step of a build, before anything is computed
-// or written), every export target with its files, their format and size. Before that, the export nodes the
-// document holds, each by what it exports, and what the document alone says would stop a build: the panel plans
-// nothing itself (export-unreal.md 3.1).
+// What a build writes: every export target with its files, their format and size, and every problem of the plan
+// in plain words. The plan is the pipeline's (export-unreal.md 3.1): the session makes it for the project as it
+// stands, without building (runtime.md 7.6), a moment after each change, so it is here before the user presses
+// Build; a build that runs, and the last build of this very state, show their own. Until the first plan has
+// arrived, and where a session cannot plan, the export nodes of the document stand here, each by what it
+// exports, with what the document alone says would stop a build.
 
 import { useMemo } from 'react';
 
 import { Tooltip, useCommandContext } from '../../ui/index.ts';
 import { formatBytes, plural } from './model/format.ts';
-import { viewPlan, type ExportNodeView, type PlanTargetKind, type PlanTargetView } from './model/plan.ts';
+import { NO_LANDSCAPE, totalText, viewPlan, type ExportNodeView, type PlanTargetKind, type PlanTargetView } from './model/plan.ts';
 import { viewProblems } from './model/problems.ts';
 import { css, NodeLink, Note, ProblemList, Section, useDoc, useExports, usePlan, type CurrentPlan } from './parts.tsx';
 
@@ -26,7 +28,11 @@ function Target(props: { readonly target: PlanTargetView }) {
         {pixels !== '' ? <span className={`${css.dim} ${css.number} ${css.pixels}`}>{pixels}</span> : null}
         {target.selectable && target.nodeId !== null ? <NodeLink nodeId={target.nodeId}>Select</NodeLink> : null}
       </div>
-      <p className={css.targetDetail}>{target.detail}</p>
+      <p className={css.targetDetail}>
+        {target.detail}
+        {/* What feeds the export node, after what it exports: the title above it keeps its line. */}
+        {target.source !== null ? <span className={css.targetSource} data-build="export-source">from {target.source}</span> : null}
+      </p>
       {target.files.map((file) => (
         <div key={file.path} className={css.file} data-build-file={file.path}>
           <span className={css.fileName} title={file.path}>{file.path}</span>
@@ -43,8 +49,13 @@ function Target(props: { readonly target: PlanTargetView }) {
 function Planned(props: { readonly current: CurrentPlan }) {
   const { registry } = useCommandContext();
   const nodes = useDoc((state) => state.doc.nodes);
+  const edges = useDoc((state) => state.doc.edges);
+  const exports = useExports();
   const { plan, from } = props.current;
-  const view = useMemo(() => viewPlan(plan, { nodes }, registry), [plan, nodes, registry]);
+  const view = useMemo(() => viewPlan(plan, { nodes, edges }, registry), [plan, nodes, edges, registry]);
+  // The export nodes a plan has no target for: switched off, or with nothing connected. A plan lists what a build
+  // writes; that a node is left out, and why, is said under it.
+  const left = useMemo(() => exports.nodes.filter((node) => !plan.items.some((item) => item.nodeId === node.nodeId)), [exports, plan]);
   // The problems of a build stand with its outcome. A plan made without a build has no other place for them.
   const problems = useMemo(() => (from === 'draft' ? viewProblems(plan.problems, { nodes }) : []), [from, plan, nodes]);
   return (
@@ -58,6 +69,8 @@ function Planned(props: { readonly current: CurrentPlan }) {
         </Note>
       ) : null}
       <ProblemList problems={problems} id="plan-problems" />
+      {/* A build of textures and images alone is a build, and "finished" says nothing of the terrain: this does. */}
+      {view.ok && !view.landscape && view.targets.length > 0 ? <Note tone="warning" id="plan-no-landscape">{NO_LANDSCAPE}</Note> : null}
       {view.layout !== null ? <p className={css.hint} data-build="plan-layout">Landscape of {view.resolution} × {view.resolution}: {view.layout}</p> : null}
       {view.targets.length > 0 ? (
         <>
@@ -67,7 +80,7 @@ function Planned(props: { readonly current: CurrentPlan }) {
           <div className={css.total} data-build="plan-total">
             <span className={css.totalCount}>{plural(view.fileCount, 'file')}</span>
             <span className={css.totalSum}>
-              {view.unsizedFiles > 0 ? `${formatBytes(view.knownBytes)} and ${plural(view.unsizedFiles, 'file')} sized when written` : formatBytes(view.knownBytes)}
+              {totalText(view.knownBytes, view.unsizedFiles)}
             </span>
           </div>
         </>
@@ -76,6 +89,14 @@ function Planned(props: { readonly current: CurrentPlan }) {
         <p className={css.hint} data-build="plan-planes">
           The weight-blended layers are held in main memory until they are written together: {formatBytes(view.planeBytes)}.
         </p>
+      ) : null}
+      {left.length > 0 ? (
+        <>
+          <h4 className={css.subhead} data-build="left-out-title">Export nodes a build leaves out</h4>
+          <ul className={css.list} data-build="export-nodes">
+            {left.map((node) => <ExportRow key={node.nodeId} node={node} />)}
+          </ul>
+        </>
       ) : null}
     </>
   );
@@ -116,8 +137,8 @@ function ExportNodes() {
       ) : null}
       <p className={css.hint} data-build="plan-pending">
         {nodes.length === 0
-          ? 'A build writes what export nodes declare, and nothing else. They are in the I/O category of the library: Unreal Landscape exports the terrain.'
-          : 'A build writes for every export node that is switched on. Its files with their sizes, and what only a plan can find (names that collide, a size no landscape has), are listed here once a build has planned: its first step, before anything is computed or written.'}
+          ? 'A build writes what export nodes declare, and nothing else. They are in the Import and Export category of the library: Unreal Landscape exports the terrain.'
+          : 'A build writes for every export node that is switched on. Its files with their sizes, and what only a plan can find (names that collide, a size no landscape has), are listed here as soon as the engine has planned the project.'}
       </p>
     </>
   );

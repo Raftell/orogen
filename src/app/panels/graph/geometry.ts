@@ -240,6 +240,26 @@ export function visibleRect(viewport: GraphViewport, size: { readonly width: num
   return { x: -viewport.x / viewport.zoom, y: -viewport.y / viewport.zoom, w: size.width / viewport.zoom, h: size.height / viewport.zoom };
 }
 
+/**
+ * The viewport that shows `rect` whole, with `margin` panel pixels around it, at the zoom it has: moved by the
+ * least that does, and the same object when the rectangle is in view already. A rectangle larger than the panel
+ * is shown from its top-left corner.
+ */
+export function viewportShowing(viewport: GraphViewport, size: { readonly width: number; readonly height: number }, rect: Rect, margin = 24): GraphViewport {
+  if (!(size.width > 0) || !(size.height > 0)) return viewport;
+  const shift = (start: number, length: number, room: number): number => {
+    const low = start - margin, high = start + length + margin;
+    if (low >= 0 && high <= room) return 0;
+    // Too large for the panel, or cut at the top or left: its start comes into view. Else its end does.
+    if (high - low > room || low < 0) return -low;
+    return room - high;
+  };
+  const at = toScreen(viewport, rect);
+  const dx = shift(at.x, rect.w * viewport.zoom, size.width);
+  const dy = shift(at.y, rect.h * viewport.zoom, size.height);
+  return dx === 0 && dy === 0 ? viewport : { x: viewport.x + dx, y: viewport.y + dy, zoom: viewport.zoom };
+}
+
 /** Level of detail (ui-stack.md a.8): what a node still draws at this zoom. */
 export type Lod = 'near' | 'mid' | 'far';
 /** Below this zoom the labels of the ports and the status line are not drawn; a label of 11 px is under 6 px there. */
@@ -249,6 +269,26 @@ export const LOD_FAR_ZOOM = 0.3;
 
 export function lodOf(zoom: number): Lod {
   return zoom < LOD_FAR_ZOOM ? 'far' : zoom < LOD_MID_ZOOM ? 'mid' : 'near';
+}
+
+/**
+ * A node's name at the graph's own size (12 pixels) is under 9 pixels high on screen below a zoom of 0.75, and 4
+ * to 6 in the middle band. It is drawn larger there, in one of three sizes, so that it is 9 to 12 pixels on
+ * screen from LOD_FAR_ZOOM up: `low` from LOD_FAR_ZOOM, `high` from MID_TITLE_STEP_ZOOM, `near` from
+ * LOD_MID_ZOOM to TITLE_FULL_ZOOM, where the graph's own size takes over. Steps and not the inverse of the zoom:
+ * a style that changed with every step of a zoom is computed again for every node (controller.ts, sayZoom).
+ */
+export const MID_TITLE_STEP_ZOOM = 0.4;
+/** From this zoom a name at the graph's own size is 9 pixels on screen. */
+export const TITLE_FULL_ZOOM = 0.75;
+/** Graph pixels. graph.module.css has the same numbers; a hidden-window test measures the names on screen. */
+export const MID_TITLE_SIZE = { low: 30, high: 22, near: 16 } as const;
+export type TitleStep = keyof typeof MID_TITLE_SIZE;
+
+/** The size step of a node's name at a zoom; null where the name has the graph's own size, and far out, where it is not drawn. */
+export function titleStepOf(zoom: number): TitleStep | null {
+  if (!(zoom >= LOD_FAR_ZOOM) || zoom >= TITLE_FULL_ZOOM) return null;
+  return zoom < MID_TITLE_STEP_ZOOM ? 'low' : zoom < LOD_MID_ZOOM ? 'high' : 'near';
 }
 
 export const MIN_ZOOM = 0.08;

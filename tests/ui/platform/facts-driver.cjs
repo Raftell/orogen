@@ -8,7 +8,7 @@ const { BrowserWindow, Menu } = require('electron');
 
 const SWITCHES = [
   'enable-webgpu-developer-features', 'disable-renderer-backgrounding', 'enable-unsafe-webgpu', 'enable-features',
-  'force_high_performance_gpu', 'force-high-performance-gpu',
+  'force_high_performance_gpu', 'force-high-performance-gpu', 'disable-gpu-process-crash-limit', 'disable-domain-blocking-for-3d-apis',
 ];
 // What getLastWebPreferences() reports of the six the contract fixes; the other two are read where they show.
 const PREFERENCES = ['contextIsolation', 'sandbox', 'nodeIntegration', 'nodeIntegrationInWorker'];

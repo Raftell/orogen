@@ -80,11 +80,12 @@ test('the toolbar says what is shown: the output\'s name, the pin, the state in 
     assert.equal(await attr(app, 'data-status'), 'shown');
     assert.equal(await app.eval<boolean>(`document.querySelector('[data-viewport="overlay"]').hasAttribute('data-active')`), false);
 
-    // ---- previews are paused and the document changes: the picture is of an earlier state, and nothing is "updating" ----
+    // ---- previews are paused and the document changes: the picture is of an earlier state, nothing is "updating", and why is said ----
     await run(app, 'engine.togglePause');
     await app.eval(`void orogenTest.ctx.doc.getState().transact('Mountain Range: Height', (draft) => { draft.nodes.range.params.height = 0.6; })`);
-    await app.waitFor(`viewportTest.attr('data-status') === 'stale'`, PAGE_BACKSTOP_MS);
-    assert.equal(await statusText(app), 'Out of date1009 × 1009');
+    await app.waitFor(`viewportTest.attr('data-status') === 'paused'`, PAGE_BACKSTOP_MS);
+    assert.equal(await statusText(app), 'Paused1009 × 1009', 'as the status bar says it: behind because previews are paused is no fault');
+    assert.equal(await app.eval<boolean>(`document.querySelector('[data-viewport="cover"]') === null`), true, 'and the last picture stays');
     t.diagnostic(`capture: ${await capture(app, 'toolbar-03-paused-out-of-date')}`);
     await run(app, 'engine.togglePause');
     await settled(app);

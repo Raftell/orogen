@@ -10,6 +10,7 @@ import { formatDuration, formatEstimate, formatPercent, plural } from './model/f
 import { viewProgress, type BuildLog, type ProgressView, type Remaining } from './model/log.ts';
 import { describeOutcome } from './model/outcome.ts';
 import { viewProblems } from './model/problems.ts';
+import { interruptedBuild } from './model/store.ts';
 import { css, Meter, Note, ProblemList, Section, StateMark, useBuildScope, useDoc, useEngine, useModel, useNodeTitle, useNow } from './parts.tsx';
 
 function remainingText(remaining: Remaining | null, finishing: boolean): string {
@@ -132,8 +133,18 @@ function Outcome(props: { readonly log: BuildLog | null }) {
 }
 
 export function RunSection() {
-  const { build, mine, log } = useBuildScope();
+  const { build, mine, changed, log } = useBuildScope();
   const now = useNow(build.running);
+  if (interruptedBuild(build, mine, changed)) {
+    return (
+      <Section id="run" title="Build">
+        <Note tone="warning" id="interrupted">
+          <p className={css.strong} data-build="outcome" data-status="interrupted">Build stopped: the engine was restarted</p>
+          <p data-build="written">The build ended with the engine that ran it. Nothing was put in place: the output folder holds what it held before, and the next build removes what this one left beside it.</p>
+        </Note>
+      </Section>
+    );
+  }
   if (!mine || build.requestId === null || (!build.running && build.result === null)) return null;
   const progress = log ? viewProgress({ log, plan: build.plan, fraction: build.fraction, now }) : null;
   const elapsed = progress ? formatDuration(progress.elapsedMs) : null;

@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { nodes } from '../../../../src/core/nodes/index.ts';
 import type { FieldStats } from '../../../../src/core/api.ts';
 import { addNode, createRegistry, type DocDraft, type EngineEvent, type EngineSession } from '../../../../src/core/runtime.ts';
-import { commands, frameTerrain, keys, menu, paletteCommand, SHADING_COMMAND, terrainOf, TOP_STYLE_COMMAND } from '../../../../src/app/panels/viewport/commands.ts';
+import { commands, frameTerrain, keys, menu, paletteCommand, SAME_MIDDLE, SHADING_COMMAND, terrainOf, TOP_STYLE_COMMAND } from '../../../../src/app/panels/viewport/commands.ts';
 import { DEFAULT_DISPLAY, initialModel, PALETTES } from '../../../../src/app/panels/viewport/model.ts';
 import { BOTH, untouched, viewportStore } from '../../../../src/app/panels/viewport/state.ts';
 import { createDocStore } from '../../../../src/app/state/doc-store.ts';
@@ -45,7 +45,7 @@ const command = (id: string) => {
   assert.ok(found, `the panel declares ${id}`);
   return found;
 };
-const reset = (): void => viewportStore.setState({ ...initialModel(), width: 1600, height: 1000 }, true);
+const reset = (): void => viewportStore.setState({ ...initialModel(), width: 1600, height: 1000, pictured: false, restored: false }, true);
 
 test('the PanelDef: every command is the viewport\'s, no id is declared twice, and keys and menu entries name declared commands', () => {
   const ids = commands.map((c) => c.id);
@@ -168,6 +168,19 @@ test('a camera follows the shape of the panel until a hand has moved it, each ca
   assert.equal(asking.asked.length, 1, 'the heights were asked for once, by the command');
   assert.deepEqual([viewportStore.getState().framedMiddle, untouched(viewportStore.getState())], [0.8, BOTH]);
   assert.ok(Math.abs(viewportStore.getState().orbit.target[2] - high.target[2]) < 0.2 * 1008, 'the camera still looks at where the terrain lies');
+  // Framed again, and the engine says nearly the heights the camera is framed around: the camera is where it was
+  // put at once and is not moved a second time, by a metre, a moment after it was looked at. Heights that have
+  // moved are framed anew.
+  await command('viewport.frame').run(asking.ctx);
+  const atOnce = viewportStore.getState().orbit;
+  await asking.answer({ min: 0.6, max: 1, mean: 0.8 + SAME_MIDDLE / 2, nonFinite: 0 });
+  assert.equal(viewportStore.getState().orbit, atOnce, 'the same heights: the same camera, the very object');
+  assert.equal(viewportStore.getState().framedMiddle, 0.8);
+  await command('viewport.frame').run(asking.ctx);
+  await asking.answer({ min: 0.2, max: 1, mean: 0.5, nonFinite: 0 });
+  assert.ok(viewportStore.getState().orbit !== atOnce && viewportStore.getState().framedMiddle === 0.5, 'other heights: framed around them');
+  await command('viewport.frame').run(asking.ctx);
+  await asking.answer({ min: 0.6, max: 1, mean: 0.8, nonFinite: 0 });
   // Another terrain: what was known of the last one's heights is not known of this one.
   asking.ctx.doc.getState().transact('Size', (draft) => { draft.settings.heightRange = 3000; });
   frameTerrain(asking.ctx, BOTH, false);

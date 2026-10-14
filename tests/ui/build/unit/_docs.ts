@@ -73,7 +73,7 @@ export const FULL: Readonly<Record<string, NodeSpec>> = {
 export const plan = (doc: GraphDoc, resolution?: number): BuildPlan => planBuild(doc, REGISTRY, resolution === undefined ? undefined : { resolution });
 
 export function resultOf(status: BuildResult['status'], rest: Partial<BuildResult> = {}): BuildResult {
-  return { requestId: 1, status, problems: [], files: [], manifest: null, report: null, outDir: null, ...rest };
+  return { requestId: 1, status, problems: [], files: [], manifest: null, report: null, outDir: null, peakPoolBytes: null, ...rest };
 }
 
 // ---- a page without a window -------------------------------------------------------------------------------------------
@@ -94,6 +94,8 @@ export interface Page {
   cancelled: number;
   /** Settles the build the model started, as the session does when the build has ended. */
   endBuild(result: BuildResult): void;
+  /** Rejects the build the model started, as the engine client does when its session is gone. */
+  failBuild(reason: Error): void;
 }
 
 export function createPage(doc: GraphDoc = docOf(FULL), projectPath: string | null = null, options: Omit<ModelOptions, 'clock'> = {}): Page {
@@ -102,7 +104,7 @@ export function createPage(doc: GraphDoc = docOf(FULL), projectPath: string | nu
   docStore.getState().load(doc, projectPath);
   const engineState = createEngineStore();
   const listeners = new Set<(event: EngineEvent) => void>();
-  const pendingBuilds: ((result: BuildResult) => void)[] = [];
+  const pendingBuilds: { resolve(result: BuildResult): void; reject(reason: Error): void }[] = [];
 
   const page: Page = {
     ctx: undefined as unknown as ModelContext,
@@ -118,13 +120,16 @@ export function createPage(doc: GraphDoc = docOf(FULL), projectPath: string | nu
     revealed: [],
     cancelled: 0,
     endBuild(result) {
-      pendingBuilds.shift()?.(result);
+      pendingBuilds.shift()?.resolve(result);
+    },
+    failBuild(reason) {
+      pendingBuilds.shift()?.reject(reason);
     },
   };
   const engine = {
-    build: (request: { doc: GraphDoc; outDir: string }) => new Promise<BuildResult>((resolve) => {
+    build: (request: { doc: GraphDoc; outDir: string }) => new Promise<BuildResult>((resolve, reject) => {
       page.built.push({ outDir: request.outDir, doc: request.doc });
-      pendingBuilds.push(resolve);
+      pendingBuilds.push({ resolve, reject });
     }),
     cancelBuild: () => { page.cancelled++; },
     subscribe(listener: (event: EngineEvent) => void) {

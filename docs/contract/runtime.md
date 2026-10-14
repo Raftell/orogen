@@ -213,6 +213,8 @@ replaces the first.
 | --- | --- | --- |
 | all | `enable-webgpu-developer-features` | timestamp queries are not quantised; `adapter.info.memoryHeaps` is exposed (`caps.vramBytes`). To verify on the target machine; nothing fails without it |
 | all | `disable-renderer-backgrounding` | the engine keeps its speed when the window is not focused |
+| all | `disable-gpu-process-crash-limit` | after its GPU process has ended several times Chromium gives up hardware acceleration for the rest of the run and offers SwiftShader, a software adapter, with no error (7.8 rule 3) |
+| all | `disable-domain-blocking-for-3d-apis` | after a second end of the GPU process within about two minutes Chromium refuses the page every WebGPU adapter for about two minutes (7.8 rule 3) |
 | Linux | `enable-unsafe-webgpu` | WebGPU is off by default under X11 |
 | Linux | `enable-features=Vulkan` | measured: without it the adapter is SwiftShader, a software rasteriser, with no error. Not appended when `OROGEN_ELECTRON_GPU=software` (8.2): that is how a test asks for the software adapter |
 | Windows | `force_high_performance_gpu` and `force-high-performance-gpu` | selects the discrete GPU on a machine with two. Both spellings are appended; which one Electron 44 honours is not verified. No effect on the target machine, which has one GPU |
@@ -741,6 +743,7 @@ interface GraphDoc {
   readonly ui: {
     readonly view?: ViewBinding;       // 7.4
     readonly graphViewport?: { readonly x: number; readonly y: number; readonly zoom: number };
+    readonly viewport?: unknown;       // what the viewport panel keeps of this project (7.5 rule 14); the core carries it as it is
   };
 }
 ```
@@ -778,6 +781,36 @@ When `buildResolution` changes and `previewLevel` is no longer a defined level,
 `setSettings` (4.6) lowers `previewLevel` to the largest defined one. Resolution
 is not part of any key (5.4): it selects which cache a result lives in.
 
+Level 0 is a preview level of every build resolution: the preview is then
+evaluated at the build resolution itself, which is what a small project wants
+and what a build of 1009 needs to keep previews at 1009.
+
+**The preview resolution does not follow the build resolution.** A level is a
+share of the build resolution, so a build resolution that changes under a level
+that stays moves the previews with it: choosing 1009 in place of 4033 at level
+2 coarsened them from 1009 to 253, and choosing 8129 raised them to 2033, where
+one erosion preview was measured at 16 s. Whoever changes the build resolution
+for the user therefore changes both settings in one `setSettings`:
+
+```ts
+/** src/core/graph/settings.ts; both pure, both re-exported by runtime.ts. */
+/** The ladder level of `buildResolution` whose resolution is nearest to `resolution`, in vertices per side; of two equally near, the coarser. */
+declare function previewLevelNearest(buildResolution: number, resolution: number): number;
+/** The patch for `setSettings`: `next` as normalizeSettings stores it, and the level that keeps the preview resolution nearest to what `settings` gives now. */
+declare function withBuildResolution(settings: ProjectSettings, next: number): { readonly buildResolution: number; readonly previewLevel: number };
+```
+
+The ladder itself is exported beside them for whoever lists the levels a
+project can choose from: `ladder(res)`, the levels of `res` from itself
+downwards, `ladderLevel(res, k)`, level `k` or `null`, and
+`isBuildResolution(n)` (`engine.md` 1.5; `src/core/graph/ladder.ts`).
+
+`withBuildResolution` of 4033 at level 2 for 1009 is `{ 1009, level 0 }`, and
+back it is `{ 4033, level 2 }`; for 8129 it is level 3, 1017 vertices, the
+nearest that ladder has. `setSettings` itself keeps its one rule, above: a
+caller that patches `buildResolution` alone, the command line for one, gets the
+level it had.
+
 **Sea level.** Every texel whose height is at or below `seaLevel` is sea: an
 outlet for routing and a sink for erosion (`simulation.md` 1.3). The viewport
 draws its sea plane at this height (7.5), and by default an export places this
@@ -793,6 +826,24 @@ sea for the nodes that declare `uses: ['seaLevel']`.
 declare function validateConnection(doc: GraphDoc, registry: NodeRegistry, from: PortRef, to: PortRef): string | null;
 /** The kind an output carries: resolves `sameAs` through the connections. null: not determinable (unconnected `any` input, unknown type). */
 declare function outputKind(doc: GraphDoc, registry: NodeRegistry, ref: PortRef): 'field' | 'color' | null;
+
+/** For every input the evaluator finds connected, the output it reads (rule 5), by `inputKey({ node, port })`. */
+declare function inputSources(doc: GraphDoc, registry: NodeRegistry): Map<string, PortRef>;
+declare function inputKey(to: PortRef): string;
+/**
+ * The missing-input rule (5.3 step 2): the declared inputs of a node that are not optional and that the evaluator
+ * finds unconnected, in declaration order. None for a node the document lacks, one of an unknown type, and one whose
+ * bypass takes effect (5.6). `sources` is `inputSources(doc, registry)`, for whoever asks about many nodes of one document.
+ */
+declare function missingInputs(doc: GraphDoc, registry: NodeRegistry, nodeId: string, sources?: ReadonlyMap<string, PortRef>): PortDef[];
+
+/** src/core/graph/ports.ts */
+/** engine.md 4.2: what a port is called where it is shown: its `label`, else its name with a capital. */
+declare function portLabel(port: Pick<PortDef, 'name' | 'label'>): string;
+/** The inputs a connection can target: the declared ones, then `mask` for a maskable node (rule 1, engine.md 4.13). */
+declare function inputsOf(def: NodeDef): readonly PortDef[];
+/** engine.md 4.14: whether `bypass` takes effect for nodes of this definition: inputs[0] and outputs[0] exist with the same type. */
+declare function canBypass(def: Pick<NodeDef, 'inputs' | 'outputs'>): boolean;
 ```
 
 1. `from` names an output of an existing node of a known type; `to` names an input of another. A `maskable` node also has the input `mask` (`engine.md` 4.13).
@@ -803,7 +854,12 @@ declare function outputKind(doc: GraphDoc, registry: NodeRegistry, ref: PortRef)
 6. `ui.view` may name a node or port that does not exist. Such a reference is ignored (7.4).
 
 The graph editor and the evaluator both use `validateConnection`; neither has
-rules of its own.
+rules of its own. The same holds for what is said of a node's ports: the
+evaluator reports `missing-input` (5.8) for the first port `missingInputs`
+returns, takes a bypass by `canBypass` and reads the inputs `inputsOf` lists,
+and a panel that names a port, draws an unconnected input, or offers the bypass
+calls these functions, which `runtime.ts` exports for that, and keeps no copy
+of them.
 
 ### 4.4 Parameter normalisation
 
@@ -918,10 +974,19 @@ declare function removeGroups(doc: DocDraft, ids: readonly string[]): void;
 declare function setSettings(doc: DocDraft, patch: Partial<ProjectSettings>): void;         // validates; fixes previewLevel
 declare function setView(doc: DocDraft, view: ViewBinding | null): void;
 declare function setGraphViewport(doc: DocDraft, viewport: { x: number; y: number; zoom: number }): void;
+/** What the viewport panel keeps with the project (7.5 rule 14): carried as it is; null or undefined removes it. */
+declare function setViewportState(doc: DocDraft, value: unknown): void;
 ```
 
 `removeNodes` leaves `ui.view` alone, even when it names a removed node. Only
-`setView` and `setGraphViewport` write under `ui`.
+`setView`, `setGraphViewport` and `setViewportState` write under `ui`.
+`ui.viewport` is the viewport panel's own value (7.5 rule 14), of a shape the
+core does not look at, as `Preferences.layout` is the dock's (8.6):
+`GraphDoc.ui.viewport` is declared `unknown`, `setViewportState` stores a copy
+of what it is given and removes the member for `null`, `parseDoc` keeps it as
+it is and `serializeDoc` writes it. No cache key takes it in and no evaluation
+follows a change of it (8.5). The panel writes it with that command in a
+transaction that is not undoable (`src/app/panels/viewport/persist.ts`).
 
 ---
 
@@ -1366,6 +1431,7 @@ type EvalEvent =
       readonly fraction: number; readonly label?: string; readonly etaMs: number | null }
   | { readonly type: 'node-preview'; readonly requestId: number; readonly nodeId: string; readonly ports: readonly string[] }
   | { readonly type: 'node-done'; readonly requestId: number; readonly nodeId: string; readonly cached: boolean;
+      readonly resolution: number;                                              // of the evaluation: what the three figures were measured at
       readonly wallMs: number; readonly gpuMs: number | null; readonly peakBytes: number }
   | { readonly type: 'node-error'; readonly requestId: number; readonly error: NodeError }
   | { readonly type: 'node-skipped'; readonly requestId: number; readonly nodeId: string;
@@ -1377,7 +1443,7 @@ type EvalEvent =
 1. Events of one request arrive in order, begin with `eval-start`, end with `eval-end`, and none arrives after the promise has settled.
 2. Every node of the plan gets exactly one final event: `node-done`, `node-error` or `node-skipped`. Cached, bypassed and unused nodes get `node-done` with `cached: true` and `wallMs: 0`; `unused` in `eval-start` says that nothing of the node was at hand (5.3 step 5). Of several nodes with one key (5.13) the plan of `eval-start` names the one that runs as `run` and the others as `cached`; when that one is skipped for a failure that became known only while the evaluation ran, the next of them runs in its place, with `node-start` and `node-done` as for any node that runs. In `eval-start`, `blocked` is a node that will not run: it failed a check of 5.3, reads one that did, or the evaluation cannot start at all (the memory check of a build, a lost device, a signal that has already aborted).
 3. `node-progress` is emitted at most 10 times per second per node, `eval-progress` at most 4 times per second. Fractions are in 0..1 and do not decrease.
-4. `wallMs` runs from `node-start` to `node-done`. `gpuMs` is the sum of the measured GPU time of the node's slices; it is `null` without `timestamp-query`, and when a slice of the node could not be timed (one more than the timing buffers the stream may hold, 2 MiB of them, was in flight). `peakBytes` is the most pool memory the invocation held as WORKING.
+4. `wallMs` runs from `node-start` to `node-done`. `gpuMs` is the sum of the measured GPU time of the node's slices; it is `null` without `timestamp-query`, and when a slice of the node could not be timed (one more than the timing buffers the stream may hold, 2 MiB of them, was in flight). `peakBytes` is the most pool memory the invocation held as WORKING. `resolution` is that of the evaluation, the `resolution` of its `eval-start`, repeated in every `node-done` so that a record of one node says by itself at which resolution its time and its memory were measured: a node beside the view is evaluated for its thumbnail at another resolution than a node of the view (7.3 rule 9), and the same node costs sixteen times as much two ladder levels up.
 5. Every event is plain data and can be structured-cloned.
 
 **Estimates.** There is no declared cost per node. All estimates come from
@@ -1404,7 +1470,7 @@ A node inside `ctx.loop` can lend its working state to the viewer through
 2. When the loans changed, the evaluator calls `EvaluateOptions.onLoans(nodeId, loans)` (5.2) before it waits, with one `TextureRef` per lent port. When at least 100 ms have also passed since the last one, `node-preview` is emitted with the ports that have a loan.
 3. A viewer may draw a lent texture in frames it submits while the loan is valid. It reads by `uv`, so a loan of any size works: the coarse levels of a coarse-to-fine run are shown as they are.
 4. Loans end when the node settles, or earlier when it releases a field it has lent. The evaluator withdraws them synchronously, with `onLoans(nodeId, null)`, before the fields return to the pool; the viewer is on the same thread and switches in that call (7.5).
-5. Lent content is never cached, never gets a thumbnail and is not in the result. After an abort or an error the viewer shows what it showed before.
+5. Lent content is never cached, never gets a thumbnail and is not in the result. After an abort or an error the viewer shows what it showed before. After a node that settled, its published result takes the place of its loans as soon as it is delivered, while the rest of the evaluation runs (7.5 rule 2).
 
 ### 5.12 Thumbnails
 
@@ -1553,6 +1619,7 @@ interface FileSink {
 4. **One writer per path.** `create` for a path that this sink has open, or has already closed, rejects: two exporters that would write the same file are caught, and nothing is overwritten within one build. A path whose writer was aborted or has failed may be created again.
 5. **Cancellation.** A build that is cancelled or fails calls `abortAll()`. No partial file and no half-written set of files is left under a final name that the build had not completed. A `create` that is still under way when `abortAll()` is called resolves with a writer that is already aborted, and `abortAll()` resolves only when that writer's partial file is gone as well.
 6. Implementations: `NodeFileSink(rootFolder: string): FileSink` in `src/platform/node/files.ts`, a function called without `new`, on `node:fs`; a memory-backed one for tests. No implementation crosses a process boundary, and file contents never travel through inter-process messages. Measured in Electron for 250 MB: 0.1 s written from the engine worker with `node:fs`; 0.9 s as one message through the preload bridge with a 0.5 s stall of the interface; 25 s as 8 MiB views of one buffer, because each view drags the whole buffer along.
+7. **A file that is held for a moment.** On Windows a virus scanner, the search indexer, a synchronising folder or a program that is reading the file holds a new file for a fraction of a second, and a rename meanwhile is refused with `EPERM`, `EACCES` or `EBUSY`. `retryBusy(work, busy, delaysMs?)` of `src/core/io/retry.ts`, exported by `runtime.ts`, runs `work` again after each of `BUSY_DELAYS_MS` (eight attempts over about 2.5 s) while it is refused so, where `busy` is `process.platform === 'win32'`; elsewhere those codes mean what they say and are thrown at once. `NodeFileSink` renames through it on `close()`, the folder protocol of a build (`export-unreal.md` 3.8) for its two renames, with `BUSY_RM` (`maxRetries: 5, retryDelay: 100`) for its removals, and the bridge's `writeTextFile` (8.6) does the same with a copy of the rule, because the main process does not load the engine. A file that stays held fails as before. Tested with a rename that is handed in and fails twice; nothing of it has run on Windows.
 
 Which files a build writes, and their encoders, are in `export-unreal.md`.
 Together with the strip-wise reads of 5.7, a streaming writer means that no
@@ -1657,6 +1724,7 @@ interface EngineSession {
   inspect(ref: PortRef): Promise<FieldStats | null>;
   build(request: BuildRequest): Promise<BuildResult>;
   cancelBuild(): void;
+  plan(doc: GraphDoc): Promise<BuildPlan>;  // 7.6: what a build of `doc` would write, without building
   setPreferences(prefs: EnginePreferences): void;
   retryDevice(): void;
   subscribe(listener: (e: EngineEvent) => void): () => void;
@@ -1679,21 +1747,26 @@ declare function createSession(opts: {
   readonly reopenGpu: () => Promise<GpuContext>;                         // a new openGpu call, for recovery (7.8)
   readonly createFiles: (projectPath: string | null) => FileSource;
   readonly build: (engine: Engine, opts: SessionBuildOptions) => Promise<BuildResult>;   // 7.6; never rejects for a failed build
+  readonly plan: (engine: Engine, doc: GraphDoc) => BuildPlan;           // 7.6: planBuild of src/export/, which core code may not import
   readonly renderer: ViewportRenderer | null;                            // null: no viewport; `viewport` then ignores calls and `pick` resolves null
 }): EngineSession;
 ```
 
 The session is core code and imports nothing from `src/export/` (8.4), so the
-build pipeline is handed to it. The caller of `createSession` may import both:
+build pipeline and its planner are handed to it. The caller of `createSession`
+may import both:
 
 ```ts
 // src/platform/electron/worker/engine-worker.ts
 build: (engine, o) => buildToFolder(engine, { ...o, createSink: NodeFileSink }),
+plan: (engine, doc) => planBuild(doc, engine.registry),
 ```
 
 `buildToFolder` is `export-unreal.md` 3.1 and 3.8: it replaces the folder
 `outDir` with the new build when the build succeeds. A test of the session
 passes a function that calls `buildProject` with a memory sink instead.
+`planBuild` is `export-unreal.md` 3.1 and 3.3: pure, synchronous, without GPU
+or files.
 
 The session is the only caller of `evaluate` on its engine. It numbers its
 requests from 1 (5.2), so an engine that was evaluated directly with a higher
@@ -1709,6 +1782,7 @@ requests from 1 (5.2), so an engine that was evaluated directly with a higher
 | `inspect` | Statistics of a port's content in the shown result, at its resolution. `null` when nothing is shown, when that port is not a `field`, when its node's result is not cached at that resolution, while a build runs and while the device is lost. Runs between evaluations. It runs no node and is not in the event stream: a port the view does not name is looked up by an evaluation that targets it, which the session aborts at `eval-start` when a node of its plan would run. The nodes the port's node reads need not be cached: that evaluation leaves them `unused` (5.3 step 5) |
 | `build` | 7.6 |
 | `cancelBuild` | Aborts the running build. Does nothing when none runs |
+| `plan` | The `BuildPlan` of the document it is given (`export-unreal.md` 3.3): every file a build would write, with its size where the format states one, the landscape's layout and layers, and every problem a build would stop at before it evaluated anything. It is answered from the document alone, in the task of the call: it aborts nothing, trims nothing, emits no event and waits for nothing, so it is answered while a preview or a build runs and while the device is lost. The document need not be the one last set. Rejects with what the planner threw, with `TypeError` for an argument that is no document, and after `dispose` |
 | `setPreferences` | Recomputes the budget and applies the budget in force (2.4) |
 | `retryDevice` | Restarts device recovery after it gave up (7.8) |
 | `subscribe` | Every `EngineEvent` (7.7), in order |
@@ -1766,7 +1840,7 @@ keeps a `thumbnail` event's `rgba`.
 | camera, display, size, preferences, the project path, node ids | plain values |
 | `EngineEvent`s: status, progress, errors, keys, memory | plain values |
 | thumbnail pixels | the `Uint8ClampedArray`'s buffer is transferred (65 536 bytes each) |
-| `inspect` and `pick` results, `BuildResult` | plain values |
+| `inspect` and `pick` results, `BuildResult`, the `BuildPlan` of `plan` | plain values |
 
 | Never crosses | Instead |
 | --- | --- |
@@ -1786,7 +1860,7 @@ one.
 | --- | --- | --- | --- | --- |
 | full | the preview resolution (4.2) | `keep` | `all` | any newer request; a build; `setPaused(true)` |
 | draft | a coarser ladder level, below | `transient` | `all` | `endGesture`; a build; `setPaused(true)` |
-| thumbnails | the thumbnail resolution, below | `keep` | `needed` | any full or draft request; a build; `setPaused(true)` |
+| thumbnails | the thumbnail resolution, or the preview resolution for what is left to it, below | `keep` | `needed` | any full or draft request; a build; `setPaused(true)` |
 
 All three use `mode: 'preview'`. A full or draft request evaluates the view
 targets (7.4). It is made when:
@@ -1807,7 +1881,9 @@ targets (7.4). It is made when:
 6. **What is shown.** An evaluation that completes with status `'ok'` or `'errors'` and delivered every view target replaces the shown content, and `view-updated` is emitted. Evaluations complete in the order requested, so the shown revision never goes backwards. An aborted evaluation shows nothing, and so does one in which a view target failed: the failed node's error says why. While a newer revision is being evaluated the viewport keeps the last shown content, which the session holds by its handles; it is stale but never blank and never another node's data.
 7. **Draft and updating states.** The interface knows the document's revision and receives the shown revision and level in `view-updated`: shown revision behind means *updating*; `draft: true` means the shown result is coarser than the preview resolution.
 8. **Keys.** After every `setDocument` the session computes `Engine.keys` and emits `keys` (7.7). Latest wins here too: a document that is replaced while its keys are computed gets none, and the keys of the latest one follow. The keys are computed and emitted again, under the same revision, when a watched file changed and when `setProject` replaced the files, because a file's identity is in its node's key (5.4). A thumbnail is stale when its `contentKey` differs from the node's key.
-9. **Idle thumbnails.** When nothing runs or waits and no gesture is active, the session evaluates `outputs[0]` of the requested nodes whose last delivered thumbnail is stale, at the **thumbnail resolution**: the coarsest ladder level of `buildResolution` that is at least 128, or level 0 when none is. A node whose predicted time at that resolution (5.10) exceeds 100 ms is left out unless it is cached; its thumbnail stays stale until a view evaluation runs it. The session learns what is cached from the `eval-start` of the thumbnail evaluation: when a node that would run is predicted above the limit, the session aborts that evaluation before its first node and makes the next without that node and without the nodes that read it, since evaluating those would run it. A node that failed in an idle evaluation is not evaluated for its thumbnail again until its key changes. A node that a view evaluation left `unused` (5.3 step 5) had nothing at hand to make a thumbnail from: it is stale like any other, and evaluated here.
+9. **Idle thumbnails.** When nothing runs or waits and no gesture is active, the session evaluates `outputs[0]` of the requested nodes whose last delivered thumbnail is stale, in the order requested and at most 32 nodes to an evaluation (`THUMBNAIL_BATCH`, *to calibrate*); the rest follow in the next. Such an evaluation is made at the **thumbnail resolution**: the coarsest ladder level of `buildResolution` that is at least 128, or level 0 when none is. A node whose predicted time at that resolution (5.10) exceeds 100 ms is left out unless it is cached. The session learns what is cached from the `eval-start` of the thumbnail evaluation: when a node that would run is predicted above the limit, the session aborts that evaluation before its first node and makes the next without that node and without the nodes that read it, since evaluating those would run it. A node that failed in an idle evaluation is not evaluated for its thumbnail again until its key changes. A node that a view evaluation left `unused` (5.3 step 5) had nothing at hand to make a thumbnail from: it is stale like any other, and evaluated here.
+10. **What a slow node keeps from its thumbnail.** The nodes rule 9 leaves out at the thumbnail resolution are evaluated at the **preview resolution** once nothing is left to do at the thumbnail resolution, by the same rule and with the same limit of 100 ms a node. A simulation the view shows is cached there, where the view evaluation ran it, so what reads it is evaluated from that result and nothing slow runs: the masks and colours behind an erosion get their thumbnails without being viewed (five nodes of the Alpine Range example had none). The thumbnail is then made from the preview-resolution field (5.12 rule 2). A node that is left out there as well, because a slow node it reads is cached at neither resolution, keeps its stale thumbnail; it is tried again at the preview resolution after a view evaluation that ran a node whose time is above the limit there, since the cache holds then what was missing. After any other evaluation the try would end as the last one did, at its `eval-start`, and is not made: an edit beside a slow node costs no idle evaluation for the nodes behind it. When the thumbnail resolution is the preview resolution there is one try. Every idle evaluation is aborted like any other of its kind (the table above), at either resolution.
+11. **Why an idle evaluation has a size.** Every edit aborts the idle evaluation, and each node of an aborted plan gets its `node-skipped` (5.10 rule 2). Measured in the application's engine worker with 300 nodes in view (100 chains of noise, blur and levels), all thumbnails stale, and 200 revisions 16 ms apart: with one idle evaluation for all stale nodes, 282 evaluations and 32 028 `node-skipped` events crossed to the page, each one pass of its store; with 32 nodes to an evaluation, 332 evaluations and 4 386 such events, and the session was at rest 1.0 s after the last revision in place of 1.5 s. The session itself was never starved in either case: at most one evaluation runs and one request waits, whatever arrives (rule 2).
 
 ### 7.4 The view
 
@@ -1905,7 +1981,9 @@ The camera position of an orbit camera is
 `target − distance × (cos p · cos y, cos p · sin y, −sin p)` with `y = yaw` and
 `p = pitch`. The interface owns camera state and input handling and sends the
 result; the renderer owns everything drawn. The session calls
-`renderer.init(engine.gpu, engine)`: the ledger is `Engine.reserve` (5.1).
+`renderer.init(engine.gpu, ledger)`: the ledger is `Engine.reserve` (5.1),
+handed on by the session, which so hears of every change of what the renderer
+has reserved (7.7, `memory`).
 
 **Handedness.** The renderer presents the frame of `engine.md` 1.8
 left-handed. A `top` camera shows the field exactly as its image: texel (0, 0)
@@ -1916,16 +1994,34 @@ An orbit camera with `yaw` 0 looks along +X and has +Y on its right, as in
 Unreal, whose frame is +X forward, +Y right, +Z up.
 
 1. **Same device, no copy.** The renderer draws from the engine's textures. Nothing is read back to display a terrain.
-2. **`setContent` is synchronous.** When it returns, the renderer uses no view of the previous content, which the session may release at once. The session calls it when a result is shown; when a loan for a bound port begins, changes or ends, which the evaluator reports through `onLoans` (5.2, 5.11), with the lent texture in place of the published one; and with `null` when the device is lost. A loan is shown only for the node and port the view names and only when its kind is the kind the view asks for (7.4 rule 1); otherwise the shown content stays. **A step back keeps the picture.** When the loans of a node end, the session gives the renderer the content it showed before them, the same object, or `null` when it showed none, and the node's result follows when its evaluation has ended. Measured in a session with the renderer of `src/viewport/`: a frame is drawn in between, which is the earlier terrain flashing up after the last step of an erosion. A renderer that is given a content it was given before, or `null` after a content, therefore keeps the picture it has drawn, without using any view of what it replaced: until the next content, until the camera, the display or the size changes, and for 400 ms at the longest, after which it draws what it was given (5.11 rule 5).
+2. **`setContent` is synchronous.** When it returns, the renderer uses no view of the previous content, which the session may release at once. The session calls it when a result is shown; when a loan for a bound port begins, changes or ends, which the evaluator reports through `onLoans` (5.2, 5.11), with the lent texture in place of the published one; when the result of a node whose loans were shown is delivered, below; and with `null` when the device is lost. A loan is shown only for the node and port the view names and only when its kind is the kind the view asks for (7.4 rule 1); otherwise the shown content stays. **A step back keeps the picture.** When the loans of a node end, the lent texture goes back to the pool, and the session gives the renderer the content it showed before them, the same object, or `null` when it showed none. Measured in a session with the renderer of `src/viewport/`: a frame is drawn in between, which is the earlier terrain flashing up after the last step of an erosion. A renderer that is given a content it was given before, or `null` after a content, therefore keeps the picture it has drawn, without using any view of what it replaced: until the next content, until the camera, the display or the size changes, and for 400 ms at the longest, after which it draws what it was given (5.11 rule 5). **The node's result follows its loans.** The session evaluates the view with staged delivery (5.2) and takes a handle of its own on each view target as it is delivered. When the target is the port a loan stood in for, the session gives the renderer a content with that node's published result in the loan's place as soon as it is delivered, which is in the task in which the node settles or a mask blend or a conversion later (5.5 step 4), a time the kept picture covers, and with the other part of the view as it was shown: the nodes that still run after a simulation, the masks and colours drawn over it, do not bring the earlier terrain back for the seconds they take, as they did when the step back was all the renderer had until the whole evaluation was shown. That content stays until the evaluation's result is shown in one call (7.4 rule 2), or until the evaluation ends without one, aborted or with a view target failed: the session then gives the renderer the shown content again, the same object, and releases the handle it held meanwhile (5.11 rule 5). A target no loan stood in for is not drawn before the result.
 3. **Reading fields.** Fields are bound with `sampleType: 'unfilterable-float'` and read with `textureLoad`, never with a filtering sampler. A field is addressed by `uv` with the vertex-centred mapping `texel = uv × (size − 1)` and interpolated by hand, so the height and the overlay may differ in size, and a loan of any size can stand in for either.
 4. **Read-only.** The renderer never writes, clears or destroys a pool texture. Whatever it derives from the content (pyramids, light maps) lives in textures of its own, registered with `ledger.reserve`.
 5. **Its own encoder.** The renderer encodes and submits its frames itself. It follows the error-scope rule (5.8) and estimates no submission of its own above the preview slice target (3.5): longer work is spread over frames.
 6. **On demand.** A frame is drawn when the camera, the display options, the size, the content or a loan changed, or when the renderer's own progressive work advanced. There is no free-running loop. Frames are scheduled with the worker's `requestAnimationFrame` and submitted from that callback, which runs while the evaluator awaits the GPU; frames and slices therefore alternate on the queue. Measured with 8 ms slices, two in flight: viewport frames completed in a median of 13 ms (Linux; *to calibrate* on the target).
 7. **Hidden windows.** In a window that was never shown, the page's `requestAnimationFrame` fires once per second; the worker's fires at the display rate. Nothing in the viewport path waits for a page frame.
-8. **Size.** The canvas's backing size is `round(width × dpr)` by `round(height × dpr)`, clamped to `caps.limits.maxTextureDimension2D`. The canvas element is transferred once; when the interface creates a new element it calls `attach` again.
+8. **Size.** The canvas's backing size is `round(width × dpr)` by `round(height × dpr)`, each side within `caps.limits.maxTextureDimension2D` and the whole within the number of pixels the adapter is given (rule 13): a panel beyond that keeps its shape with fewer pixels, which the page stretches. Positions the interface gives and gets (`pick`) are CSS pixels of the panel whatever the backing size is. The canvas element is transferred once; when the interface creates a new element it calls `attach` again.
 9. **A window that cannot present.** Measured under a virtual display (Xvfb, where Chromium composites without a GPU): the first frame drawn to a WebGPU canvas costs the device. No shared image can back the swap chain, the GPU process destroys the device (`Device was destroyed.`), and every device recovery opens goes the same way with its first frame, until recovery gives up (7.8 rule 3). A renderer therefore confirms the first frame it draws: mapping a buffer is the one call a lost device refuses (5.9), and the GPU process answers in the order asked, so a mapping asked for after the frame and granted says that the frame did no harm. A renderer whose device is lost before any frame of its was confirmed draws nothing for the rest of its life, on any canvas, and says so once with `console.warn`: everything else of the application works, and the viewport stays empty.
 10. **Display options.** `setDisplay` takes a `ViewportDisplay`, and the session and the client pass it on as the object it is, so the members of `DisplayOptions` reach the renderer with it. The renderer brings every member into its range and takes the default for one that is missing or of another type; a display without them is drawn with the defaults. `DisplayOptions` is declared in `src/viewport/display.ts` and, because `src/app/` imports nothing from `src/viewport/` (8.4), a second time in `src/app/panels/viewport/model.ts`; `tests/ui/viewport/unit/display.test.ts` holds the two to each other. `PickResult.position` is the terrain's own: its height is `height × heightRange`, whatever `verticalScale` the picture has.
-11. **Pick.** `pick` answers for the picture of the camera last set: it resolves when the frame that is due has been drawn (rule 6) and the GPU has found the first point of the bound height field on the ray of that pixel. It resolves `null` beside the terrain, when nothing is bound, and on a lost device; with an overlay alone it finds the flat plane (7.4 rule 5) at height 0.
+11. **Pick.** `pick` answers for the picture of the camera last set: it resolves when the frame that is due has been drawn (rule 6) and the GPU has found the first point of the bound height field on the ray of that pixel. It resolves `null` beside the terrain, when nothing is bound, and on a lost device; with an overlay alone it finds the flat plane (7.4 rule 5) at height 0. What it finds is of the field, interpolated as rule 3 says, also where the picture is of the smooth surface of rule 12.
+12. **The surface up close.** Between four texels the field is a bilinear patch, and a ridge that runs across the grid is sampled now on a texel and now between two: seen from near, its crest is a row of teeth and its slopes are facets. Where a texel covers more than 1.2 pixels the picture is therefore of a smooth surface through the same field, a cubic B-spline over four by four texels, in full from three pixels a texel; the measure is the distance of a point from the eye, so a vertex and the fragments around it agree. The mesh has two levels below the texel for it (quads of a quarter of a texel, `SUB_LEVELS` of `lod.ts`), selected by distance like every level, so a terrain seen whole has none of them. The sides of the slab and the edge of the sea are cut by the same surface. Measured from fourteen metres on a ridge a metre a texel: the skyline is 7.3 and 3.0 pixels from a straight line where the patches gave 18.3 and 16.2. The spline lies between the lowest and the highest of the texels it is made from, and lowers a crest one texel wide by up to half its rise over its neighbours: it is the picture alone. `pick` and the readout are the field's (rule 11), the light maps are baked from the field, and nothing that is exported is touched. `RendererOptions.smooth: false` draws the patches at every distance.
+13. **What the renderer holds follows the adapter.** By `caps.software` and `caps.vramBytes`, in four sizes; an adapter that does not say how much memory it has (`null`, as under Dawn in Node, and in Electron wherever `adapter.info.memoryHeaps` is not exposed, 1.6) is a small one.
+
+    | Adapter | Light maps, widest grid | Four samples a pixel up to | Pixels of the canvas, at most | Held by the pixel, at most |
+    | --- | --- | --- | --- | --- |
+    | a CPU rasteriser | 512 | never | 1920 × 1080 | 24 MiB |
+    | below 3.5 GiB | 1024 (24 MiB) | 2.4 million pixels | 2560 × 1440 | 128 MiB |
+    | small, or unknown | 2048 (96 MiB) | 4.5 million | 3840 × 2160 | 240 MiB |
+    | from 7.5 GiB | 4096 (384 MiB) | 9 million | 5120 × 2880 | 481 MiB |
+
+    A pixel costs 12 bytes (the lit picture in `rgba16float` and its depth) and 56 with four samples; the grid of the light maps is the power of two at or above the field's resolution, up to the widest. Two grids are kept at most, the one of the preview and the one of its draft level, which have different sizes. On the target (10 GiB, budget 6144 MiB) a field of 8129 with a colour draped at 3840 × 2160 holds 252 MiB (height), 504 (colour), 384 (light maps), 8 (the grids of minima and maxima) and 443 (the picture): 1.55 GiB, with the draft's maps 1.65, which leaves 4.35 GiB for the engine. **The share of a frame** that refines the light maps is a number of texture loads: where the device has `timestamp-query` it is what the passes of each kind were measured to do in 4 ms by the device's clock; where it has none it begins at 90 million and follows the wall clock from a frame's submission to the GPU's end of it (`nextBakeLoads`: fewer at once and at most by half when a frame took more than 8 ms, a seventh more when a frame that used its share took less than 4.8 ms), between 20 and 1500 million. A frame that only refines is asked for when the GPU has done the frame before it, so that such frames never queue behind each other and the time of each is its own. Nothing in the renderer is sized by a constant of one card.
+14. **What is kept.** With the project, in `doc.ui.viewport` (4.1): which view is shown (3D or top), each of the two cameras once a hand has moved it, the sun's direction and elevation, the vertical scale, and whether the sea is drawn. They are composed for this terrain: where it is looked at from, what light shows its relief, how far its heights are raised; two people who open the file see one picture. With the user, in `Preferences.viewport` (8.6): the shading (material or clay), the style of the top view and the palette of mask and data overlays, which are how this user has any terrain drawn. Both are `{ version: 1, … }` (`ProjectView` and `UserView` of `persist.ts`); a value of another version, or none, is the defaults, and every member that is not what it should be takes its default. The panel restores both when it starts and the project's part whenever `docStore.load` brings another document: a project that holds no camera is framed on its terrain from the first direction, with the default sun, scale and sea. Its state is its own store's and outlives its component, which the dock makes anew when a layout is restored (8.7 rule 7): the state is restored once, not with every component. It writes the project's part 300 ms after the state last changed, in a transaction that is not undoable, sets no `unsaved` and is no change the evaluator sees (8.5 rule 5), and only when it differs from what the document holds: a project that is opened and looked at is not changed. A camera that is still the framed one is not written, so that Frame Terrain gives a camera back to the framing. The user's part is written to the preferences when one of its three members changes.
+15. **The picture.** What the tests of `tests/engine/viewport/look.test.ts` hold, each against a number the renderer before it did not reach.
+    - *Exposure and balance.* Level ground in the sun is drawn with the colour it has: the exposure brings the albedo 0.18 under a sun at 45° to 0.18 of the display's range, and follows the light of other elevations by the power 0.85. The picture is balanced for the light of the day (the sun and the sky on level ground), 85 % of the way to white. Below 0.7 a colour is shown as it is; above, its brightest channel is brought into range and gives way to white. A draped colour map is so judged as it was made.
+    - *Sky and haze.* One atmosphere (`atmosphere.ts`): Rayleigh air, ozone and the Mie haze of a day on which one sees 80 km, scattered once along the ray and, for all later orders, by the transfer function of Hillaire (2020), tabulated per sun elevation at twelve altitudes. The sun's colour, the sky's light on level ground and on walls, the exposure and the balance are integrals of it; the three things chosen are named there (the visibility, the albedo 0.06 of the ground beyond the terrain, the key 0.18). The air between the eye and the terrain is the same air, metre for metre, counted within the terrain's own box.
+    - *The sea.* The bed is drawn as the terrain is and seen through the water, which absorbs per metre (0.36, 0.066, 0.042) of red, green and blue on the way down and up; deep water has its own colour; the surface mirrors the sky by Fresnel's law (0.02 seen from above) and the sun. Where the water is thinnest a fringe of 30 % washes over the ground, no brighter than the land beside it.
+    - *The slab and the ground.* The sides of the slab are lit as surfaces are; the ground beyond the terrain lies at the level of the slab's base, in the slab's shadow behind it and shaded by it beside it.
+    - *The default material.* Turf of a dry country in patches of three sizes, soil where the ground tilts, rock without a hue where it is steep, sand along a shown sea: level ground is not one colour, and a desert is not green. Clay is one colour.
 
 ### 7.6 Builds
 
@@ -1939,6 +2035,14 @@ Unreal, whose frame is +X forward, +Y right, +Z up.
 6. `cancelBuild()` aborts the signal. The build settles after at most the slices in flight and the abort of the open writers.
 7. When the build function settles, the session emits `build-end`, calls `Engine.trim({ keepResolution: previewResolution })`, resolves `build` with its `BuildResult`, and requests a full evaluation of the latest document. Should the function reject, the session emits `build-end` with status `'errors'` and rejects `build` with the same reason.
 8. If the device is lost during a build, the build ends with the status the build function reports for it and recovery proceeds as in 7.8. A build is not restarted automatically.
+
+**A plan without a build.** `plan(doc)` (7.1) answers with the `BuildPlan` that
+`build` would announce in its `build-plan` event for the same document, made
+by the planner the session was given (`planBuild`, `export-unreal.md` 3.1). It
+does none of rules 2 to 7: no preview is aborted or held back, the cache is
+not emptied, no request id is taken and no event is emitted. The interface
+shows it before a build is asked for: the files, their sizes and every problem
+of the plan are then known without pressing Build.
 
 A build's cost is not kept: a cancelled or failed build, and the next build,
 start from nothing. A build cache that persists between builds is reserved for
@@ -1975,7 +2079,7 @@ type EngineEvent =
 | `keys` | after `setDocument`, and when a watched file or the project path changed (7.3 rule 8) |
 | `view-updated` | when a result is shown (7.3 rule 6). `height` and `overlay` say which parts the view has |
 | `thumbnail` | for every `Thumbnail` the engine delivers (5.12) |
-| `memory` | after every evaluation and every `trim`, and after `setPreferences` |
+| `memory` | after every evaluation and every `trim`, after `setPreferences`, and when what the viewport renderer has reserved changed (7.5 rule 4): one event for the changes of one task, in a microtask after them. The renderer registers its textures in the frame after a result is shown, long after that evaluation's own `memory` event, and a status that waited for the next evaluation showed 81 MB for a view that held 184 MB more. What the renderer registers while it is handed a device (`init`) is in the event that follows `device-ready` |
 | `build-start`, `build-end` | 7.6 |
 | `device-ready` | when the session gets its first subscriber, in a microtask after that `subscribe` call, and after every recovery |
 | `device-lost` | when the device is lost; `nodeId` is the node that was running |
@@ -1989,7 +2093,7 @@ increase, so one comparison settles it.
 
 1. When `gpu.lost` becomes true the session emits `device-lost`, calls `renderer.setContent(null)`, drops its handles without releasing them, and lets the running evaluation settle with `'device-lost'` (5.9).
 2. It then calls `reopenGpu()`: at once, again after 1 s, again after 5 s. The first success is passed to `Engine.replaceDevice` and `renderer.init`; the session emits `device-ready` and requests a full evaluation. Measured on Dawn: a replacement device is ready in about 75 ms. A device that is lost while the engine moves onto it is one more loss, announced and counted like any other. The session destroys no `GpuContext` that was in use: `reopenGpu` is the platform's, and in Node it destroys the lost context before it opens the next (1.5 rule 4). Only a context that arrives already lost, or after `dispose`, is destroyed by the session, because nothing else holds it.
-3. Three failures in a row, or a third device loss within 120 s, end automatic recovery: the session emits `engine-error` with `fatal: true` and waits for `retryDevice()`. The limit is deliberate. Windows stops with a system error after five GPU resets within 60 s, and Chromium refuses a page a new adapter after repeated GPU process crashes; a loop that kept retrying would reach both.
+3. Three failures in a row, or a third device loss within 120 s, end automatic recovery: the session emits `engine-error` with `fatal: true` and waits for `retryDevice()`. The limit is deliberate. Windows stops with a system error after five GPU resets within 60 s; a loop that kept retrying would reach it. **Chromium's own limits are switched off** (1.6), because they are stricter than this rule and say nothing: measured in Electron 44.7.0 on Linux with the GPU process killed four times ten seconds apart, without the two switches the second loss left the application without any adapter for about two minutes (the three attempts, Retry and a restarted engine all failed with "No WebGPU adapter is available"), and the fourth left it on SwiftShader with its status reading "Ready", a change that took 62 ms taking 3086 ms; with both switches the first two losses were recovered in under a second each, the third and fourth stopped at this rule, and `retryDevice()` got the graphics card back at once. Not measured on Windows, where a driver reset or a driver update ends the GPU process the same way. A device that is a software adapter after the engine had the graphics card in the same run (`caps.software`, 1.3) is said by the shell once, in the notification area, with what brings the card back: restarting the application (8.7 rule 11).
 4. A node that was running at two losses in a row, without completing between them, is not run again (5.9 rule 6).
 5. Imported files are read again from disk by their nodes. Nothing the user made is held only on the GPU.
 6. **What the window needs after a loss.** Measured in Electron 44.7.0 on Linux, in a window that was never shown, with the GPU process killed: the session's recovery completes in under a second, and two things of the window do not come back with the device. A canvas whose control was transferred before the loss presents nothing that is drawn on the new device; a canvas element created afterwards does. The interface therefore attaches a new canvas element (7.5 rule 8) at every `device-ready` that follows a `device-lost`. And the worker's `requestAnimationFrame` fires for the first frames after the loss and then never again, with the old canvas or a new one. A renderer therefore backs every frame it requests with a timer and draws when either fires, 250 ms after the request at the latest. Neither is verified in a visible window or on Windows.
@@ -2042,7 +2146,12 @@ new BrowserWindow({
 4. The engine worker is created by the top-level frame, never by an iframe: a worker has Node integration only when the frame that creates it has it.
 5. While a build runs the main process holds `powerSaveBlocker.start('prevent-app-suspension')`.
 6. The window is created with `show: false` and shown when its page is ready to be; in test mode never. Closing it asks the page first (`onCloseRequested`, 8.6) and closes on `confirmClose`; a page that has no listener, or is gone, is not asked.
-7. The native menu offers commands of the interface (8.8) and sends the chosen command's id to the page (`onMenuCommand`). It shows their keys and registers none: the page's one key listener dispatches keys (8.8 rule 3), and a registered accelerator would run the command a second time. On Windows and Linux the application menu would be a bar inside every window, above the menu bar the page draws (8.7 rule 3): the window does not show it (`setMenuBarVisibility(false)`), and the menu remains the application's. macOS shows it outside the window. Measured on Linux in a window that was never shown: with the bar the page is 26 pixels lower. Not verified in a visible window or on Windows.
+7. The native menu offers commands of the interface (8.8) and sends the chosen command's id to the page (`onMenuCommand`). It shows their keys and registers none: the page's one key listener dispatches keys (8.8 rule 3), and a registered accelerator would run the command a second time. The exception is what is no command of the interface but a role of the system: Quit, Toggle Full Screen and Toggle Developer Tools keep the accelerators Electron gives them (`Ctrl+Q` where the platform has it, `F11`, `Ctrl+Shift+I`), which the page has no key for; the editing roles (cut, copy, paste, select all) register none, since the page's edit commands are those keys. On Windows and Linux the application menu would be a bar inside every window, above the menu bar the page draws (8.7 rule 3): the window does not show it (`setMenuBarVisibility(false)`), and the menu remains the application's. macOS shows it outside the window. Measured on Linux in a window that was never shown: with the bar the page is 26 pixels lower. Not verified in a visible window or on Windows.
+
+8. **One application per user.** Outside test mode the main process takes `app.requestSingleInstanceLock()`. A second start does not get it and ends at once; the first hears of it (`second-instance`), brings its window forward, and, when the second start was given a project file (`secondStartProject` of `launch.ts`, by the same reading as the first argument of a first start), sends the path to the page (`onOpenRequested`, 8.6), which opens it as File > Open does, with the questions of 8.8 rule 9. Two applications would write one preferences file and one recovery file, and on one project file each would save over the other. Test mode takes no lock: a test runs beside the user's own application, with its files in a folder of its own. On Windows this is also what "Open with" on a `.orogen` file needs; not run there.
+9. **Where the window is.** A first start asks for 1600 × 1000 in the middle of the primary screen. The size is cut to the work area of the screen the window lies on, so that it fits a screen of 1920 × 1080 scaled to 125 %; the least size, 960 × 600, is cut the same way. When the window closes, its place, its size and whether it was maximised are kept in `window.json` of the user-data folder, and the next start uses them while at least 120 pixels of the window in each direction lie on some screen's work area; else it is centred again (`placeWindow` of `window-state.ts`, no Electron import). Test mode keeps and reads nothing: its window is 1600 × 1000.
+10. **The log file.** Outside test mode the main process appends to `logs/orogen.log` of the user-data folder what went wrong in a run: its own uncaught exceptions and unhandled rejections, the errors the page wrote to its console, a page that did not load, and every process of the application that ended otherwise than cleanly, the GPU process among them, with the reason Chromium gives. One line an entry, with the time; at 1 MiB the file becomes `orogen.log.1` and a new one begins (`log.ts`). A log that cannot be written is no error.
+11. **A page that is gone, or hangs.** When the page's process ends otherwise than cleanly (`render-process-gone`), its window would stay empty: the main process asks, in a dialog of its own, whether to reload the window or close the application, and reloads the page on a yes; the engine worker lived in that process and starts with it. The page then finds what it had kept of an unsaved project (8.6, recovery). In test mode there is no dialog and the window is reloaded, three times at the most. When the page does not answer for several seconds (`unresponsive`), it cannot be asked whether it may close either: the main process asks whether to wait or to close the application, and closes without asking the page on that answer. Neither dialog was seen: nothing here ran in a visible window.
 
 **Test mode.** `src/platform/electron/main/` implements the test mode that
 `testing.md` 2.9 defines: the table there is a requirement on the main process.
@@ -2055,9 +2164,9 @@ switch that `OROGEN_ELECTRON_GPU=software` leaves out on Linux (1.6).
 
 `src/platform/electron/worker/engine-worker.ts` is the worker's entry. It:
 
-1. calls `openGpu(navigator.gpu, { profile })`; on `GpuUnavailableError`, and when step 2 rejects, it posts `engine-error` with `fatal: true` and stops;
+1. calls `openGpu(navigator.gpu, { profile })` on the schedule of recovery (`openFirstDevice` of `src/core/session/recovery.ts`: at once, again after 1 s, again after 5 s, 7.8 rule 2; a device that arrives lost is destroyed and is one failure), because an adapter that is missing for a moment is not final: measured, a GPU process that ended while the application started left the engine at "No WebGPU adapter is available" until Retry was pressed, and the same refusal was seen once on the first start of a newly downloaded Electron on a CI runner (`testing.md` 9.3). When all three fail, and when step 2 rejects, it posts `engine-error` with `fatal: true` and stops. A device that is lost while step 2 runs on it is opened once more in the same way before that;
 2. calls `createEngine` with `createRegistry(nodes)` (5.1), `NodeFileSource(null)`, `createWebCpuRunner()` and the default budget of 2.4;
-3. creates the viewport renderer and calls `createSession`, passing as `build` a function that calls `buildToFolder` of `src/export/folder.ts` with `NodeFileSink` (7.1);
+3. creates the viewport renderer and calls `createSession`, passing as `build` a function that calls `buildToFolder` of `src/export/folder.ts` with `NodeFileSink`, and as `plan` one that calls `planBuild` of `src/export/plan.ts` with the engine's registry (7.1);
 4. serves `ClientMessage`s by calling the session, and posts every `EngineEvent`: `serveSession(session, port)` (7.2), in the same task as step 3. `port` is the worker's own scope behind a queue, below.
 
 The interface sends `setPreferences` and `setProject` before its first
@@ -2130,7 +2239,7 @@ with `useStore(store, selector)`.
 | Store | Holds | Changed by | Undoable | Saved |
 | --- | --- | --- | --- | --- |
 | `docStore` | the `GraphDoc`, its revision, the history | transactions only | yes | the `.orogen` file |
-| `engineStore` | everything the engine reports: device state, per-node status, progress, errors and timings, keys, the shown view, memory, the build | `EngineEvent`s only | no | no |
+| `engineStore` | everything the engine reports: device state, per-node status, progress, errors and timings, keys, the shown view, memory, the build; and whether previews are paused | `EngineEvent`s only, except `paused`, which the engine client sets | no | no |
 | `uiStore` | selection, positions of nodes being dragged, open popups, focus | the panels | no | no |
 
 Engine state changes many times per second (10 progress events per second per
@@ -2175,10 +2284,12 @@ interface DocState {
   transact(label: string, recipe: (doc: DocDraft) => void, opts?: { mergeKey?: string; undoable?: boolean }): void;
   beginGesture(mergeKey: string): void;
   endGesture(): void;
+  cancelGesture(): void;                           // ends the gesture and takes back what it changed (rule 4)
   undo(): void;
   redo(): void;
   load(doc: GraphDoc, path: string | null): void;  // replaces the document, clears the history
   markSaved(path: string, revision?: number): void;   // the file holds that revision; default: the document as it is now
+  markUnsaved(): void;                                // no file holds the document as it is: a project restored from recovery (8.6)
 }
 
 interface NodeRuntime {
@@ -2190,6 +2301,7 @@ interface NodeRuntime {
   readonly etaMs: number | null;
   readonly wallMs: number | null;
   readonly peakBytes: number | null;
+  readonly resolution: number | null;              // vertices per side of the evaluation `wallMs` and `peakBytes` were measured in
   readonly error: NodeError | null;                // for 'error'
   readonly upstream: string | null;                // for 'skipped' because of a failed node: that node's id
 }
@@ -2216,6 +2328,8 @@ interface EngineState {
     readonly lastStatus: 'ok' | 'errors' | 'aborted' | 'device-lost' | null;   // build-end
   };
   readonly memory: MemoryReport | null;
+  readonly paused: boolean;                        // previews are paused (7.1 `setPaused`): set by the engine client, by no event
+  readonly silent: boolean;                        // the engine has answered nothing for some seconds: set by the engine client, by no event
 }
 
 interface UiState {
@@ -2242,7 +2356,12 @@ the thumbnail resolution.
 its request; the others keep their record until their `node-done`. A
 `node-skipped` event with reason `'aborted'` or `'device-lost'` sets the node to
 `'idle'`. A `node-done` with `cached: true` leaves `wallMs` and `peakBytes` as
-the node's last run gave them. `evaluation` is set by `request-start` and
+the node's last run gave them, and `resolution` with them: the three are of one
+run. A node outside the view is computed for its thumbnail, on a much coarser
+grid, and whoever shows its time says at which resolution it was measured when
+that is not the project's preview resolution, at which the viewport shows it
+(8.7 rule 10).
+`evaluation` is set by `request-start` and
 cleared by the `eval-end` of its request, for a build by its `build-end`: while
 a build converts and writes, `evaluation` is still the build's, so
 `evaluation === null` never reads "nothing is running" in the middle of one.
@@ -2259,13 +2378,20 @@ clears `running` and sets `lastStatus`. What the last build wrote and reported
 stays readable in `plan`, `problems` and `result` until the next one starts.
 `EngineClient` calls `setProject` whenever `DocState.path` changes.
 
+**The pause.** `paused` is the one member no event sets. A session is told to
+pause and says nothing back (7.1), so the engine client, which tells it, writes
+what it told: `EngineClient.setPaused` calls the session and
+`setEnginePaused(engineStore, paused)`. Every panel that has to say why
+something is not computed reads it there (8.7 rule 10); none reads the shell's
+own state, which it may not import. A pause changes no other member.
+
 **Transactions.**
 
 1. `transact` runs the recipe with immer's `produceWithPatches`. The recipe calls the commands of 4.6 and nothing else touches the draft. A recipe that changes nothing has no effect at all.
 2. A transaction with patches adds a history entry, clears `future`, increments `revision` and sets `unsaved`. The entry's `selectionBefore` is the selection when the transaction begins, its `selectionAfter` the selection when the recipe returns, without the ids of nodes the document no longer holds: a command that selects what it made sets the selection inside its recipe. A recipe that throws changes nothing, and the error reaches the caller. `unsaved` is `false` again when undo or redo arrives at the state that was loaded or last saved. `markSaved(path, revision)` with a revision that is no longer the document's, because the document changed while the file was written, sets the path and leaves the project unsaved, at every place of the history: the file holds a state no undo is known to lead back to. The shell writes the file again when the document changed meanwhile, three times at the most, and then says that the file lacks the last changes.
 3. **Merging.** A transaction is merged into the last entry instead of adding one when both have the same non-null `mergeKey` and either a gesture with that key is in progress or less than 600 ms have passed since the entry's `time`. The merged entry's forward patches are the old ones followed by the new; its inverse patches are the new ones followed by the old.
-4. **Gestures.** `beginGesture(key)` on pointer down, `endGesture()` on pointer up. `EngineClient` calls `beginGesture` and `endGesture` of the engine (7.1) when `DocState.gesture` begins and ends. Everything transacted with that key in between is one undo step, however long the drag, and a step of its own: the first transaction of a gesture merges into an entry that was there before the gesture only by the 600 ms of rule 3. Keys: `param:<nodeId>:<name>` for a parameter control, with the ids joined by `+` when the inspector edits a parameter of several selected nodes at once (`param:<idA>+<idB>:<name>`), `setting:<name>` for a project setting the inspector edits, `move:<id of the drag>` for moving nodes, `group:<groupId>` for moving or resizing a group.
-5. **Not undoable.** `undoable: false` adds no entry and leaves `future` intact. It is used for, and only for, `setView`, `setGraphViewport`, and `setSettings` of `buildResolution` or `previewLevel`. Such a transaction touches no other path, and no undoable transaction touches those paths; that is what keeps earlier patches applicable. A transaction that breaks this throws and changes nothing. Changes under `ui` do not set `unsaved`; a change of `buildResolution` or `previewLevel` sets it until the next save.
+4. **Gestures.** `beginGesture(key)` on pointer down, `endGesture()` on pointer up. `EngineClient` calls `beginGesture` and `endGesture` of the engine (7.1) when `DocState.gesture` begins and ends. Everything transacted with that key in between is one undo step, however long the drag, and a step of its own: the first transaction of a gesture merges into an entry that was there before the gesture only by the 600 ms of rule 3. `cancelGesture()` is the end of a drag that was taken back (Escape): the document is as it was at `beginGesture`, the gesture's entry is not in the history, an entry its first transaction had merged into is back as it was, `future` is what it was at `beginGesture`, and the selection is that of the press. The drag can then be neither undone nor redone, and has cost no redo step. It increments `revision` when it changes the document, and does nothing without a gesture. When an undoable transaction of another key was made while the gesture was in progress, that change and the gesture's stay and the gesture only ends. A file written in the middle of a gesture that is then cancelled holds a state no undo leads to: the project is unsaved. Keys: `param:<nodeId>:<name>` for a parameter control, with the ids joined by `+` when the inspector edits a parameter of several selected nodes at once (`param:<idA>+<idB>:<name>`), `setting:<name>` for a project setting the inspector edits, `move:<id of the drag>` for moving nodes, `group:<groupId>` for moving or resizing a group.
+5. **Not undoable.** `undoable: false` adds no entry and leaves `future` intact. It is used for, and only for, what is written under `ui` (`setView`, `setGraphViewport`, and `setViewportState`, the viewport panel's own value of 4.6) and `setSettings` of `buildResolution` or `previewLevel`: the store asks of a patch whether its path is under `ui` or one of those two settings, and of nothing else. Such a transaction touches no other path, and no undoable transaction touches those paths; that is what keeps earlier patches applicable. A transaction that breaks this throws and changes nothing. Changes under `ui` do not set `unsaved`; a change of `buildResolution` or `previewLevel` sets it until the next save.
 6. `undo` applies the last entry's inverse patches and moves it to `future`; `redo` the reverse. Both increment `revision`, restore the entry's selection and end any gesture.
 7. The history holds at most 500 entries and at most 64 MiB of patches; the oldest are dropped.
 8. While nodes are dragged their positions live in `uiStore`; one `moveNodes` transaction is made when the drag ends.
@@ -2307,9 +2433,52 @@ document under `engineRevision`, in that order (8.3). Every event goes to the
 thumbnail cache, then to `engineStore`, then to the client's subscribers. The
 client keeps what a session is told that `docStore` does not hold: the
 preferences, the pause, the thumbnail list, the camera and the display.
-`connect(port)` leaves the session it had, whose pending `inspect`, `build` and
-`pick` reject, sets `engineStore` back to its initial state and tells the
-session behind the new port everything again, the document last. The state it
+`connect(port)` leaves the session it had, whose pending `inspect`, `build`,
+`plan` and `pick` reject, sets `engineStore` back to its initial state and
+tells the session behind the new port everything again, the document last. Two
+members are not set back. `paused` is the client's own, and the new session is
+told of it. `build` keeps what the last build wrote and reported (`plan`,
+`problems`, `result`, `lastStatus` under its `requestId`): the files are in
+their folder whatever became of the worker, and the build panel goes on showing
+them. A build that was running ended with its worker and gets no `build-end`:
+it is left as not running, with `lastStatus` `'aborted'`, no result, and the
+plan and the problems it had sent. The `build` call that awaited it rejects
+with `EngineReplacedError` (exported by `src/app/engine/client.ts`), which
+whoever started the build takes for its end and not for a failure: the build
+panel says "Build stopped: the engine was restarted", with the output folder
+as it was, and no command is reported as failed.
+
+**Another project.** When `docStore.load` puts another document in the place
+of the project (8.5), the client empties what the engine reported of the
+project before: `nodes`, `keys`, `thumbnailKeys` and `view` (`forgetProject`
+of `engine-store.ts`). Two projects may share node ids, as the examples do,
+and a node of the new project bore the state, the time and the error of its
+namesake until it was computed; and with `view` null the viewport covers the
+picture of the project before ("Not computed yet", or what its shown node
+says) until this project has one, where it used to keep an alpine terrain
+over a project whose shown node failed. What a request that was made for the
+project before still says of nodes, keys, thumbnails and pictures is not
+applied: the client knows the newest request and the revision of the moment
+of the load. The device, the memory, the pause and the build stay; the build
+panel tells the build of another project apart itself (8.7). The thumbnails the page holds
+are sorted when the keys of the new project arrive: one of a node id whose content key is
+the one its thumbnail was made of stays and is known as current again (`adoptThumbnails`),
+since the engine sends a thumbnail once per node and content key (5.12) and would send no
+other (the same project opened again, an example opened twice); one of other content is
+dropped from the cache (`ThumbnailCache.drop`), and the graph clears its canvas.
+
+**An engine that is silent.** An engine worker that has stopped answering
+(its thread ended, or hangs) sends no event either, so the store would say
+"Ready" for ever, a change would show nothing and Build would do nothing,
+without a word. The client therefore watches (`ENGINE_WATCH`, given by
+`src/app/main.tsx`; a client made without `watch` does not): when it has
+heard nothing of the engine for 5 s while the device is ready or lost, it
+asks it something that costs nothing (`inspect` of a port that names
+nothing); when that question has stood for 15 s, it sets `silent`, and the
+status bar says "Engine not responding" with a button for
+`engine.restart`. Any event and any answer clears it. The limits are wide on
+purpose: compressing one image of 8129 keeps the engine's thread busy for
+seconds, and that is no fault. No call is rejected by this alone. The state it
 sets is a new object with a `device` object of its own, so that the store's
 subscribers are told even when the store was still at its first state. Nothing
 the user made is lost with a worker: the document was never there. The canvas
@@ -2336,6 +2505,23 @@ interface Preferences {
   readonly keymap: Readonly<Record<string, string>>;     // command id → key, overriding defaults (8.8)
   readonly layout: unknown;                              // the dock layout
   readonly recent: readonly string[];
+  readonly viewport: unknown;                            // the viewport panel's cameras and display options; opaque, as `layout` is
+  readonly panels: Readonly<Record<string, unknown>>;    // panel id → what that panel keeps for itself; each value opaque
+}
+
+/** What `statPath` tells of a path. One that names nothing is `{ exists: false, isFile: false, size: 0, mtimeMs: 0 }`. */
+interface PathStat {
+  readonly exists: boolean;
+  readonly isFile: boolean;                              // false for a folder
+  readonly size: number;                                 // bytes of a file; 0 for a folder
+  readonly mtimeMs: number;                              // last modified, milliseconds since the epoch
+}
+
+/** What is kept of a project with unsaved changes, for the start after a run that ended without a save. */
+interface RecoveryRecord {
+  readonly path: string | null;                          // the project file the changes belong to; null: never saved
+  readonly text: string;                                 // the project as serializeDoc writes it
+  readonly savedAt: number;                              // when it was kept, milliseconds since the epoch
 }
 
 interface PlatformApi {
@@ -2353,6 +2539,13 @@ interface PlatformApi {
   setPreferences(patch: Partial<Preferences>): Promise<void>;
   setBuildActive(active: boolean): void;
   showInFolder(path: string): void;
+  statPath(path: string, projectPath?: string | null): Promise<PathStat>;
+  openExternal(url: string): Promise<boolean>;           // a web address, in the system's browser
+  openDocument(name: string): Promise<boolean>;          // a page of the user documentation, by its name in docs/user
+  openBuildFile(path: string): Promise<boolean>;         // a file a build wrote, by its absolute path
+  readRecovery(): Promise<RecoveryRecord | null>;        // what a run before kept of an unsaved project
+  writeRecovery(record: { readonly path: string | null; readonly text: string } | null): Promise<void>;   // null removes it
+  onOpenRequested(listener: (path: string) => void): () => void;   // the project file a second start was given (8.2 rule 8)
   onMenuCommand(listener: (commandId: string) => void): () => void;
   onCloseRequested(listener: () => void): () => void;
   confirmClose(): void;
@@ -2366,7 +2559,109 @@ exported files are handled in the engine worker.
 `readTextFile` and `writeTextFile` take absolute paths and reject for any
 other, and for a file above 64 MiB. Preferences are one JSON file in the
 user-data folder; a member that is not of its type takes its default, and
-`setPreferences` replaces the members its patch names.
+`setPreferences` replaces the members its patch names, in the file as it is
+at that moment and not as it was read at start-up: where a second application
+writes the same file (test mode has no lock, 8.2 rule 8), the members a patch
+does not name keep what that application wrote. A preferences file that is
+not JSON is copied to `preferences.json.bad` before the next write replaces
+it, once: the user's key bindings are not lost with a damaged file.
+
+**Writing a text file.** `writeTextFile` writes a temporary file beside the
+target, `.~og<pid>-<n>.tmp`, and renames it onto the target: the target is the
+old file or the new one, never a part, and a write that fails leaves the old
+file and no temporary one. The short name of its own lets a target be saved
+whose name is as long as the disk allows. A target that exists keeps its
+permissions; one that is a link is written through, and the link stays; one
+its owner made read-only is refused as writing into it would be, although a
+rename alone would replace it. On Windows a rename that is refused because
+another program holds the file for a moment is tried again (6.2 rule 7). When
+a write fails, the page is told in words that name the file, its folder, what
+is the matter and what helps ("project.orogen cannot be written: the file or
+its folder … is read-only … Save the project somewhere else with File > Save
+As."): `writeFailure` of `main/files.ts`, for a read-only file or folder, a
+read-only or full disk, a folder that is gone, a name that is too long and a
+file another program holds. The system's own sentence named the temporary file
+and neither the folder nor the remedy.
+
+**A file that changed elsewhere.** The project service (`src/app/shell/project.ts`)
+keeps the size and the modification time of the project file as `statPath`
+gave them when the file was read or written last, and compares them before it
+writes: when the file is another now, a second application or another program
+saved it in between, and the user is asked before it is replaced (Overwrite,
+Save As…, Cancel). A file that is gone is written anew without a question.
+What the application cannot know is that a file changed while the project
+shown is unchanged: `unsaved` stays `false` until something is edited.
+
+**Recovery.** A project with changes no file holds is kept, as the text
+`serializeDoc` writes and the path of its project file, in `recovery.json` of
+the user-data folder: 3 s after a change that is not kept yet
+(`RECOVERY_DELAY_MS`; the wait is not begun again by the next change, so a
+value dragged for a minute is kept every few seconds of it), and at once when
+a build starts, since the engine that builds lives in the page's process. It
+is removed when the project is saved, when another project takes its place,
+and when the window closes with the user's consent. What remains is of a run
+that ended otherwise: the page's process went (8.2 rule 11), the application
+was ended, the power failed. At start-up the page reads it after it has
+opened its project: a record that parses as a project is offered ("Restore
+the unsaved changes to …?", a question that must be answered), and on a yes
+the project is that one, under the path of its file and unsaved
+(`DocState.markUnsaved`), so that Save writes it where it belongs; on a no,
+and for a record that is no project, it is removed. A run costs at the most
+the changes of the last seconds, and never the project. `readRecovery`
+resolves with `null` for no record and for one it cannot read, and never
+rejects for that; `writeRecovery` rejects for a record that is not a path or
+`null` with a text. One record: with one application per user (8.2 rule 8)
+there is one project to keep. The rules are `main/recovery.ts`, which
+imports no Electron.
+
+**What panels keep.** `viewport` is the viewport panel's: its cameras and
+display options, of a shape the bridge does not look at, with `null` for none,
+as `layout` is the dock's. `panels` holds one entry per panel, by `PanelId`
+(8.7), each a value of that panel's own, for what a panel wants to find again
+in the next run: recently used nodes, folded sections, the output folder of a
+project. Of `panels` a patch replaces the entries it names and keeps the
+others, so that two panels that write in one moment do not drop each other's
+entry; an entry is replaced whole, and `null` is a value like any other. A key
+that is empty, longer than 64 characters or `__proto__` is no panel's and is
+dropped. Both members hold what JSON holds: the file is JSON. A panel reaches
+its entry through `panelKeep(id)` of `src/app/platform.ts`: `read()` resolves
+with the entry as the file holds it, or `null`, and never rejects; `write(value)`
+replaces the entry, several writes within 200 ms being one, of the last value.
+The entry arrives some time after a panel has started, so a panel starts at
+its first state and takes what was kept when it arrives, except for what the
+user has changed by then; it writes nothing before. Nothing a panel keeps is
+in the page's `localStorage`.
+
+**`statPath`.** What a path names, for showing: whether a file a parameter
+names is there before its node has run. A relative `path` is taken from the
+folder of `projectPath`, the form in which a document stores a file under the
+project's folder (6.1 rule 2); without a project path it names nothing. A path
+that names nothing, or that cannot be looked at, is absent; the call rejects
+only for a `path` that is no string. A folder exists and is no file.
+
+**The system's programs.** A program the system starts for a file runs with
+the user's rights, and for some kinds of file the program is the file. The
+page therefore names no arbitrary path. The three calls resolve `true` when
+the request is one the bridge serves and the system took it, and `false`
+otherwise; none rejects, and a refusal is no error.
+
+| Call | Opens | Refuses |
+| --- | --- | --- |
+| `openExternal(url)` | an address whose scheme is `http` or `https`, as `new URL` parses it, in the system's browser | any other scheme (`file:`, `javascript:`, a custom one), an address with a user name or a password, one above 2048 characters, a path |
+| `openDocument(name)` | a page or a picture of the user documentation that came with the application: `name` is relative to `docs/user` with `/` (`unreal-import.md`, `images/application.png`), ends in `.md` or `.png`, and names a file there | a name with an empty, `.` or `..` segment, a backslash or a colon; an absolute path; any other kind of file; a link |
+| `openBuildFile(path)` | a file a build wrote: an absolute path of an existing file that ends in `.png`, `.r16`, `.r8`, `.r32`, `.exr`, `.tif` or `.json` and lies directly in a folder that holds a build | a file of any other kind; a link; a file in a folder that holds no build; a folder (`showInFolder` shows one) |
+
+A folder holds a build when it holds a manifest (`*.orogen.json`) or a report
+(`*.report.json`) with Orogen's schema (`export-unreal.md` 3.8, 3.10, 6.1): the
+output folder of a build that succeeded, and the staging folder of one that
+did not. The folders the user chose for builds are so known by what is in
+them, in the run that built and in every later one, and the main process keeps
+no list of them. The documentation is `docs/user` of the repository; a
+packaged application carries it beside its archive, as `resources/docs/user`
+(`electron-builder.yml`), because no program of the system reads a file inside
+the archive. The rules are `src/platform/electron/main/open.ts`, which imports
+no Electron. In test mode nothing is opened and each call answers as it would
+(`testing.md` 2.9).
 
 ### 8.7 Panels
 
@@ -2389,21 +2684,24 @@ interface PanelDef {
 `src/app/ui/types.ts` and exported by `src/app/ui/index.ts`, which is where a
 panel imports them from (rule 2). A panel's component takes no props: it
 reaches the `CommandContext` with `useCommandContext()` and the shell's
-services (the key and the title of a command, whether it is enabled, the
-notification area, and `showPanel(id)`, which brings a panel's tab to the front
-of its group and gives the panel the focus) with `useApp()`, both of
+services (`AppServices`: the key and the title of a command, whether it is
+enabled, the notification area, `showPanel(id)`, which brings a panel's tab to
+the front of its group and gives the panel the focus, and
+`openDocument(doc)`, which opens a document as a new project without a file
+through the project service, with its questions of 8.8 rule 9, and resolves
+`true` when the document is the project) with `useApp()`, both of
 `src/app/ui/`. A panel behind another tab is not in the document (rule 3): a
 command that shows something in its panel calls `showPanel` with its own id
-first, and a command that acts on what its panel shows is disabled while the
-panel is hidden.
+first, and so works with any tab in front; a command that acts on what its
+panel shows is disabled while the panel is hidden.
 
 | Panel | Contents | Reads | Writes |
 | --- | --- | --- | --- |
 | `graph` | the node graph, the add-node palette, groups, clipboard, node thumbnails and status | `docStore`, `engineStore` per node, thumbnails | transactions; selection |
-| `viewport` | the canvas, camera control, overlays, the height readout | `engineStore` view state, `docStore` settings and view | `EngineClient.viewport`; `setView` |
+| `viewport` | the canvas, camera control with mouse and trackpad, overlays, the height readout, and a cover that says in two lines why there is no picture and what to do about it | `engineStore` view state and `paused`, `docStore` settings and view, `doc.ui.viewport` and `Preferences.viewport` (7.5 rule 14) | `EngineClient.viewport`; `setView`; `doc.ui.viewport`, not undoable; its member of the preferences |
 | `inspector` | the parameters of the selected node, generated from its `ParamDef`s; project settings | `docStore`, selection | transactions with gestures |
-| `library` | the node catalogue by category, with search and the recently used nodes; the example projects, which are the files of `examples/` that `examples/index.json` lists, packed into the page by the build | the node registry (`CommandContext.registry`, 8.8); `docStore`, for the nodes that are added | starts an add-node drag and asks for a node to be added; opens an example with `docStore.load(doc, null)`, a new project without a file, after asking when the project has unsaved changes: the shell's question with its three answers, of which "Save" runs the command `file.save` and opens the example once `DocState.unsaved` is false |
-| `build` | build settings (the build resolution, the output folder of each project, which the panel keeps by the path of the project's file in the page's `localStorage`, as it keeps which of its sections are folded), start and cancel, progress, the plan and its problems, the list of written files, the numbers Unreal needs as the manifest states them, errors | `engineStore` build state (8.5), and the client's events for what that state does not keep (when each stage began, the folder a build was asked for); `docStore` settings and export nodes; the manifest and the report of a build, as text through the bridge (8.6) | `EngineClient.build`, `cancelBuild`; `setSettings` of `buildResolution`, not undoable (8.5 rule 5); the selection, for the node of a problem or of a target |
+| `library` | the node catalogue by category, with search and the recently used nodes; the example projects, which are the files of `examples/` that `examples/index.json` lists, packed into the page by the build | the node registry (`CommandContext.registry`, 8.8); `docStore`, for the nodes that are added | starts an add-node drag and asks for a node to be added; opens an example with `AppServices.openDocument(doc)`, a new project without a file, which asks what File > Open asks (8.8 rule 9); its entry of the preferences (8.6): the recently used nodes, the folded sections, the inner tab and the height of the details |
+| `build` | build settings (the build resolution, the output folder of each project), start and cancel, progress, the plan of the project as it stands with its problems before a build is asked for (`EngineSession.plan`, 7.6), the list of written files, the numbers Unreal needs as the manifest states them, errors | `engineStore` build state (8.5), and the client's events for what that state does not keep (when each stage began, the folder a build was asked for); `docStore` settings and export nodes; the plan of the document, asked of the session 200 ms after the document last changed in what a build reads, and again when a device becomes ready; the manifest and the report of a build, as text through the bridge (8.6) | `EngineClient.build`, `cancelBuild`; `setSettings` of `withBuildResolution(settings, value)`, not undoable (4.2, 8.5 rule 5); the selection, for the node of a problem or of a target; its entry of the preferences (8.6): the output folder of each project by the path of its file, and which of its sections are folded |
 
 1. Each panel is a folder `src/app/panels/<id>/` whose `index.ts` exports its `PanelDef` as `panel`. `src/app/registry.ts`, the panel registry (not the node registry of 5.1), imports the five and exports them as a list; it is written once and then frozen.
 2. A panel imports from `src/app/state/`, `src/app/engine/`, `src/app/ui/`, `src/app/platform.ts` and the core's entry modules `runtime.ts` and `api.ts`; it takes the node registry from `CommandContext` (8.8). It never imports another panel or `src/app/shell/`. Panels affect each other only through the stores and through commands.
@@ -2411,9 +2709,15 @@ panel is hidden.
 4. Colours, spacing and fonts come only from the CSS custom properties defined in `src/app/shell/theme.css`. A panel's own styles are in CSS modules inside its folder.
 5. The inspector has one control per `ParamDef` kind, in `src/app/panels/inspector/controls/<kind>.tsx`. A new kind is a change to `engine.md`. The curve control draws with `evalCurve` and the gradient control with `bakeGradient` (`engine.md` 4.9), so what the user sees is what kernels get. The control of a direction (`unit: 'angle'`, range 0..360) draws 0° pointing right and 90° pointing down, as the top view shows it (`engine.md` 1.8). A control is hidden while its `visibleWhen` does not hold (`engine.md` 4.3).
 6. The inspector shows a `length` or `height` value in metres beside the stored value and accepts either (`engine.md` 1.6); it stores the fraction.
-7. The dock layout is saved to the preferences with a schema version, as `{ version, dock }` with `dock` in dockview's own form. A layout that fails to load is replaced by the default from the panels' `placement`: one of another version, one that does not hold exactly the panels of the registry, and one dockview refuses. In a `placement`, a `direction` without `relativeTo` is that edge of the whole layout, and a panel without either is the first, which fills it. A panel cannot be closed. Pop-out windows are not used: a WebGPU canvas moved to another window's document is untested.
-8. **From the library into the graph.** Neither panel imports the other (rule 2), so the two agree on what the document's own events carry. The library starts an add-node drag as an HTML drag whose `dataTransfer` holds the type `application/x-orogen-node` with the node type id as its text, and `effectAllowed` `'copy'`; the graph takes a drag of that type and adds the node with its middle at the drop position, or into the wire it is dropped on when the node can go into it. "Add this node now" from outside the graph (a double click or Enter in the library) is a `CustomEvent` named `orogen:add-node`, dispatched on `window` with `detail: { type: string }`; the graph adds that node at the centre of its visible area and selects it. A type the registry lacks adds nothing and is said in the notification area.
-9. **One node, one word.** What several panels say of one node they say alike, from `src/app/ui/node-text.ts`: a port is named by `portLabel` (its label, else its name with a capital), and a node's error by `nodeErrorText`. A node whose error is `missing-input` (5.3) is unfinished, not failed (`isFailure`): every node is in that state between being added and being wired. The graph and the inspector read it off the document and say "Missing input: <label>" in the colour of a warning, the viewport says "Missing input" and keeps its last picture, and the status bar counts such nodes apart from the nodes that failed ("1 node lacks an input"). An error of any other kind is drawn as an error in all four, and both leave all four together when the cause is gone.
+7. The dock layout is saved to the preferences with a schema version, as `{ version, dock }` with `dock` in dockview's own form. A layout that fails to load is replaced by the default from the panels' `placement`: one of another version, one that does not hold exactly the panels of the registry, and one dockview refuses. In a `placement`, a `direction` without `relativeTo` is that edge of the whole layout, and a panel without either is the first, which fills it. A panel cannot be closed. Pop-out windows are not used: a WebGPU canvas moved to another window's document is untested. **The default layout** has the viewport above the graph, and a column at the right edge with the inspector above and the library and the build panel as two tabs below it. The inspector shares its group with no other panel: selecting a node, from the graph, from a problem of the build panel or by adding it from the library, shows its parameters without a tab changing, and the panel the user was working in stays in view. No panel is brought to the front by a selection. **Minimum sizes.** No divider makes a group narrower than 220 or lower than 100 CSS pixels (`PANEL_MIN` of `src/app/shell/layout.ts`); a layout saved without the minimums is restored with them.
+8. **From the library into the graph.** Neither panel imports the other (rule 2), so the two agree on what the document's own events carry, declared once, in `src/app/ui/add-node.ts` (`NODE_DRAG_TYPE`, `ADD_NODE_EVENT`, `startNodeDrag`, `requestAddNode`, `addNodeType`), which both import. The library starts an add-node drag as an HTML drag whose `dataTransfer` holds the type `application/x-orogen-node` with the node type id as its text, and `effectAllowed` `'copy'`; the graph takes a drag of that type and adds the node with its middle at the drop position, or into the wire it is dropped on when the node can go into it. "Add this node now" from outside the graph (a double click or Enter in the library) is a `CustomEvent` named `orogen:add-node`, dispatched on `window` with `detail: { type: string }`; the graph adds that node and selects it (`addNodeNow` of the graph's `actions.ts`), in one step of the history. **Where it goes.** When exactly one node is selected, and nothing else, and that node has an output and the new node an input, the new node continues from it: it is put to the right of the selected node (`BESIDE_GAP`, 72 pixels of the graph), at the height at which the wire runs level, and the selected node's first output is connected to the first input of the new node that takes what that output carries without conversion, else to its first input. Adding nodes one after the other therefore builds a chain, as it does in the tools the user knows. Otherwise the node is not connected and goes to the middle of what the graph shows. In both cases it is put at the nearest place where its box, with a margin of 16 pixels, lies over the box of no other node (`clearSpot`): a node the application places itself covers no node and none of its ports. The graph then moves its viewport by the least that brings the new node into view, at the zoom it has. A drop, a paste and the palette put a node where the pointer is, which the user chose, and are only kept from lying exactly on another (`freeSpot`). A type the registry lacks adds nothing and is said in the notification area. **One catalogue, one search.** The library and the graph's add-node palette list the same nodes and find them with the same search: `catalogOf` of `src/app/ui/node-catalog.ts` (the product's nodes by category; the engine's reference nodes, category `ref`, are no part of it and are offered nowhere in the application), the names other tools use in `src/app/ui/node-aliases.ts`, and `searchCatalog` of `src/app/ui/node-search.ts`. A query finds a node by its title, by another tool's name for it, by a keyword, by its type and by whole words of its description, in that order of weight; a query of several words also finds the nodes that hold each word in a field of its own, in any order; a word is also read without its plural `s` and `colour` as `color`; a word that finds nothing is read once more with a doubled letter taken out and with less asked of the match. Of nodes found equally well the one that exports the terrain (`io/export-landscape`) comes first, so that "export" and "output" are answered with it, and an export node found by a part of its title stands behind a node that makes what it exports ("color").
+9. **One node, one word.** What several panels say of one node they say alike: a port is named by the core's `portLabel` (4.3: its label, else its name with a capital), and a node's error by `nodeErrorText` of `src/app/ui/node-text.ts`. The rules a panel shares with the evaluator are the core's own functions and no panel has a copy of them: `inputsOf`, `canBypass`, `inputSources` with `inputKey`, and `missingInputs` (4.3). A node whose error is `missing-input` (5.3) is unfinished, not failed (`isFailure`): every node is in that state between being added and being wired. The graph and the inspector read it off the document with `missingInputs` and say "Missing input: <label>" in the colour of a warning, the viewport says "Missing input" and keeps its last picture, and the status bar counts such nodes apart from the nodes that failed ("1 node lacks an input"). An error of any other kind is drawn as an error in all four, and both leave all four together when the cause is gone.
+10. **Paused.** While `EngineState.paused` holds (8.5), what is not computed because of the pause is called "Paused" wherever it is said, in the colour of a warning and never as a fault: a node without a result in the graph (its status line) and in the inspector (in place of "Not computed"), the viewport's word for a picture that is behind the document (in place of "Out of date"), and the status bar's (the same). What stands in the way before the pause does is said first: no device, a device that is starting or lost, a build that runs. A node that has a result says what it has, and an export node, which runs in no preview, is never paused. The inspector says at which resolution a node's time and memory were measured when that is not the project's preview resolution (4.2), at which the viewport shows it ("12 ms · 1 MB · at 253 × 253"): the record of a node outside the view, which ran for its thumbnail, and of a node a build ran. A draft, which is coarser for the moment of a drag, does not change the line.
+11. **Notices.** The notification area is for what has no place of its own. A `Notice` that names a `panel` repeats what that panel shows (the outcome of a build is the build panel's): it is not shown while the panel is in view, it leaves when the panel comes into view, and it takes the place of the notice of that panel shown before, so there is one at the most; the list of errors holds every one. The start of a build withdraws the notice of the build before it. "The graphics device was lost and is being recovered" is shown while that is true: it is withdrawn when the device is ready again, which is said once ("The graphics device is back"), and when the recovery fails, which the engine's own error says.
+12. **Shared controls.** `src/app/ui/` holds what more than one panel draws: among them `SearchField`, the one field the command palette, the graph's add-node palette and the library's node list are searched with (the caller holds the text, every key reaches the caller first, and Escape empties a field that holds text unless the caller took the key); `PropertyRow`, which puts its label above its control when the row itself is narrower than 280 CSS pixels; `ColorSwatch`, whose `onScrubEnd` follows the release of a drag in the picker wherever on the screen it happens; and `NumberField`, whose typed entry reads a comma between two digits as the decimal sign and whose metric text ends in an ellipsis where it does not fit.
+13. **The graph at a distance.** What a node draws follows the zoom (`lodOf`, `titleStepOf` of the graph's `geometry.ts`). From 0.55: everything; up to 0.75 the node's name is drawn at 16 graph pixels in its header, where the graph's own 12 would be under 9 pixels on screen. From 0.30 to 0.55: no port labels, no status line, no badges, and the node's name is drawn larger than its header, in a band over the top of the node cut at its width, in two sizes (30 graph pixels below a zoom of 0.40, 22 from there). A name is so 9 to 12 pixels high on screen wherever it is drawn below 0.75; at the graph's own size it was 4 to 6 in the middle band, and an example that opens fitted into that band (two of the six do) had no name that could be read. Steps and not the inverse of the zoom, because a style that changes with every step of a zoom is computed again for every node. Below 0.30: blocks in the colours of their categories. The name of a group is drawn at the screen's size, from its header, wherever the zoom is below 0.55 and at least 0.16.
+14. **The library's details.** Under the node list the library describes the node under the pointer, or the selected one, in a pane that keeps its height whatever it shows, so that the list does not move as the pointer does. Until the pane has described a node for the first time it is the one line of its hint, and the list has the room: at first start the panel showed four nodes above an empty box.
+15. **The build panel says how the build stands, and of what.** A plan of textures and images without a landscape item is said so, in the plan and in the outcome of the build ("No Unreal Landscape node: this build writes no heightmap"): such a build "finishes", and nothing else would tell a newcomer that the terrain was not exported. A refusal of the output folder (`E_OUT_DIR`) is withdrawn from the head of the panel when another folder is chosen: it was of the folder before. A build that ended with the engine worker that ran it (8.5) is said as "Build stopped: the engine was restarted", and the command that started it has not failed.
 
 ### 8.8 Commands and keys
 
@@ -2448,14 +2752,15 @@ interface MenuEntry {
 }
 ```
 
-1. Every user action that is not direct manipulation is a command: menus, the palette, keys and buttons all call `run(commandId)`. A command's owner is the prefix of its id: a panel id, or `file`, `edit`, `view`, `engine` for the shell.
+1. Every user action that is not direct manipulation is a command: menus, the palette, keys and buttons all call `run(commandId)`. A command's owner is the prefix of its id: a panel id, or `file`, `edit`, `view`, `engine`, `help` for the shell.
 2. **Keys.** A key is written as modifiers in the order `Mod`, `Ctrl`, `Alt`, `Shift`, then a key name derived from `KeyboardEvent.code`: `KeyB` → `B`, `Digit0` → `0`, otherwise the code itself (`Tab`, `Delete`, `F2`, `Backquote`, `Home`). `Mod` is Control on Windows and Linux. Bindings are independent of the keyboard layout.
 3. **Dispatch.** One listener, owned by the shell. A binding scoped to the focused panel wins over a `global` one. While a text field has focus, only bindings with `Mod` or a function key are considered, and `Mod+Z`, `Mod+Shift+Z`, `Mod+Y`, `Mod+A`, `Mod+C`, `Mod+X`, `Mod+V` are left to the field. A control that uses plain keys for itself and holds no typed text (a number field of `src/app/ui/` that shows its value, a list) counts as a text field for plain keys only: it has no undo and no clipboard of its own, so the seven keys run their commands there, and `Mod+Z` undoes a value that was just dragged. A number field whose entry is open is a text field. While a dialog, the palette, a menu or a popover is open, no binding runs: the keyboard is theirs. Copy, cut and paste in the graph are handled through the DOM clipboard events, not through bindings.
 4. **Registration.** At start-up the shell collects commands, bindings and menu entries from the panel registry and from its own list. Two commands with one id, a binding or a menu entry to an unknown command, or two bindings with the same key and scope stop start-up with a message naming both owners; so do a command whose id does not begin with its owner (rule 1) and a binding of a panel in another scope than its own.
 5. **User keys.** `Preferences.keymap` replaces the default keys of a command by the one it names, in the scope they had; `''` leaves the command without a key. A default binding of another command with that key in that scope gives way. The palette, the menus and tooltips show the current key.
 6. **The edit commands.** `edit.cut`, `edit.copy`, `edit.paste`, `edit.delete` and `edit.selectAll` are the shell's and go where the focus is: to the text field that has it; else to the focused panel, as its command `<panel>.<name>` (`graph.delete`, `graph.selectAll`) when the panel declares one, in which case the edit command is enabled exactly when that command is; and for cut, copy and paste otherwise as the DOM clipboard event of that name, dispatched at the panel's focused element with a `clipboardData` of its own. What a panel puts there as `text/plain` on cut or copy, having prevented the default, is written to the clipboard; on paste the clipboard's text is in it.
-7. **Menus.** The menus of the menu bar are `File`, `Edit`, `View` and `Engine`, then the menus that panels name, then `Help`. A panel adds an item to any of them with a `MenuEntry` of its `PanelDef`.
-8. **The engine's commands.** `engine.togglePause` pauses and resumes previews. `engine.retryDevice` is enabled while `device.state` is `'failed'`: an engine that lost its device is asked to recover it (`retryDevice`, 7.8 rule 3), and one that never had a device (`device.caps` is `null`: its worker stopped, 8.3) gets another worker. `engine.restart` ends the engine worker, whether it answers or not, and connects another (8.5); it is always enabled, and the shell says in the notification area that it happened.
+7. **Menus.** The menus of the menu bar are `File`, `Edit`, `View` and `Engine`, then the menus that panels name, then `Help`. A panel adds an item to any of them with a `MenuEntry` of its `PanelDef`. `Help` holds the shell's `help.userGuide`, `help.unrealImport` and `help.firstRun`, which show `README.md`, `unreal-import.md` and `first-run-on-windows.md` of the user documentation, and `help.about`, a dialog with the application's version (that of `package.json`, read when the page is built), the graphics adapter, the device profile and the memory budget. **The pages are shown in the application**, in a reader of the shell (`src/app/shell/Help.tsx`), and not handed to a program of the system: a stock Windows has no program for `.md`, and where one exists it shows the source, whose tables are bars and whose links between pages lead nowhere. The Markdown of `docs/user/*.md` and the pictures of `docs/user/images` are packed into the page by the build (`help/pages.ts`); `parseMarkdown` of `help/markdown.ts` reads the subset the pages are written in (headings, paragraphs, nested lists, tables, fenced code, quotes, inline code, strong, emphasis, links, pictures, and the `<a id>` anchors of the generated node reference) into blocks, and the reader builds elements from them, so nothing of a page is ever inserted as HTML. A link to another page opens that page in the reader, a link into a page goes to its heading (anchors are made as GitHub makes them, so the pages read the same there), a web address goes to `openExternal` (8.6), and a link to a file that is no page of the guide is said to be one of the repository. The reader lists the pages and has a Back button. `tests/ui/shell/unit/help.test.ts` holds every link of every page to a page and a heading that exist. `openDocument` of the bridge stays for what the system does open: no part of the interface calls it now.
+8. **The engine's commands.** `engine.togglePause` pauses and resumes previews; the pause is in `engineStore` for the panels (8.5, 8.7 rule 10). `engine.retryDevice` is enabled while `device.state` is `'failed'`: an engine that lost its device is asked to recover it (`retryDevice`, 7.8 rule 3), and one that never had a device (`device.caps` is `null`: its worker stopped, 8.3) gets another worker. `engine.restart` ends the engine worker, whether it answers or not, and connects another (8.5); it is always enabled, and the shell says in the notification area that it happened.
+9. **Leaving a project.** `file.new`, `file.open`, a recent project, `AppServices.openDocument` (an example of the library) and closing the window all leave the project that is open, and ask first, in this order. While a build runs (`EngineState.build.running`): whether it is stopped, with the answers "Stop Build" (and go on) and "Keep Building" (and stay), the second being the default and what Escape means. The build is of the project that is being left, and its progress and its result are that project's to show. "Stop Build" calls `cancelBuild` and waits for `build.running` to be false, 15 s at the most, so that an engine that hangs keeps nobody from their project; a build that ends by itself while the question stands has answered it. Then, when the project has unsaved changes: the question of 8.5 with its three answers. The file dialog of `file.open` opens after both. The questions are the shell's dialogs, and one operation of the project service runs at a time. A project file a second start of the application was given (8.2 rule 8) is opened by the same way, with the same questions. Two more questions are the project service's: before a save replaces a file that another program changed (8.6, "A file that changed elsewhere"), and at start-up, whether what a run before kept of an unsaved project is restored (8.6, "Recovery").
 
 Default bindings. A panel declares the bindings of its own scope and may add
 others in that scope; `global` bindings are the shell's.
@@ -2500,6 +2805,7 @@ Versions are exact. Adding or upgrading a dependency is the integrator's change
 | `vite`, `@vitejs/plugin-react` | 8.3.4, 6.1.2 | building the interface and the workers | |
 | `electron-builder` | 26.15.3 | the Windows package | |
 | `typescript` | 7.0.2 | type-checking; erasable syntax only | |
+| `@types/node`, `@types/react`, `@types/react-dom` | 26.6.5, 19.3.0, 19.3.0 | the types of Node for the rows of 8.4 that have them, and of React for `src/app/` | Types only |
 | `@webgpu/types` | 0.1.74 | the WebGPU types of every tsconfig (8.4) | Types only |
 | `webgpu` | 0.6.2 | the headless device (1.5) | Never bundled into the application |
 | `fast-png` | 8.0.0 | decoding PNG in `src/core/io/` (`export-unreal.md` 4.7) | Runs in the CPU worker. On the `import-src` allow-list of `testing.md` section 4 |
@@ -2523,7 +2829,7 @@ src/
                                  the kernel system (engine.md section 3): field.ts kernel.ts lib.ts uniforms.ts bindings.ts
                                  generate.ts pipelines.ts run.ts defaults.ts lut.ts hash.ts errors.ts seal.ts
                                  shape.ts scan.ts wgsl-names.ts
-    wgsl/                        stdlib.ts hash.ts noise.ts (engine.md 3.8, 3.9)
+    wgsl/                        stdlib.ts hash.ts noise.ts convert.ts (engine.md 3.8, 3.9)
     ops/                         index.ts kernels.ts types.ts and one file per shared operation (engine.md section 5)
     eval/                        evaluator.ts plan.ts keys.ts cache.ts context.ts errors.ts events.ts thumbnails.ts
                                  convert.ts stats.ts handles.ts progress.ts hooks.ts parts.ts service.ts
@@ -2540,15 +2846,16 @@ src/
     node/                        gpu.ts files.ts cpu.ts cpu-worker.ts
     electron/
       ipc.ts                     PlatformApi and the channel list
-      main/                      main.ts launch.ts switches.ts window.ts menu.ts preferences.ts files.ts
+      main/                      main.ts launch.ts switches.ts window.ts menu.ts preferences.ts files.ts open.ts
       preload/                   preload.ts
       worker/                    engine-worker.ts cpu-worker.ts cpu.ts cpu-queue.ts
   app/
     main.tsx  registry.ts  platform.ts
     state/                       doc-store.ts engine-store.ts ui-store.ts
     engine/                      client.ts thumbnails.ts
-    ui/                          shared controls: scrub field, buttons, popover wrappers; types.ts (PanelDef, the types of 8.8);
-                                 app.tsx (useApp, useCommandContext); index.ts, what a panel imports
+    ui/                          shared controls: scrub field, search field, buttons, popover wrappers; types.ts (PanelDef, the
+                                 types of 8.8); app.tsx (useApp, useCommandContext); add-node.ts (8.7 rule 8); node-text.ts
+                                 (8.7 rule 9); index.ts, what a panel imports
     shell/                       frame, docking, menu, palette, keys, status bar, theme.css
     panels/
       graph/  viewport/  inspector/  library/  build/

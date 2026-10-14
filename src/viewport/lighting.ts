@@ -3,7 +3,8 @@
 // progressively: at once on a coarse level, so that a change of the terrain or of the sun is answered in the
 // frame that shows it, then on the full grid over the following frames, a bounded share of work per frame (rule 5).
 // Where the device has a clock (timestamp-query) that share is what its passes were measured to do in 4 ms; where
-// it has none, a number of texture loads that was measured on one card.
+// it has none, it begins as a number of texture loads that was measured on one card and follows the time the
+// frames that spent it took on this one, from their submission to the GPU's end of them (`nextBakeLoads`).
 
 import { DEG } from './camera.ts';
 import { SUN_DISC } from './atmosphere.ts';
@@ -27,7 +28,27 @@ export const BAKE_LOADS_PER_FRAME = 90e6;
  * the preview slice target of runtime.md 3.5; and the least and the most loads that may come to.
  */
 const BAKE_TARGET_MS = 4;
-const BAKE_LOADS_MIN = 20e6, BAKE_LOADS_MAX = 1500e6;
+export const BAKE_LOADS_MIN = 20e6, BAKE_LOADS_MAX = 1500e6;
+/**
+ * Without the device's clock: how long a frame that refines may take from its submission until the GPU has done
+ * it, in milliseconds. That is the whole frame, the picture with the baking, and the wait for whatever the engine
+ * had on the queue before it: the preview slice target of runtime.md 3.5.
+ */
+export const WALL_TARGET_MS = 8;
+
+/**
+ * The loads the next frame may spend on refining, after one that was given `loads` took `ms` by the wall clock.
+ * Fewer at once when it took too long, in proportion and at most by half: a slow adapter, or an engine at work
+ * on the same queue. More by degrees when it was short, and only when it `used` its share: a frame that had
+ * little left to do says nothing of what a full one costs.
+ */
+export function nextBakeLoads(loads: number, ms: number, used: boolean): number {
+  if (!Number.isFinite(ms) || ms < 0) return loads;
+  let next = loads;
+  if (ms > WALL_TARGET_MS) next = loads * Math.max(0.5, WALL_TARGET_MS / ms);
+  else if (used && ms < 0.6 * WALL_TARGET_MS) next = loads * 1.15;
+  return Math.min(BAKE_LOADS_MAX, Math.max(BAKE_LOADS_MIN, next));
+}
 const UNIFORM_SLOTS = 512;
 const UNIFORM_FLOATS = 16;
 const STEEPEST = 1e6;
@@ -192,8 +213,14 @@ export function createLighting(opts: {
   let reading = false;
   /** Loads per millisecond of each kind of pass, as measured; 0: not measured yet. */
   const rates: Record<Kind, number> = { copy: 0, shadow: 0, occlusion: 0 };
+  /** Without a clock: the loads a frame may spend, as the wall clock has set them; null: not measured yet, the budget given. */
+  let wall: number | null = null;
+  /** The frame last encoded, for the wall clock: whether it only refined, and how much of its share it used. */
+  let last = { refined: false, share: 0, given: 0 };
+  /** Frames that were submitted and whose end the GPU has not said yet. */
+  let outstanding = 0;
   /** The loads of a kind a frame may spend: what its measured rate does in the target time, or the budget given. */
-  const loadsFor = (kind: Kind, given: number): number => (rates[kind] > 0 ? Math.min(BAKE_LOADS_MAX, Math.max(BAKE_LOADS_MIN, rates[kind] * BAKE_TARGET_MS)) : given);
+  const loadsFor = (kind: Kind, given: number): number => (rates[kind] > 0 ? Math.min(BAKE_LOADS_MAX, Math.max(BAKE_LOADS_MIN, rates[kind] * BAKE_TARGET_MS)) : wall ?? given);
   let lastBudget = 0;
 
   /** One full-target pass. `extent` is the square written, from the origin; `rows` narrows it to a band. */
@@ -367,6 +394,8 @@ export function createLighting(opts: {
         }
         batch.push(task);
       }
+      // A frame that had to show a change ran what the change needed, whatever it cost: it says nothing of a share.
+      last = { refined: immediate === 0 && passes > 0, share: spent, given };
       immediate = Math.max(0, immediate - batch.length);
       used = 0;
       timing = clock && !reading && timed === null && kind !== null && !mixed ? { last: passes - 1 } : null;
@@ -382,6 +411,22 @@ export function createLighting(opts: {
     },
 
     collect() {
+      if (!clock && !destroyed) {
+        // No clock on the device: the wall clock, from here, where the frame has just been submitted, to the GPU's
+        // end of it. Every frame is watched, and one sets the share that did nothing but refine and was submitted
+        // when no frame before it was still being drawn: the time of any other is not its own. The renderer asks
+        // for the next frame of refinement when this one's end is known, so that is nearly every one.
+        const { refined, share, given } = last;
+        const alone = outstanding === 0;
+        const began = performance.now();
+        outstanding++;
+        device.queue.onSubmittedWorkDone().then(() => {
+          outstanding--;
+          if (alone && refined && !destroyed) wall = nextBakeLoads(wall ?? given, performance.now() - began, share >= 0.5);
+        }, () => {
+          outstanding--;
+        });
+      }
       if (!clock || timed === null || reading || destroyed) return;
       const { loads, kind } = timed;
       timed = null;

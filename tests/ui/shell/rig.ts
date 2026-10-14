@@ -152,6 +152,31 @@ export async function docked(app: AppDriver): Promise<void> {
   await app.waitFor(`document.querySelectorAll('.dv-tab').length === 5 && orogenTest.shell.layout() !== null`, PAGE_BACKSTOP_MS);
 }
 
+export type PanelName = 'graph' | 'viewport' | 'inspector' | 'library' | 'build';
+
+/**
+ * Gives the group of a panel a width, a height or both through the dock, as dragging its dividers does, and waits
+ * until the panel's element has followed. This is how a test makes a panel narrow, low or tall (testing.md 8.5): a
+ * window that was never shown cannot be resized, and `window.resizeTo` there ends the GPU process. The dock holds
+ * every group to its least (220 by 100), so what is returned is the size the group got: the element's.
+ * The panel must be the tab in front of its group.
+ */
+export async function panelSize(app: AppDriver, panel: PanelName, size: { readonly width?: number; readonly height?: number }): Promise<{ width: number; height: number }> {
+  await app.eval(`void orogenTest.shell.dock.setSize(${quote(panel)}, ${JSON.stringify(size)})`);
+  // The element follows the dock's own size a moment later; under its strip of tabs it is some 26 pixels lower than its group.
+  await app.waitFor(`(() => {
+    const held = orogenTest.shell.dock.size(${quote(panel)});
+    const element = document.querySelector('[data-panel="${panel}"]');
+    if (!held || !element) return false;
+    const box = element.getBoundingClientRect();
+    return Math.abs(box.width - held.width) <= 2 && box.height <= held.height && box.height >= held.height - 40;
+  })()`, PAGE_BACKSTOP_MS);
+  return app.eval<{ width: number; height: number }>(`(() => { const box = document.querySelector('[data-panel="${panel}"]').getBoundingClientRect(); return { width: Math.round(box.width), height: Math.round(box.height) }; })()`);
+}
+
+/** Gives a panel all the height its column has: the other groups of the column are left at their least. */
+export const tallest = (app: AppDriver, panel: PanelName): Promise<{ width: number; height: number }> => panelSize(app, panel, { height: 100_000 });
+
 /**
  * A capture of the whole window, written for a person (testing.md 8.5 rule 1); no test looks at its pixels. A
  * window that was never shown draws about once a second, later still in its first seconds, and what

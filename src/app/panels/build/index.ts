@@ -83,7 +83,8 @@ export const panel: PanelDef = {
   title: 'Build',
   component: BuildPanel,
   keepMounted: false,
-  placement: { relativeTo: 'inspector', direction: 'within' },
+  // A tab beside the library, under the inspector: a node selected from a problem shows its parameters above.
+  placement: { relativeTo: 'library', direction: 'within' },
   commands,
   keys: [],
   menu: [

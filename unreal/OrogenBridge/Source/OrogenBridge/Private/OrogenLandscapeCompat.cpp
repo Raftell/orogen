@@ -42,7 +42,13 @@ DEFINE_LOG_CATEGORY_STATIC(LogOrogenBridge, Log, All);
 
 namespace
 {
-	/** The blend method of a manifest layer. [E] the three enumerators, and that PremultipliedAlphaBlending is Advanced Weight Blending. */
+	/**
+	 * The blend method of a manifest layer.
+	 * [E] PremultipliedAlphaBlending, read on the C++ page of ULandscapeLayerInfoObject, and that it is Advanced Weight Blending.
+	 * [U] None and FinalWeightBlending: inferred from the Python enum's NONE and FINAL_WEIGHT_BLENDING, which was
+	 *     read (docs/research/unreal-landscape.md, row 15); the C++ enum's own page was not. If either does not
+	 *     compile, the enum's declaration in LandscapeLayerInfoObject.h gives the names.
+	 */
 	ELandscapeTargetLayerBlendMethod BlendMethodOf(EOrogenLayerBlend Blend)
 	{
 		switch (Blend)

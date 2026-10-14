@@ -102,6 +102,16 @@ function parentOf(pid: number): number {
  * no other. Found through /proc, so on Linux only.
  */
 export function gpuProcesses(): number[] {
+  return processesOfType('gpu-process');
+}
+
+/** The processes of the pages of the applications this test launched: one per application. Linux only. */
+export function rendererProcesses(): number[] {
+  return processesOfType('renderer');
+}
+
+function processesOfType(type: string): number[] {
+  const wanted = new RegExp(`(^|[\\0 ])--type=${type}([\\0 ]|$)`);
   const found: number[] = [];
   for (const name of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(name)) continue;
@@ -112,7 +122,7 @@ export function gpuProcesses(): number[] {
       continue;
     }
     // Chromium's child processes rewrite their command line: its arguments are divided by spaces or by NUL.
-    if (!/(^|[\0 ])--type=gpu-process([\0 ]|$)/.test(command)) continue;
+    if (!wanted.test(command)) continue;
     let pid = Number(name);
     for (let depth = 0; depth < ANCESTORS_MAX && pid > 1; depth++) {
       pid = parentOf(pid);

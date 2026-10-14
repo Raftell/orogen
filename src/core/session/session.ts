@@ -4,7 +4,7 @@ import type { EvalEvent } from '../eval/events.ts';
 import type { EvalTarget, EvaluateResult, TextureRef } from '../eval/evaluator.ts';
 import { buildPlan, type EvalPlan } from '../eval/plan.ts';
 import { nodeWeights } from '../eval/progress.ts';
-import type { BuildEvent, BuildResult } from '../export-decl.ts';
+import type { BuildEvent, BuildPlan, BuildResult } from '../export-decl.ts';
 import { DeviceLostError, onUncapturedError, type GpuContext, type GpuLostInfo } from '../gpu/device.ts';
 import type { AnyFieldHandle, FieldHandle } from '../gpu/pool.ts';
 import { own, type GraphDoc, type PortRef } from '../graph/doc.ts';
@@ -38,6 +38,7 @@ export interface EngineSession {
   inspect(ref: PortRef): Promise<FieldStats | null>;
   build(request: BuildRequest): Promise<BuildResult>;
   cancelBuild(): void;
+  plan(doc: GraphDoc): Promise<BuildPlan>;  // 7.6: what a build of `doc` would write, without building
   setPreferences(prefs: EnginePreferences): void;
   retryDevice(): void;
   subscribe(listener: (e: EngineEvent) => void): () => void;
@@ -65,6 +66,8 @@ interface Run {
   readonly done: string[];
   /** The nodes the evaluation left unused (5.3 step 5): nothing of theirs was at hand. */
   readonly unused: Set<string>;
+  /** The nodes whose evaluate() ran in this evaluation. */
+  readonly ran: string[];
   /** The device it runs on. */
   readonly gpu: GpuContext;
 }
@@ -90,6 +93,10 @@ const THUMBNAILS_REMEMBERED = 16384;
 const STATUSES: readonly BuildResult['status'][] = ['ok', 'errors', 'aborted', 'device-lost'];
 const DISPOSED = 'The engine session is disposed';
 
+/** A view target of an evaluation under way: its place among the targets, for staged delivery (5.2). */
+const partAt = (view: ScheduledRequest['view'], index: number): 'height' | 'overlay' | null =>
+  (view?.height?.index === index ? 'height' : view?.overlay?.index === index ? 'overlay' : null);
+
 const samePort = (a: PortRef, b: PortRef): boolean => a.node === b.node && a.port === b.port;
 
 function remember(map: Map<string, string>, nodeId: string, key: string): void {
@@ -113,6 +120,7 @@ export function createSession(opts: {
   readonly reopenGpu: () => Promise<GpuContext>;                         // a new openGpu call, for recovery (7.8)
   readonly createFiles: (projectPath: string | null) => FileSource;
   readonly build: (engine: Engine, opts: SessionBuildOptions) => Promise<BuildResult>;   // 7.6; never rejects for a failed build
+  readonly plan: (engine: Engine, doc: GraphDoc) => BuildPlan;           // 7.6: planBuild of src/export/, which core code may not import
   readonly renderer: ViewportRenderer | null;                            // null: no viewport; `viewport` then ignores calls and `pick` resolves null
 }): EngineSession {
   const { engine } = opts;
@@ -169,6 +177,20 @@ export function createSession(opts: {
   const offered = new Map<string, string>();
   /** Nodes to enter in `offered` once the keys of their generation are known. */
   let offersWaiting: { readonly generation: number; readonly ids: string[] } | null = null;
+  /**
+   * Node id → the contentKey with which the node was left out of the idle evaluation at the thumbnail resolution,
+   * as too slow to run there or as a reader of such a node (7.3 rule 9). It is tried at the preview resolution (rule 10).
+   */
+  const deferred = new Map<string, string>();
+  /**
+   * Node id → the contentKey with which it was left out at the preview resolution as well: a slow node it
+   * reads is not cached there. Forgotten when a view evaluation has run a slow node, since the cache holds it then.
+   */
+  const leftOut = new Map<string, string>();
+  /** The renderer's reservation changed in this task: one `memory` event follows it (7.7). */
+  let memoryDue = false;
+  /** The renderer is being handed a device: what it registers then is in the `memory` event that follows `device-ready`. */
+  let initialising = false;
 
   // ---- the device (7.8) -----------------------------------------------------------------------------------------------
   let current: GpuContext = engine.gpu;
@@ -192,6 +214,42 @@ export function createSession(opts: {
   function emitMemory(): void {
     if (disposed) return;
     emit({ type: 'memory', ...engine.memory() });
+  }
+
+  function initRenderer(gpu: GpuContext): void {
+    initialising = true;
+    try {
+      binder.init(gpu, ledger);
+    } finally {
+      initialising = false;
+    }
+  }
+
+  /**
+   * What the renderer registers with (7.5 rule 4): Engine.reserve, watched. The renderer reserves in the frames
+   * it draws, long after the evaluation whose `memory` event was the last, so the session says when it did.
+   */
+  const ledger = {
+    reserve(bytes: number, label: string): { release(): void } {
+      const reservation = engine.reserve(bytes, label);
+      reservedChanged();
+      return {
+        release(): void {
+          reservation.release();
+          reservedChanged();
+        },
+      };
+    },
+  };
+
+  function reservedChanged(): void {
+    if (memoryDue || initialising || disposed) return;
+    memoryDue = true;
+    // In a microtask: a frame that drops one set of textures and makes another is one change.
+    queueMicrotask(() => {
+      memoryDue = false;
+      guarded(emitMemory);
+    });
   }
 
   /** For what runs in a continuation or a callback, where a throw would reach nobody: it is logged instead. */
@@ -340,21 +398,42 @@ export function createSession(opts: {
     })();
   }
 
-  /** 7.3 rule 9: the requested nodes whose last delivered thumbnail is stale and that an idle evaluation can help. */
-  function staleThumbnails(): string[] {
-    if (!keys || keysGeneration !== generation) return [];
+  /**
+   * 7.3 rules 9 and 10: the requested nodes whose last delivered thumbnail is stale and that an idle evaluation
+   * can help, at the thumbnail resolution and, for those left out there, at the preview resolution.
+   */
+  function staleThumbnails(): { readonly stale: string[]; readonly atPreview: string[] } {
     const stale: string[] = [];
+    const atPreview: string[] = [];
+    if (!keys || keysGeneration !== generation) return { stale, atPreview };
     for (const id of requested) {
       const key = keys.get(id);
-      if (key !== undefined && delivered.get(id) !== key && offered.get(id) !== key) stale.push(id);
+      if (key === undefined || delivered.get(id) === key || offered.get(id) === key || leftOut.get(id) === key) continue;
+      (deferred.get(id) === key ? atPreview : stale).push(id);
     }
-    return stale;
+    return { stale, atPreview };
+  }
+
+  /** Whether a node that has run is one rule 9 would not run for a thumbnail alone at `resolution`: its last timing, scaled by the texels (5.10). */
+  function slowAt(nodeId: string, resolution: number): boolean {
+    const timing = engine.lastTiming(nodeId);
+    return timing !== null && timing.resolution > 0 && timing.wallMs * (resolution / timing.resolution) ** 2 > THUMBNAIL_NODE_LIMIT_MS;
+  }
+
+  /** Enters the nodes in `map` with the keys they have, when those are the keys of generation `of`. */
+  function note(map: Map<string, string>, of: number, ids: Iterable<string>): void {
+    if (of !== generation || !keys || keysGeneration !== of) return;
+    for (const id of ids) {
+      const key = keys.get(id);
+      if (key !== undefined) remember(map, id, key);
+    }
   }
 
   /**
    * 7.3 rule 9, for a thumbnail evaluation that is about to run its first node: a node predicted above the limit
    * that is not cached is left out, and with it every node that reads it, because evaluating those would run it.
-   * The evaluation is aborted before anything has run; the next one is made without them.
+   * The evaluation is aborted before anything has run; the next one is made without them. What is left out at
+   * the thumbnail resolution is tried at the preview resolution, where a view evaluation has cached the slow node.
    */
   function leaveOutSlow(run: Run, start: Extract<EvalEvent, { type: 'eval-start' }>): void {
     const { request } = run;
@@ -373,7 +452,8 @@ export function createSession(opts: {
       if (slow || node.inputs.some((input) => input.from !== null && left.has(input.from.node))) left.add(node.nodeId);
     }
     if (left.size === 0) return;
-    offer(run.generation, left);
+    const last = request.at === 'preview' || request.resolution === previewResolution(request.doc.settings);
+    note(last ? leftOut : deferred, run.generation, left);
     run.controller.abort();
   }
 
@@ -422,7 +502,7 @@ export function createSession(opts: {
       return;
     }
     applyBudget();
-    const run: Run = { request, requestId: ++requestId, controller: new AbortController(), generation, done: [], unused: new Set(), gpu: current };
+    const run: Run = { request, requestId: ++requestId, controller: new AbortController(), generation, done: [], unused: new Set(), ran: [], gpu: current };
     running = run;
     lostNode = null;
     emit({ type: 'request-start', requestId: run.requestId, revision: request.revision, purpose: request.purpose });
@@ -433,6 +513,9 @@ export function createSession(opts: {
       overlay: view.overlay ? { ref: view.overlay.ref, as: view.overlay.as, opacity: view.overlay.opacity } : null,
       settings: request.doc.settings,
     } : null;
+    // The view targets are delivered as they are published (5.2, staged delivery), and the session takes a handle
+    // of its own on each: the result of a node whose loans were on screen is drawn from then on (7.5 rule 2).
+    const held: (AnyFieldHandle | null)[] = request.targets.map(() => null);
     let result: EvaluateResult | null = null;
     try {
       result = await engine.evaluate(request.doc, request.targets, {
@@ -442,12 +525,24 @@ export function createSession(opts: {
           track(e);
           if (e.type === 'eval-start') for (const node of e.plan) if (node.state === 'unused') run.unused.add(node.nodeId);
           if (e.type === 'node-done' && !run.unused.has(e.nodeId)) run.done.push(e.nodeId);
+          if (e.type === 'node-done' && !e.cached) run.ran.push(e.nodeId);
           emit(e);
           if (thumbnails && e.type === 'eval-start' && !run.controller.signal.aborted) leaveOutSlow(run, e);
         },
         ...(loanView ? {
           onLoans: (nodeId: string, loans: Readonly<Record<string, TextureRef>> | null) => {
             if (!lost && !disposed) binder.lend(loanView, nodeId, loans);
+          },
+          // It must not reject: that would stop the evaluation (5.2).
+          onTarget: async (index: number, field: AnyFieldHandle | null) => {
+            if (!field || lost || disposed) return;
+            try {
+              held[index] = field.retain();
+              const part = partAt(view, index);
+              if (part) binder.deliver(loanView, part, field);
+            } catch (thrown) {
+              if (!(thrown instanceof DeviceLostError)) console.error('[orogen] a view target could not be held', thrown);
+            }
           },
         } : {}),
       });
@@ -459,9 +554,16 @@ export function createSession(opts: {
     runningNode = null;
 
     const completed = result !== null && (result.status === 'ok' || result.status === 'errors');
-    const fields = result?.fields ?? [];
+    const fields = loanView ? held : result?.fields ?? [];
     const delivers = !thumbnails && completed && !disposed && !lost && fields.length > 0 && fields.every((field) => field !== null);
-    if (!delivers || !show(run, fields as AnyFieldHandle[])) releaseAll(fields);
+    if (!delivers || !show(run, fields as AnyFieldHandle[])) {
+      releaseAll(fields);
+      // 5.11 rule 5: without a result the viewport shows what it showed before.
+      if (loanView && !lost && !disposed) guarded(() => binder.revert());
+    }
+    // A slow node the view evaluation ran is cached at the preview resolution now: a thumbnail that waited for
+    // it can be made (7.3 rule 10). After any other evaluation the try would end as the last one did.
+    if (request.purpose === 'view' && leftOut.size > 0 && run.ran.some((id) => slowAt(id, request.resolution))) leftOut.clear();
 
     offer(run.generation, run.done);
     // A node that failed for its thumbnail fails the same way next time, and a call that was refused is refused again.
@@ -524,7 +626,8 @@ export function createSession(opts: {
       trimDue = null;
       return () => trim(keep);
     }
-    scheduler.setThumbnails(staleThumbnails());
+    const { stale, atPreview } = staleThumbnails();
+    scheduler.setThumbnails(stale, atPreview);
     const request = scheduler.next();
     return request ? () => evaluate(request) : null;
   }
@@ -618,9 +721,11 @@ export function createSession(opts: {
     // Rule 1: the renderer draws nothing, and the handles of the lost device are dropped, not released.
     guarded(() => binder.lost());
     shown = null;
-    // A thumbnail that was made and not yet read back went with the device.
+    // A thumbnail that was made and not yet read back went with the device, and so did the cache.
     offered.clear();
     offersWaiting = null;
+    deferred.clear();
+    leftOut.clear();
     scheduler.setDeviceLost(true);
     for (const job of inspections.splice(0)) job.resolve(null);
     void recover(recovery.lost());
@@ -649,7 +754,7 @@ export function createSession(opts: {
     try {
       await engine.replaceDevice(gpu);
       if (disposed) return;
-      if (!gpu.lost) binder.init(gpu, engine);
+      if (!gpu.lost) initRenderer(gpu);
     } catch (thrown) {
       if (disposed) return;
       if (!gpu.lost) {
@@ -673,7 +778,7 @@ export function createSession(opts: {
   }
 
   // ---- start ---------------------------------------------------------------------------------------------------------------
-  binder.init(engine.gpu, engine);
+  initRenderer(engine.gpu);
   let unwatchGpu = watchGpu(current);
   // 7.7: a slice over the hard ceiling is an engine-error that is not fatal (3.5).
   const offOverrun = engine.onOverrun((slice) => emit({
@@ -778,6 +883,20 @@ export function createSession(opts: {
 
     cancelBuild() {
       building?.controller.abort();
+    },
+
+    plan(doc) {
+      if (disposed) return Promise.reject(new Error(DISPOSED));
+      if (typeof doc !== 'object' || doc === null || typeof doc.settings !== 'object' || doc.settings === null || typeof doc.nodes !== 'object' || doc.nodes === null) {
+        return Promise.reject(new TypeError('plan: the argument is a GraphDoc'));
+      }
+      if (typeof opts.plan !== 'function') return Promise.reject(new Error('This session was given no planner'));
+      // Pure and synchronous (export-unreal.md 3.1): it waits for nothing, and nothing waits for it.
+      try {
+        return Promise.resolve(opts.plan(engine, doc));
+      } catch (thrown) {
+        return Promise.reject(thrown);
+      }
     },
 
     setPreferences(next) {

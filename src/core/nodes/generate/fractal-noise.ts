@@ -76,7 +76,7 @@ export default defineNode({
   title: 'Fractal Noise',
   category: 'generate',
   description: 'Generates rolling, ridged or billowing terrain from layers of noise, each finer than the one before.',
-  keywords: ['perlin', 'simplex', 'fbm', 'noise', 'ridged', 'billow', 'turbulence', 'multifractal', 'warp'],
+  keywords: ['perlin', 'simplex', 'fbm', 'noise', 'ridged', 'billow', 'turbulence', 'multifractal', 'warp', 'hills'],
   inputs: [],
   outputs: [{ name: 'out', type: 'field' }],
   params: [

@@ -7,14 +7,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { moveNodes, outputKind, parseDoc, setNodeFlags, setParam, setView } from '../../../../src/core/runtime.ts';
+import { inputSources, inputsOf, moveNodes, outputKind, parseDoc, portLabel, setNodeFlags, setParam, setView } from '../../../../src/core/runtime.ts';
 import {
   edgeFlowId, groupFlowId, handleId, nodeFlowId, parseFlowId, parseHandleId, rectOfNode, wireEnds,
   type FlowEdge, type FlowNode, type GroupView, type NodeView,
 } from '../../../../src/app/panels/graph/flow.ts';
 import { cycleNodes as coreCycleNodes } from '../../../../src/core/graph/validate.ts';
 import { HANDLE_SIZE, NODE_WIDTH, THUMBNAIL_SIZE, nodeHeight, nodeWidth, portColumn, portY } from '../../../../src/app/panels/graph/geometry.ts';
-import { cycleNodes, inputSources, outputTones, portKey, portLabel, inputsOf } from '../../../../src/app/panels/graph/model.ts';
+import { cycleNodes, outputTones, portKey } from '../../../../src/app/panels/graph/model.ts';
 import { setSelection } from '../../../../src/app/state/ui-store.ts';
 import { bench, different, edgeInto, REGISTRY, same } from './_graph.ts';
 

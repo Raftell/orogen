@@ -93,6 +93,14 @@ const orbitOf = async (app: AppDriver): Promise<{ yaw: number; pitch: number; di
   assert.equal(held.kind, 'orbit');
   return held.kind === 'orbit' ? { yaw: held.yaw, pitch: held.pitch, distance: held.distance } : { yaw: NaN, pitch: NaN, distance: NaN };
 };
+type Orbit = { yaw: number; pitch: number; distance: number };
+/** A key on the canvas, and the camera before and after it, read in one turn of the page: nothing else moves it between the two. */
+const canvasKey = async (app: AppDriver, code: string): Promise<[Orbit, Orbit]> => {
+  const [before, after] = await app.eval<[Orbit & { kind: string }, Orbit & { kind: string }]>(
+    `(() => { const before = viewportTest.camera(); shellTest.key(${quote(code)}, {}, '[data-viewport="canvas"]'); return [before, viewportTest.camera()]; })()`);
+  assert.ok(before.kind === 'orbit' && after.kind === 'orbit');
+  return [before, after];
+};
 const toolbarValue = (app: AppDriver, label: string): Promise<string | null> => app.eval<string | null>(`document.querySelector('[data-viewport="toolbar"] [aria-label="${label}"]')?.textContent ?? null`);
 const numberOf = (app: AppDriver, selector: string): Promise<number> => app.eval<number>(`Number(document.querySelector(${quote(selector)}).getAttribute('data-value'))`);
 
@@ -102,7 +110,7 @@ test('gate: every item of the View, Engine, Viewport, Graph, Inspector and Libra
     await app.waitFor(`orogenTest.ctx.doc.getState().path !== null`, PAGE_BACKSTOP_MS);
     await settled(app);
     await graphSettled(app);
-    assert.deepEqual(await app.eval<string[]>(`shellTest.texts('.og-menubar-item')`), ['File', 'Edit', 'View', 'Engine', 'Viewport', 'Graph', 'Inspector', 'Library']);
+    assert.deepEqual(await app.eval<string[]>(`shellTest.texts('.og-menubar-item')`), ['File', 'Edit', 'View', 'Engine', 'Viewport', 'Graph', 'Inspector', 'Library', 'Help']);
     t.diagnostic(`nodes: ${JSON.stringify(ids)}`);
     /** What was chosen, to hold against what the menus list at the end. */
     const chosen = new Set<string>();
@@ -346,8 +354,9 @@ test('gate: every item of the View, Engine, Viewport, Graph, Inspector and Libra
     await settled(app);
 
     // ================= Library =================
-    // The library is behind the inspector: its commands bring it to the front.
-    assert.equal(await app.eval<boolean>(`document.querySelector('[data-panel="library"]') === null`), true);
+    // The library is behind the build panel: its commands bring it to the front.
+    await showTab(app, 'Build');
+    await app.waitFor(`document.querySelector('[data-panel="library"]') === null`, PAGE_BACKSTOP_MS);
     await pick('Library', 'library.showNodes');
     await appears(app, '[data-panel="library"] [data-library="nodes"]');
     assert.equal(await focusedPanel(app), 'library');
@@ -377,8 +386,9 @@ test('gate: every item of the View, Engine, Viewport, Graph, Inspector and Libra
     await capture(app, '01-library-examples');
     // The project has changes: the example opens after the question, answered "Don't Save".
     await pick('Library', 'library.openExample');
-    await appears(app, '[data-dialog="library-unsaved"]');
-    await press(app, '[data-dialog="library-unsaved"] [data-action="discard"]');
+    // The shell's own question, as File > Open asks it: the example is opened by the project service.
+    await appears(app, '[data-dialog="unsaved"]');
+    await press(app, '[data-dialog="unsaved"] [data-action="discard"]');
     await app.waitFor(`orogenTest.ctx.doc.getState().path === null && Object.keys(orogenTest.ctx.doc.getState().doc.nodes).length === 3`, PAGE_BACKSTOP_MS);
     await settled(app, 120_000);
 
@@ -416,9 +426,14 @@ test('gate: every item of the View, Engine, Viewport, Graph, Inspector and Libra
     await app.eval(`void [...document.querySelectorAll('[data-ui="notice"] [aria-label="Dismiss"]')].forEach((button) => shellTest.press(button))`);
     // Restart Engine: another worker, another canvas, and the project is shown again.
     await app.eval(`void (window.gateCanvas = document.querySelector('[data-viewport="canvas"] canvas'))`);
+    const saidOfTheBuild = await text(app, '[data-build="status-line"]');
+    assert.equal(saidOfTheBuild, 'Build cancelled');
     await pick('Engine', 'engine.restart');
     await app.waitFor(`orogenTest.ctx.engineState.getState().device.state === 'ready' && document.querySelector('[data-viewport="canvas"] canvas') !== window.gateCanvas`, EVALUATION_BACKSTOP_MS);
     await settled(app, 240_000);
+    // What the last build did is still said: the engine went, the folder and its build did not.
+    assert.equal(await text(app, '[data-build="status-line"]'), saidOfTheBuild);
+    assert.equal(await app.eval<string | null>(`orogenTest.ctx.engineState.getState().build.lastStatus`), 'aborted');
     await capture(app, '02-after-the-menus');
 
     // ---- every item of the six menus was chosen, but the one that needs a device that failed ----
@@ -549,14 +564,16 @@ test('gate: every default key of runtime.md 8.8 runs its command in its scope, a
     assert.ok(Math.abs(home.yaw - first.yaw) < 0.01 && Math.abs(home.pitch - first.pitch) < 0.01, `Home resets the view: ${JSON.stringify(home)}`);
     assert.deepEqual((await docOf(app)).ui.graphViewport, graphView, 'Home in the viewport leaves the graph alone');
     // The canvas's own keys, which are no commands: the arrows turn the camera, plus and minus dolly.
-    await keyPress(app, 'ArrowLeft', {}, '[data-viewport="canvas"]');
-    const turned = await orbitOf(app);
-    assert.ok(Math.abs(turned.yaw - home.yaw) > 1 && Math.abs(turned.distance - home.distance) < 1e-6, `an arrow turns the camera: ${JSON.stringify(turned)}`);
-    await keyPress(app, 'Equal', {}, '[data-viewport="canvas"]');
-    const nearer = await orbitOf(app);
-    assert.ok(nearer.distance < turned.distance, 'plus comes nearer');
-    await keyPress(app, 'Minus', {}, '[data-viewport="canvas"]');
-    assert.ok(Math.abs((await orbitOf(app)).distance - turned.distance) < 1e-6 * turned.distance + 1e-6, 'and minus goes back');
+    // Home frames twice, the second time around the heights the engine names a moment later (while no hand has
+    // moved the camera): a key is held against the camera of the same turn of the page, not against `home`.
+    const [atHome, turned] = await canvasKey(app, 'ArrowLeft');
+    assert.ok(Math.abs(atHome.yaw - home.yaw) < 0.01 && Math.abs(atHome.pitch - home.pitch) < 0.01, 'the second framing keeps the direction');
+    assert.ok(Math.abs(turned.yaw - atHome.yaw) > 1 && Math.abs(turned.distance - atHome.distance) < 1e-6, `an arrow turns the camera: ${JSON.stringify([atHome, turned])}`);
+    const [before, nearer] = await canvasKey(app, 'Equal');
+    assert.ok(Math.abs(before.distance - turned.distance) < 1e-6, `a camera a hand has turned is framed no more: ${JSON.stringify([turned, before])}`);
+    assert.ok(nearer.distance < before.distance, 'plus comes nearer');
+    const [, back] = await canvasKey(app, 'Minus');
+    assert.ok(Math.abs(back.distance - turned.distance) < 1e-6 * turned.distance + 1e-6, 'and minus goes back');
     // The graph's keys are not the viewport's: B, G, Delete, Tab, F2 and Mod+D change nothing here.
     const held = serializeDoc(await docOf(app));
     for (const [code, mods] of [['KeyB', {}], ['KeyG', {}], ['Delete', {}], ['Backspace', {}], ['F2', {}], ['KeyD', { ctrl: true }], ['KeyG', { ctrl: true }], ['Tab', {}]] as const) await keyPress(app, code, mods);

@@ -8,7 +8,7 @@ import { BYTES_PER_TEXEL } from '../../../src/core/gpu/pool.ts';
 import type { ViewportContent } from '../../../src/core/runtime.ts';
 import { budgetBytes, budgetInForce, DEFAULT_PREFERENCES, MIN_FIELD_BYTES } from '../../../src/core/session/budget.ts';
 import { testGpu } from '../gpu/rig.ts';
-import { doc, endings, MIB, PREVIEW, RENDERER_BYTES, resetSlow, slow, startSession, within } from './rig.ts';
+import { doc, endings, MIB, PREVIEW, recordingRenderer, RENDERER_BYTES, resetSlow, slow, startSession, within } from './rig.ts';
 
 const gpu = await testGpu();
 
@@ -166,36 +166,40 @@ test('inspecting a draft neither keeps its transient entries nor drops them', as
   }
 });
 
-test('a loan of the viewed port is drawn while its node runs, and withdrawn before the node settles', async () => {
+test('a loan of the viewed port is drawn while its node runs, withdrawn before the node settles, and followed by the node\'s result', async () => {
   resetSlow();
   // Every iteration is a batch boundary, so the node lends at each one. Preview at 65.
   const t = await startSession({ hooks: { sliceTargetMs: 1e-6 } });
   const small = { buildResolution: 129, previewLevel: 1 };
   const lending = (value: number, view: object) => graph({ value, iterations: 6, lend: true }, view, small);
   try {
-    // 1. Nothing is shown yet: the loans, then nothing again when they are withdrawn, then the result.
+    // 1. Nothing is shown yet: the loans; nothing again when they are withdrawn; the node's result in their
+    // place as soon as it is published; then the result of the evaluation.
     t.session.setDocument(lending(0.25, { height: port('walk') }), 1);
     await t.next('view-updated');
     const first = contents(t.renderer.calls, 0);
     const result = first.at(-1)!;
-    assert.ok(first.length >= 4, `${first.length} contents: at least two loans, their withdrawal and the result`);
-    assert.equal(first.at(-2), null, 'the loans are withdrawn before the node settles');
-    for (const lent of first.slice(0, -2)) {
+    assert.ok(first.length >= 5, `${first.length} contents: at least two loans, their withdrawal, the node's result and the result`);
+    assert.equal(first.at(-3), null, 'the loans are withdrawn before the node settles: a step back to what was shown, which is nothing');
+    assert.deepEqual([first.at(-2)?.height?.view === result.height?.view, first.at(-2) === result, first.at(-2)?.overlay], [true, false, null], 'then the node\'s published result stands in');
+    for (const lent of first.slice(0, -3)) {
       assert.deepEqual([lent?.height?.kind, lent?.height?.width, lent?.overlay, lent?.terrainSize], ['field', 65, null, 4096]);
     }
     // The node's state alternates between two fields; whichever holds the latest is the one lent.
-    assert.equal(new Set(first.slice(0, -2).map((lent) => lent?.height?.view)).size, 2);
+    assert.equal(new Set(first.slice(0, -3).map((lent) => lent?.height?.view)).size, 2);
     assert.equal(t.of('node-preview').length > 0, true, 'the engine reported the previews');
 
-    // 2. With a result on screen: the loans stand in for it, and it comes back when they are withdrawn.
+    // 2. With a result on screen: the loans stand in for it; it comes back, the same object, when they are
+    // withdrawn (the renderer keeps its picture for that, 7.5 rule 2); the new result follows.
     let from = t.renderer.calls.length;
     t.session.setDocument(lending(0.5, { height: port('walk') }), 2);
     await t.next('view-updated');
     const second = contents(t.renderer.calls, from);
-    assert.ok(second.length >= 4);
-    assert.equal(second.at(-2)?.height?.view, result.height?.view, 'after the loans, what was shown before');
+    assert.ok(second.length >= 5);
+    assert.equal(second.at(-3), result, 'after the loans, the content that was shown before: the same object');
     assert.notEqual(second.at(-1)?.height?.view, result.height?.view);
-    for (const lent of second.slice(0, -2)) assert.notEqual(lent?.height?.view, result.height?.view);
+    assert.equal(second.at(-2)?.height?.view, second.at(-1)?.height?.view, 'the node\'s result is drawn before the evaluation has ended');
+    for (const lent of second.slice(0, -3)) assert.notEqual(lent?.height?.view, result.height?.view);
 
     // 3. The view names another node: its loans are not drawn. One switch, to the result.
     from = t.renderer.calls.length;
@@ -209,17 +213,22 @@ test('a loan of the viewed port is drawn while its node runs, and withdrawn befo
     await t.next('view-updated');
     assert.equal(contents(t.renderer.calls, from).length, 1);
 
-    // 5. As a heat overlay the loan is the kind asked for: it is drawn over the height that is on screen.
-    const shownHeight = t.renderer.content?.height?.view;
+    // 5. As a heat overlay the loan is the kind asked for: it is drawn over the height that is on screen. The
+    // height is `out`, which runs after the lending node: the node's result stays on screen meanwhile.
+    const shownBefore = t.renderer.content;
+    const shownHeight = shownBefore?.height?.view;
     from = t.renderer.calls.length;
     t.session.setDocument(lending(0.375, { height: port('out'), overlay: { ref: port('walk'), as: 'heat', opacity: 0.5 } }), 5);
     await t.next('view-updated');
     const fifth = contents(t.renderer.calls, from);
-    assert.ok(fifth.length >= 4);
-    for (const lent of fifth.slice(0, -2)) {
+    assert.ok(fifth.length >= 5);
+    assert.equal(fifth.at(-3), shownBefore, 'the step back when the loans end');
+    for (const lent of fifth.slice(0, -3).concat([fifth.at(-2)!])) {
       assert.deepEqual([lent?.overlay?.as, lent?.overlay?.opacity, lent?.overlay?.texture.kind], ['heat', 0.5, 'field']);
       assert.equal(lent?.height?.view, shownHeight, 'the other part stays what it was');
     }
+    assert.equal(fifth.at(-2)?.overlay?.texture.view, fifth.at(-1)?.overlay?.texture.view, 'the overlay drawn after the loans is the node\'s result');
+    assert.notEqual(fifth.at(-1)?.height?.view, shownHeight);
 
     // 6. An abort in the middle: the viewport shows what it showed before.
     const before = t.renderer.content;
@@ -232,6 +241,115 @@ test('a loan of the viewed port is drawn while its node runs, and withdrawn befo
     assert.ok(sixth.length >= 2, 'loans were shown before the abort');
     assert.deepEqual(sixth.at(-1), before);
     assert.equal(t.renderer.content?.overlay?.texture.view, before?.overlay?.texture.view);
+  } finally {
+    await t.dispose();
+  }
+});
+
+test('while the nodes after a lending node run, the viewport shows that node\'s result, not the earlier terrain', async () => {
+  resetSlow();
+  const t = await startSession({ hooks: { sliceTargetMs: 1e-6 } });
+  // level → walk (lends) → after (slow as well, told from walk by its iteration count); the view is walk with `after` over it.
+  const chain = (value: number) => doc({
+    level: { type: 'ref/constant', params: { value } },
+    walk: { type: 'ref/slow', params: { iterations: 6, lend: true }, inputs: { in: 'level.out' } },
+    after: { type: 'ref/slow', params: { iterations: 5 }, inputs: { in: 'walk.out' } },
+  }, { height: port('walk'), overlay: { ref: port('after'), as: 'heat', opacity: 0.5 } }, { buildResolution: 129, previewLevel: 1 });
+  /** What the renderer holds while `after` is in its loop; set from inside the node, behind the type checker's back. */
+  const seen: { during: ViewportContent | null | undefined; pause: boolean } = { during: undefined, pause: false };
+  slow.at = (i, ctx) => {
+    if (ctx.params.iterations !== 5 || i !== 2) return;
+    seen.during = t.renderer.content;
+    if (seen.pause) t.session.setPaused(true);
+  };
+  const duringOf = (): ViewportContent | null | undefined => seen.during;
+  try {
+    t.session.setDocument(chain(0.25), 1);
+    await t.next('view-updated');
+    await t.idle();
+    const earlier = t.renderer.content!;
+    const held = t.memory().pinnedBytes;
+    assert.equal(held, 2 * 65 * 65 * 4, 'the two parts of the shown result');
+
+    // 1. A new terrain: its loans, and from the moment the lending node has settled its result, with the earlier
+    // overlay still over it, until the whole evaluation is shown.
+    seen.during = undefined;
+    let from = t.renderer.calls.length;
+    t.session.setDocument(chain(0.5), 2);
+    await t.next('view-updated');
+    await t.idle();
+    const shown = t.renderer.content!;
+    const during = duringOf();
+    assert.ok(during, 'the node after the lending one ran');
+    assert.notEqual(during.height?.view, earlier.height?.view, 'not the earlier terrain');
+    assert.equal(during.height?.view, shown.height?.view, 'the lending node\'s own result');
+    assert.equal(during.overlay?.texture.view, earlier.overlay?.texture.view, 'the part no loan stood in for is still the earlier one');
+    assert.notEqual(shown.overlay?.texture.view, earlier.overlay?.texture.view);
+    const second = contents(t.renderer.calls, from);
+    assert.deepEqual([second.at(-3) === earlier, second.at(-2) === during, second.at(-1) === shown], [true, true, true], 'the step back, the node\'s result, the result');
+    assert.equal(t.memory().pinnedBytes, held, 'the handle that held the node\'s result meanwhile is released');
+
+    // 2. Aborted while the node after it runs: the viewport shows what it showed before (5.11 rule 5), the same object.
+    seen.during = undefined;
+    seen.pause = true;
+    from = t.renderer.calls.length;
+    t.session.setDocument(chain(0.75), 3);
+    assert.equal((await t.next('eval-end')).status, 'aborted');
+    await t.idle();
+    assert.ok(duringOf() && duringOf()?.height?.view !== shown.height?.view, 'the new terrain was on screen when the evaluation was aborted');
+    assert.equal(t.renderer.content, shown, 'and the shown result is back');
+    assert.equal(t.of('view-updated').length, 2, 'nothing was shown for the aborted revision');
+    // The lending node completed, so its result stays cached; nothing but the shown result is pinned.
+    assert.equal(t.memory().pinnedBytes, held);
+
+    // 3. Resumed: the lending node is a cache hit now, lends nothing, and the result is shown in one call.
+    seen.pause = false;
+    from = t.renderer.calls.length;
+    t.session.setPaused(false);
+    await t.next('view-updated');
+    await t.idle();
+    assert.equal(contents(t.renderer.calls, from).length, 1);
+    assert.equal(t.memory().pinnedBytes, held);
+  } finally {
+    await t.dispose();
+  }
+});
+
+test('a memory event follows a change of what the renderer has reserved, one for the changes of a task', async () => {
+  // A renderer that registers its textures when it draws, as the real one does in the frame after a result is shown.
+  const renderer = recordingRenderer();
+  let ledger: { reserve(bytes: number, label: string): { release(): void } } | null = null;
+  const init = renderer.init.bind(renderer);
+  renderer.init = (device, given) => {
+    ledger = given;
+    init(device, given);
+  };
+  const t = await startSession({ renderer });
+  try {
+    t.session.setDocument(graph(), 1);
+    await t.next('view-updated');
+    // The buffer the thumbnails of the three nodes are read back through is reserved until they have arrived.
+    // Bounded by the events that can arrive: each wait consumes at least one.
+    for (let round = 0; round < 8 && t.of('thumbnail').length < 3; round++) await t.next('thumbnail');
+    await t.idle();
+    const settled = t.memory().reservedBytes;
+
+    // A frame: two textures made and one dropped in one task.
+    let from = t.mark();
+    const picture = ledger!.reserve(3 * MIB, 'picture');
+    const maps = ledger!.reserve(5 * MIB, 'light maps');
+    picture.release();
+    assert.equal(t.of('memory', from).length, 0, 'not in the middle of the frame');
+    await t.idle();
+    const after = t.of('memory', from);
+    assert.equal(after.length, 1, 'one event for the three changes');
+    assert.equal(after[0]!.reservedBytes, settled + 5 * MIB);
+    assert.deepEqual(t.events.slice(from).map((e) => e.type), ['memory'], 'and no evaluation was needed for it');
+
+    from = t.mark();
+    maps.release();
+    await t.idle();
+    assert.deepEqual(t.of('memory', from).map((e) => e.reservedBytes), [settled]);
   } finally {
     await t.dispose();
   }

@@ -67,7 +67,7 @@ test('events arrive in order: eval-start, one final event per node, eval-end, no
   );
   assert.ok(events.every((e) => e.requestId === result.requestId));
   const done = eventsOf(events, 'node-done');
-  assert.deepEqual(done.map((e) => [e.nodeId, e.cached]), [['a', false], ['b', false]]);
+  assert.deepEqual(done.map((e) => [e.nodeId, e.cached, e.resolution]), [['a', false, 33], ['b', false, 33]], 'each says at which resolution its figures were measured');
   for (const e of done) {
     assert.ok(e.wallMs >= 0 && e.peakBytes >= 33 * 33 * 4, `${e.nodeId}: ${JSON.stringify(e)}`);
     assert.equal(e.gpuMs === null, !t.gpu.caps.timestampQuery, 'gpuMs is null without timestamp-query');
@@ -87,6 +87,13 @@ test('events arrive in order: eval-start, one final event per node, eval-end, no
   assert.deepEqual(t.engine.lastTiming('b')?.resolution, 33);
   assert.equal(t.engine.lastTiming('nobody'), null);
   result.fields[0]!.release();
+  // The same document at another resolution, and again where it is cached: the resolution is the evaluation's.
+  const finer = await t.evaluate(doc, ['b.out'], { resolution: 65 });
+  assert.deepEqual(eventsOf(finer.events, 'node-done').map((e) => [e.nodeId, e.cached, e.resolution]), [['a', false, 65], ['b', false, 65]]);
+  finer.result.fields[0]!.release();
+  const again = await t.evaluate(doc, ['b.out'], { resolution: 33 });
+  assert.deepEqual(eventsOf(again.events, 'node-done').map((e) => [e.nodeId, e.cached, e.resolution, e.wallMs]), [['a', true, 33, 0], ['b', true, 33, 0]]);
+  again.result.fields[0]!.release();
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(seen.length, settledWith, 'no event after the promise has settled');
   t.noLeaks();

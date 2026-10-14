@@ -7,7 +7,7 @@ import { test } from 'node:test';
 
 import type { BuildPlan, BuildProblem, BuildResult, EngineEvent, GpuCaps, NodeError } from '../../../../src/core/runtime.ts';
 import {
-  applyEngineEvent, createEngineStore, INITIAL_ENGINE_STATE, reduceEngineEvent, reduceEngineEvents,
+  applyEngineEvent, createEngineStore, INITIAL_ENGINE_STATE, reduceEngineEvent, reduceEngineEvents, setEnginePaused,
   type EngineState, type NodeRuntime,
 } from '../../../../src/app/state/engine-store.ts';
 import { difference, DRAFT, PREVIEW, same } from './_page.ts';
@@ -286,7 +286,7 @@ const start = (requestId: number, purpose: 'view' | 'draft' | 'thumbnails' | 'bu
   { type: 'eval-start', requestId, resolution: 257, mode: purpose === 'build' ? 'build' : 'preview', plan: plan(...nodes), outputPeakBytes: null },
 ];
 const done = (requestId: number, nodeId: string, cached = false, wallMs = 12): EngineEvent =>
-  ({ type: 'node-done', requestId, nodeId, cached, wallMs: cached ? 0 : wallMs, gpuMs: null, peakBytes: cached ? 0 : 4096 });
+  ({ type: 'node-done', requestId, nodeId, cached, resolution: 257, wallMs: cached ? 0 : wallMs, gpuMs: null, peakBytes: cached ? 0 : 4096 });
 const end = (requestId: number, status: 'ok' | 'errors' | 'aborted' | 'device-lost' = 'ok'): EngineEvent => ({ type: 'eval-end', requestId, status, wallMs: 20 });
 
 test('the device: starting, ready, lost with what was shown gone, failed, and ready again', () => {
@@ -316,7 +316,7 @@ test('the device: starting, ready, lost with what was shown gone, failed, and re
 test('a node through one request: idle while it waits, running with its progress, done with its time', () => {
   let state = reduceEngineEvents(start(3, 'view', ['a', 'cached'], ['b', 'run'], ['c', 'blocked'], ['d', 'bypassed'], ['e', 'unused']));
   assert.deepEqual(Object.keys(state.nodes), ['b', 'c'], 'cached, bypassed and unused nodes wait for their node-done as they are');
-  assert.deepEqual(state.nodes.b, { requestId: 3, state: 'idle', cached: false, fraction: 0, label: null, etaMs: null, wallMs: null, peakBytes: null, error: null, upstream: null });
+  assert.deepEqual(state.nodes.b, { requestId: 3, state: 'idle', cached: false, fraction: 0, label: null, etaMs: null, wallMs: null, peakBytes: null, resolution: null, error: null, upstream: null });
   assert.deepEqual(state.evaluation, { requestId: 3, purpose: 'view', fraction: 0, etaMs: null });
 
   state = reduceEngineEvent(state, { type: 'node-start', requestId: 3, nodeId: 'b' });
@@ -332,8 +332,8 @@ test('a node through one request: idle while it waits, running with its progress
   same(reduceEngineEvent(state, { type: 'eval-progress', requestId: 2, fraction: 0.9, etaMs: 1 }), state, 'progress of a request that is not the running one');
 
   state = reduceEngineEvents([done(3, 'a', true), done(3, 'b', false, 640), { type: 'node-skipped', requestId: 3, nodeId: 'c', reason: 'upstream', upstream: 'x' }, done(3, 'd', true), done(3, 'e', true)], state);
-  assert.deepEqual(state.nodes.b, { requestId: 3, state: 'done', cached: false, fraction: 1, label: null, etaMs: null, wallMs: 640, peakBytes: 4096, error: null, upstream: null });
-  assert.deepEqual([state.nodes.a!.state, state.nodes.a!.cached, state.nodes.a!.wallMs, state.nodes.a!.peakBytes], ['done', true, null, null], 'a node that was never seen running has no time');
+  assert.deepEqual(state.nodes.b, { requestId: 3, state: 'done', cached: false, fraction: 1, label: null, etaMs: null, wallMs: 640, peakBytes: 4096, resolution: 257, error: null, upstream: null });
+  assert.deepEqual([state.nodes.a!.state, state.nodes.a!.cached, state.nodes.a!.wallMs, state.nodes.a!.peakBytes, state.nodes.a!.resolution], ['done', true, null, null, null], 'a node that was never seen running has no time, and no resolution it was measured at');
   assert.deepEqual([state.nodes.c!.state, state.nodes.c!.upstream], ['skipped', 'x']);
 
   same(reduceEngineEvent(state, end(2)), state, 'the end of another request');
@@ -351,7 +351,7 @@ test('a failed node holds its error with every detail; a node skipped for an abo
     { type: 'node-skipped', requestId: 5, nodeId: 'd', reason: 'device-lost' },
     end(5, 'aborted'),
   ], state);
-  assert.deepEqual(state.nodes.b, { requestId: 5, state: 'error', cached: false, fraction: 0, label: null, etaMs: null, wallMs: null, peakBytes: null, error: ERROR, upstream: null });
+  assert.deepEqual(state.nodes.b, { requestId: 5, state: 'error', cached: false, fraction: 0, label: null, etaMs: null, wallMs: null, peakBytes: null, resolution: null, error: ERROR, upstream: null });
   assert.equal(state.nodes.b!.error, ERROR, 'the error as the engine sent it');
   for (const id of ['c', 'd']) assert.deepEqual([state.nodes[id]!.state, state.nodes[id]!.requestId, state.nodes[id]!.upstream], ['idle', 5, null], id);
 
@@ -462,7 +462,7 @@ test('keys replace the keys before; a thumbnail records the key it was made from
 test('a build in the store: build-start resets every member, each event fills its own, problems keep their order', () => {
   const problem = (code: BuildProblem['code']): BuildProblem => ({ severity: code.startsWith('W') ? 'warning' : 'error', code, message: `${code} happened` });
   const somePlan = { ok: true, resolution: 505, name: 'Land' } as unknown as BuildPlan;
-  const result = { requestId: 20, status: 'errors', problems: [problem('E_WRITE_FAILED')], files: [], manifest: null, report: 'Land.report.json', outDir: '/out' } as BuildResult;
+  const result = { requestId: 20, status: 'errors', problems: [problem('E_WRITE_FAILED')], files: [], manifest: null, report: 'Land.report.json', outDir: '/out', peakPoolBytes: null } as BuildResult;
 
   let state = reduceEngineEvents([
     { type: 'request-start', requestId: 20, revision: 3, purpose: 'build' },
@@ -498,6 +498,40 @@ test('a build in the store: build-start resets every member, each event fills it
   for (const status of ['ok', 'aborted', 'device-lost'] as const) {
     assert.equal(reduceEngineEvent(state, { type: 'build-end', requestId: 22, status }).build.lastStatus, status);
   }
+});
+
+test('a record says at which resolution its time and memory were measured, and a cached node keeps that of its run', () => {
+  const ran = (requestId: number, nodeId: string, resolution: number, wallMs: number): EngineEvent =>
+    ({ type: 'node-done', requestId, nodeId, cached: false, resolution, wallMs, gpuMs: null, peakBytes: 4096 });
+  const hit = (requestId: number, nodeId: string, resolution: number): EngineEvent =>
+    ({ type: 'node-done', requestId, nodeId, cached: true, resolution, wallMs: 0, gpuMs: null, peakBytes: 0 });
+  // A node outside the view runs for its thumbnail at 253; the view's nodes at 1009.
+  let state = reduceEngineEvents([...start(1, 'thumbnails', ['far', 'run']), ran(1, 'far', 253, 3), end(1), ...start(2, 'view', ['near', 'run']), ran(2, 'near', 1009, 480), end(2)]);
+  assert.deepEqual([state.nodes.far!.resolution, state.nodes.far!.wallMs], [253, 3]);
+  assert.deepEqual([state.nodes.near!.resolution, state.nodes.near!.wallMs], [1009, 480]);
+
+  // Shown later from the cache of another evaluation: the figures are still those of the run at 253, and say so.
+  state = reduceEngineEvents([...start(3, 'view', ['far', 'cached']), hit(3, 'far', 1009), end(3)], state);
+  assert.deepEqual([state.nodes.far!.cached, state.nodes.far!.resolution, state.nodes.far!.wallMs], [true, 253, 3]);
+
+  // An event of an engine that names no resolution (a recording made before the member existed) measures at none.
+  const old = { type: 'node-done', requestId: 4, nodeId: 'old', cached: false, wallMs: 5, gpuMs: null, peakBytes: 1 } as unknown as EngineEvent;
+  assert.equal(reduceEngineEvent(state, old).nodes.old!.resolution, null);
+});
+
+test('the pause is no event\'s: the client sets it, every event leaves it, and it changes nothing else', () => {
+  const store = createEngineStore();
+  assert.equal(INITIAL_ENGINE_STATE.paused, false);
+  const before = store.getState();
+  setEnginePaused(store, false);
+  same(store.getState(), before, 'a pause that is as it was is no change');
+  setEnginePaused(store, true);
+  assert.equal(difference({ ...store.getState(), paused: false }, before), null, 'no other member moved');
+  for (const event of [...start(1, 'view', ['a', 'run']), done(1, 'a'), end(1)]) applyEngineEvent(store, event);
+  applyEngineEvent(store, { type: 'device-lost', reason: 'unknown', message: 'gone' });
+  assert.equal(store.getState().paused, true);
+  setEnginePaused(store, false);
+  assert.deepEqual([store.getState().paused, store.getState().device.state, store.getState().nodes.a!.state], [false, 'lost', 'done']);
 });
 
 test('the store starts at the initial state, and every store has a state of its own', () => {

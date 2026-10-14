@@ -51,6 +51,8 @@ async function showExamples(app: AppDriver): Promise<void> {
 
 /** Holds the open project to an example: its nodes, no file, nothing to save, no history. */
 async function expectOpened(app: AppDriver, example: (typeof EXAMPLES)[number]): Promise<void> {
+  // An example is opened by the shell's project service, which may ask and save first: it is the project a moment after the answer.
+  await app.waitFor(`JSON.stringify(Object.keys(orogenTest.ctx.doc.getState().doc.nodes).sort()) === ${quote(JSON.stringify(Object.keys(example.doc.nodes).sort()))}`, 15_000);
   const held = await project(app);
   assert.deepEqual(held.nodes, Object.keys(example.doc.nodes).sort(), `${example.title} is the project that is open`);
   assert.deepEqual([held.path, held.unsaved, held.past, held.seed], [null, false, 0, example.doc.settings.seed], 'a new project without a file, with nothing to save and nothing to undo');
@@ -154,7 +156,7 @@ test('examples: each opens as a new project without a file and is computed at th
       const started = Date.now();
       await ways[how[at]!]!(example.id);
       await expectOpened(app, example);
-      assert.equal(await exists(app, '[data-dialog="library-discard"]'), false, 'a project without changes is replaced without a question');
+      assert.equal(await exists(app, '[data-dialog="unsaved"]'), false, 'a project without changes is replaced without a question');
       assert.equal(await app.eval<string>(`document.title`), 'Untitled - Orogen');
       assert.equal(await selectedExample(app), example.id);
 
@@ -176,14 +178,15 @@ test('examples: each opens as a new project without a file and is computed at th
   });
 });
 
-test('examples: a project with unsaved changes is replaced only after the question File > Open asks: save, do not save, or cancel', async (t) => {
+test('examples: a project with unsaved changes is replaced only after the question File > Open asks, which is the shell\'s own: save, do not save, or cancel', async (t) => {
   await withApp({}, async (app) => {
     await install(app);
     await showExamples(app);
     await settled(app);
     const alpine = EXAMPLES.find((example) => example.id === 'alpine-range')!;
     const first = EXAMPLES.find((example) => example.id === 'first-terrain')!;
-    const QUESTION = '[data-dialog="library-unsaved"]';
+    // The dialog File > Open shows (src/app/shell/Dialogs.tsx): an example is opened by the shell's project service.
+    const QUESTION = '[data-dialog="unsaved"]';
     const edit = (seed: number): Promise<void> => app.eval<void>(`void orogenTest.ctx.doc.getState().transact('Seed', (draft) => { draft.settings.seed = ${seed}; })`);
     /** The file dialog of "Save" answers with this next; null is a dialog that was cancelled. */
     const answerSave = (file: string | null): Promise<void> => app.eval<void>(`void orogenTest.shell.answers.saveProjectDialog.push(${quote(file)})`);
@@ -196,12 +199,14 @@ test('examples: a project with unsaved changes is replaced only after the questi
     await press(app, `${card('alpine-range')} [data-action="open"]`);
     await appears(app, QUESTION);
     assert.deepEqual(await project(app), edited, 'nothing is replaced while the question is open');
-    assert.match(await app.eval<string>(`document.querySelector(${quote(QUESTION)}).textContent`), /Save the changes to Untitled\?.*Alpine Range opens as a new project in place of this one\. The changes are lost if they are not saved\./);
-    // The three answers of the shell's own question, in its order.
+    assert.match(await app.eval<string>(`document.querySelector(${quote(QUESTION)}).textContent`), /Save the changes to Untitled\?.*The changes are lost if they are not saved\./);
+    assert.equal(await exists(app, '[data-dialog="library-unsaved"]'), false, 'the library has no question of its own');
+    // The three answers, in the shell's order.
     assert.deepEqual(
       await app.eval(`[...document.querySelectorAll(${quote(`${QUESTION} [data-action]`)})].map((button) => [button.getAttribute('data-action'), button.textContent])`),
       [['discard', 'Don’t Save'], ['cancel', 'Cancel'], ['save', 'Save']],
     );
+    assert.equal(await selectedExample(app), 'alpine-range', 'the card that was asked for is the selected one');
     t.diagnostic(`capture: ${await capture(app, 'examples-03-unsaved-question')}`);
 
     // Cancel, and Escape: the project stays as it is, changes and all.
@@ -214,19 +219,20 @@ test('examples: a project with unsaved changes is replaced only after the questi
     await vanishes(app, QUESTION);
     assert.deepEqual(await project(app), edited);
 
-    // Save, and the file dialog is cancelled: nothing was saved, so nothing is replaced, and the question is still there.
+    // Save, and the file dialog is cancelled: nothing was saved, so nothing is replaced. The question is over, as it is after File > Open.
     await press(app, card('alpine-range'));
     await run(app, 'library.openExample');
     await appears(app, QUESTION);
     await answerSave(null);
     await press(app, `${QUESTION} [data-action="save"]`);
     await saveAsked();
-    await sleep(100);
-    assert.equal(await exists(app, QUESTION), true);
+    await vanishes(app, QUESTION);
     assert.deepEqual(await project(app), edited);
 
     // Save, with a file: the project is written with its changes, and then the example is the project.
     const file = path.join(OUTPUT, 'saved-before-example.orogen');
+    await run(app, 'library.openExample');
+    await appears(app, QUESTION);
     await answerSave(file);
     await press(app, `${QUESTION} [data-action="save"]`);
     await vanishes(app, QUESTION);
@@ -251,7 +257,6 @@ test('examples: a project with unsaved changes is replaced only after the questi
     await answerSave(null);
     await press(app, `${QUESTION} [data-action="save"]`);
     await saveAsked();
-    await press(app, `${QUESTION} [data-action="cancel"]`);
     await vanishes(app, QUESTION);
     const later = path.join(OUTPUT, 'saved-later.orogen');
     await answerSave(later);
@@ -271,6 +276,8 @@ test('examples: a project with unsaved changes is replaced only after the questi
     await vanishes(app, QUESTION);
     await expectOpened(app, alpine);
     assert.equal(parseDoc(fs.readFileSync(later, 'utf8'), registry).doc.settings.seed, 79);
+    // An example is no file: it is in no list of recent projects, and the project it replaced is.
+    assert.deepEqual(await app.eval<string[]>(`orogenTest.shell.state.getState().preferences.recent`), [later, file]);
     await settled(app);
   });
 });
@@ -280,7 +287,12 @@ test('examples: File > Open Example… shows the projects while the Library tab 
     await install(app);
     await app.waitFor(`orogenTest.ctx.engineState.getState().device.state === 'ready' && document.querySelectorAll('.dv-tab').length === 5`, 60_000);
     await settled(app);
-    assert.equal(await exists(app, '[data-panel="library"]'), false, 'the Library tab is behind the Inspector');
+    // The Build tab in front of the Library's: the panel is not in the document, and its component is mounted all the same.
+    const showBuild = async (): Promise<void> => {
+      await app.eval(`void shellTest.press([...document.querySelectorAll('.dv-tab')].find((tab) => tab.textContent === 'Build'))`);
+      await vanishes(app, '[data-panel="library"]');
+    };
+    await showBuild();
 
     await choose(app, 'File', 'library.browseExamples');
     await appears(app, '[data-dialog="library-examples"] [data-example]');
@@ -342,14 +354,13 @@ test('examples: File > Open Example… shows the projects while the Library tab 
     await appears(app, '[data-panel="library"] [data-library="examples"][data-place="panel"] [data-example]');
     assert.equal(await exists(app, '[data-dialog="library-examples"]'), false, 'in the panel, not in the dialog');
     assert.equal(await app.eval<string>(`orogenTest.ctx.ui.getState().focusedPanel`), 'library', 'the panel that was brought to the front has the focus');
-    // "Find Node…" from behind the Inspector: the Library comes to the front with the keyboard in its search field.
-    await app.eval(`void shellTest.press([...document.querySelectorAll('.dv-tab')].find((tab) => tab.textContent === 'Inspector'))`);
-    await vanishes(app, '[data-panel="library"]');
+    // "Find Node…" from behind the Build tab: the Library comes to the front with the keyboard in its search field.
+    await showBuild();
     await choose(app, 'Library', 'library.search');
     await appears(app, '[data-panel="library"] [data-library="search"]');
     await app.waitFor(`document.activeElement === document.querySelector('[data-library="search"]')`, 15_000);
-    await app.eval(`void shellTest.press([...document.querySelectorAll('.dv-tab')].find((tab) => tab.textContent === 'Build'))`);
-    await vanishes(app, '[data-panel="library"]');
+    assert.equal(await exists(app, '[data-panel="build"]'), false, 'the build panel went behind it');
+    await showBuild();
     await run(app, 'library.showNodes');
     await appears(app, '[data-panel="library"] [data-library="nodes"]');
     t.diagnostic(`capture: ${await capture(app, 'examples-06-brought-to-the-front')}`);

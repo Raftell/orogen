@@ -12,8 +12,8 @@ import { addNode, connect, setView, type PortRef } from '../../../src/core/runti
 import { fromHex } from '../../../src/app/ui/color.ts';
 import type { AppDriver } from '../../helpers/index.ts';
 import {
-  apart, appears, attrOf, capture, choose, contentKey, count, differs, enter, exists, field, FOLDER, inspect, key, nodeState, PAGE_BACKSTOP_MS, PANEL, paramOf,
-  past, press, project, quote, rectOf, ROOT, row, scrub, select, settled, textOf, undo, vanishes, widthOf, withProject,
+  apart, appears, attrOf, capture, choose, contentKey, count, differs, enter, exists, field, FOLDER, future, inspect, key, nodeState, PAGE_BACKSTOP_MS, PANEL, paramOf,
+  past, press, project, quote, rectOf, redo, ROOT, row, scrub, select, settled, textOf, undo, vanishes, widthOf, withProject,
 } from './rig.ts';
 
 const ids = { noise: '', range: '', shape: '', levels: '', solid: '', landscape: '', imported: '' };
@@ -105,6 +105,18 @@ test('kinds: float, int, enum and seed are dragged, typed, chosen and drawn; a d
     await app.eval(`void shellTest.release(${quote(gain)})`);
     assert.equal(await paramOf<number>(app, ids.noise, 'gain'), held);
     assert.equal((await past(app)).length, entries, 'a drag that was taken back leaves nothing to undo');
+    assert.equal(await future(app), 0, 'and nothing to redo: no entry that changes nothing is left behind (cancelGesture, runtime.md 8.5 rule 4)');
+    // What could be redone before such a drag still can: the drag has cost no redo step.
+    await undo(app);
+    const undone = await paramOf<number>(app, ids.noise, 'gain');
+    assert.deepEqual([(await past(app)).length, await future(app)], [entries - 1, 1]);
+    await scrub(app, gain, 50, {}, false);
+    assert.equal(await future(app), 0, 'while it lasts, the drag is a change like any other');
+    await key(app, 'Escape', {}, gain);
+    await app.eval(`void shellTest.release(${quote(gain)})`);
+    assert.deepEqual([await paramOf<number>(app, ids.noise, 'gain'), (await past(app)).length, await future(app)], [undone, entries - 1, 1]);
+    await redo(app);
+    assert.deepEqual([await paramOf<number>(app, ids.noise, 'gain'), (await past(app)).length, await future(app)], [held, entries, 0], 'the redo that was there before the drag');
     await settled(app);
 
     // The reset of the row: the default, one entry, the mark gone.
@@ -253,7 +265,7 @@ test('kinds: a direction by its dial, a height in metres, a vector, a parameter 
     assert.notEqual(await paramOf<number>(app, ids.range, 'angle'), 121);
     await key(app, 'Escape', {}, dial);
     await app.eval(`void inspectorTest.up(${quote(dial)}, ${quote(centre)})`);
-    assert.deepEqual([await paramOf<number>(app, ids.range, 'angle'), (await past(app)).length], [121, entries]);
+    assert.deepEqual([await paramOf<number>(app, ids.range, 'angle'), (await past(app)).length, await future(app)], [121, entries, 0]);
     // The field beside the dial takes degrees.
     await enter(app, field('angle'), '45°');
     assert.equal(await paramOf<number>(app, ids.range, 'angle'), 45);

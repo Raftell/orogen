@@ -1,14 +1,11 @@
-// What is said of a node in more than one place: the name of a port, and the sentence of a node's error. The
+// What is said of a node in more than one place: the sentence of a node's error, and whether it is one. The
 // graph, the inspector, the viewport and the status bar say the same words of the same node, so the words are
-// made here. No DOM and no React.
+// made here. A port is named by the core's `portLabel` (runtime.md 4.3), which this module passes on. No DOM and
+// no React.
 
-import type { PortDef } from '../../core/api.ts';
-import type { NodeError, NodeRegistry } from '../../core/runtime.ts';
+import { portLabel, type NodeError, type NodeRegistry } from '../../core/runtime.ts';
 
-/** engine.md 4.2: a port's display name is its label, else its name with a capital. */
-export function portLabel(port: Pick<PortDef, 'name' | 'label'>): string {
-  return port.label ?? port.name.charAt(0).toUpperCase() + port.name.slice(1);
-}
+export { portLabel };
 
 /**
  * Whether an error says that the node itself is at fault. A node that lacks a wire is unfinished, not failed:

@@ -120,15 +120,23 @@ test('settings: the build resolution is one of Unreal\'s sizes, the preview a le
     await press(app, `${setting('buildResolution')} [data-ui="select"]`);
     await appears(app, '[data-ui="select-list"] [data-value="8129"]');
     assert.deepEqual(await options(app), ['1009 × 1009', '2017 × 2017', '4033 × 4033', '8129 × 8129']);
+    assert.equal(await textOf(app, '[data-derived="preview"]'), "505 × 505, 1/2 of the build's 1009 × 1009", 'the settings say what the previews are computed at');
     await press(app, '[data-ui="select-list"] [data-value="2017"]');
     await app.waitFor(`!shellTest.exists('[data-ui="select-list"]')`, PAGE_BACKSTOP_MS);
-    assert.deepEqual([(await settingsOf(app)).buildResolution, (await settingsOf(app)).previewLevel], [2017, 1]);
+    // The previews keep the resolution they had (runtime.md 4.2): 505 is level 1 of 1009 and level 2 of 2017. A
+    // larger build does not make them four times as heavy.
+    assert.deepEqual([(await settingsOf(app)).buildResolution, (await settingsOf(app)).previewLevel], [2017, 2]);
     assert.deepEqual(await past(app), [], 'the build resolution is no undo step');
     assert.equal(await app.eval<boolean>(`orogenTest.ctx.doc.getState().unsaved`), true, 'but the project has a change to save');
     assert.equal(await textOf(app, '[data-derived="spacing"]'), '2 m in a build of 2017 × 2017');
+    assert.equal(await textOf(app, `${setting('previewLevel')} .og-select-value`), '1/4 · 505 × 505');
+    assert.equal(await textOf(app, '[data-derived="preview"]'), "505 × 505, 1/4 of the build's 2017 × 2017");
+    await settled(app);
+    assert.equal((await app.eval<{ resolution: number }>(`orogenTest.ctx.engineState.getState().view`)).resolution, 505, 'the engine shows what it showed');
 
-    // The preview follows: level 1 of 2017 is 1009, which the engine now shows.
-    assert.equal(await textOf(app, `${setting('previewLevel')} .og-select-value`), '1/2 · 1009 × 1009');
+    // A finer preview is the user's own choice: level 1 of 2017 is 1009, which the engine then shows.
+    await choose(app, setting('previewLevel'), '1');
+    assert.equal(await textOf(app, '[data-derived="preview"]'), "1009 × 1009, 1/2 of the build's 2017 × 2017");
     await app.waitFor(`orogenTest.ctx.engineState.getState().view?.resolution === 1009`);
     await settled(app);
     const fine = await inspect(app, { node: ids.range, port: 'out' });
@@ -147,11 +155,12 @@ test('settings: the build resolution is one of Unreal\'s sizes, the preview a le
     assert.ok(fine !== null && coarse !== null && Math.abs(fine.max - coarse.max) < 0.05, 'the same terrain at a coarser level of the ladder');
     t.diagnostic(`capture: ${await capture(app, 'settings-resolution')}`);
 
-    // A level the next build resolution lacks is lowered to its last (runtime.md 4.2).
+    // The coarsest previews stay the coarsest when the build becomes smaller: 64 is level 5 of 2017 and level 4 of 1009.
     await choose(app, setting('previewLevel'), '5');
     await choose(app, setting('buildResolution'), '1009');
     assert.deepEqual([(await settingsOf(app)).buildResolution, (await settingsOf(app)).previewLevel], [1009, 4]);
     assert.equal(await textOf(app, `${setting('previewLevel')} .og-select-value`), '1/16 · 64 × 64');
+    assert.equal(await textOf(app, '[data-derived="preview"]'), "64 × 64, 1/16 of the build's 1009 × 1009");
     await press(app, `${setting('previewLevel')} [data-ui="select"]`);
     await appears(app, '[data-ui="select-list"] [data-value="4"]');
     assert.equal((await options(app)).length, 5);
@@ -163,7 +172,9 @@ test('settings: the build resolution is one of Unreal\'s sizes, the preview a le
     await choose(app, setting('buildResolution'), '4033');
     await undo(app);
     const after = await settingsOf(app);
-    assert.deepEqual([after.seed, after.buildResolution, after.previewLevel], [0, 4033, 1]);
+    // 505, which is level 1 of 1009, is level 3 of 4033: a build sixteen times as large leaves the previews as they are.
+    assert.deepEqual([after.seed, after.buildResolution, after.previewLevel], [0, 4033, 3]);
+    assert.equal(await textOf(app, '[data-derived="preview"]'), "505 × 505, 1/8 of the build's 4033 × 4033");
     assert.equal(await count(app, `${setting('buildResolution')}[data-changed]`), 0, '4033 is the default build resolution');
     // The reset of the preview row is the default level.
     await press(app, `${setting('previewLevel')} [data-action="reset"]`);

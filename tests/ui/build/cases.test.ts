@@ -14,7 +14,8 @@ import { test } from 'node:test';
 import { newDoc, serializeDoc } from '../../../src/core/runtime.ts';
 import type { AppDriver } from '../../helpers/index.ts';
 import {
-  appears, attr, build, buildState, built, capture, chooseFolder, crowded, cut, dismissNotices, fit, LONG, press, quote, ridge, run, scratch, scrollTo, setParamIn, text, texts,
+  appears, attr, build, buildState, built, capture, chooseFolder, crowded, cut, dismissNotices, expectPlan, fit, LONG, PLAN_TITLE, planned, planOf, press, quote, ridge, run, scratch,
+  scrollTo, setParamIn, shownPlan, text, texts,
   vanishes, withBuildPanel, writeProject, PAGE_BACKSTOP_MS,
 } from './rig.ts';
 
@@ -33,15 +34,19 @@ test('a project with nothing in it: the panel says before a build that there is 
   const project = writeProject(path.join(FOLDER, 'empty-project'), 'empty', newDoc());
   const out = path.join(FOLDER, 'empty-out');
   await withBuildPanel(project, async (app) => {
-    // Said where it is always in sight, and under Exports as the problem a plan will report.
-    assert.deepEqual(await head(app), ['Nothing to export', 'The project has no export node, so a build would write nothing.', 'warning']);
+    // Said where it is always in sight, and under the plan of the project as the problem the pipeline reports, in its words.
+    await planned(app);
+    const sentence = planOf(newDoc()).problems.find((problem) => problem.code === 'E_NOTHING_TO_EXPORT')!.message;
+    assert.deepEqual(await head(app), ['Nothing to export', sentence, 'warning']);
     assert.deepEqual(await sections(app), ['settings', 'plan']);
+    const nothing = await expectPlan(app, newDoc(), 'a project with nothing in it');
     assert.equal(
-      await text(app, '[data-build="known-problems"] [data-build-problem="E_NOTHING_TO_EXPORT"]'),
-      'Nothing to exportE_NOTHING_TO_EXPORTThe project has no export node, so a build would write nothing.A build writes only what export nodes declare. Add an export node from the I/O category, connect it and switch it on.',
+      nothing.problems[0]!.text,
+      `Nothing to exportE_NOTHING_TO_EXPORT${sentence}A build writes only what export nodes declare. Add an export node from the Import and Export category of the library, connect it and switch it on: Unreal Landscape exports the terrain.`,
     );
-    assert.equal(await app.eval<boolean>(`document.querySelector('[data-build="export-nodes"]') === null`), true);
-    assert.match((await text(app, '[data-build="plan-pending"]'))!, /^A build writes what export nodes declare, and nothing else\./);
+    assert.equal(nothing.failed, 'This plan has an error, so a build would stop here, before it computes or writes anything.');
+    // A plan of nothing lists no file: a build never writes a manifest alone.
+    assert.deepEqual([nothing.targets, nothing.total, nothing.left], [[], null, []]);
     assert.equal(await text(app, '[data-build="memory-node"]'), 'No node is measured yet: the next preview measures them');
     t.diagnostic(`capture: ${await capture(app, 'cases-01-empty')}`);
 
@@ -69,26 +74,27 @@ test('three hundred nodes with long names: what is listed, input faster than a b
   await withBuildPanel(project, async (app) => {
     await app.eval(`void (window.starts = 0, orogenTest.ctx.engine.subscribe((event) => { if (event.type === 'build-start') window.starts++; }))`);
 
-    // ---- every export node in one row, each by its own name; the two a build does not write for say why ----
-    const rows = await app.eval<{ id: string; name: string | null; source: string | null; tags: string[]; text: string }[]>(`[...document.querySelectorAll('[data-build-export]')].map((row) => ({
-      id: row.getAttribute('data-build-export'),
-      name: row.querySelector('[data-build="export-name"]')?.textContent ?? null,
-      source: row.querySelector('[data-build="export-source"]')?.textContent ?? null,
-      tags: [...row.querySelectorAll('span')].filter((span) => span.hasAttribute('data-tone')).map((span) => span.textContent),
-      text: row.textContent,
-    }))`);
-    assert.equal(rows.length, 19);
-    assert.deepEqual(rows[0], { id: ids.landscape, name: LONG.landscape, source: 'from Invert', tags: [], text: `${LONG.title}${LONG.landscape}from InvertSelect` });
-    // Fourteen layers, in the order a plan lists them, told apart by the names of their layers.
-    const layers = rows.filter((row) => ids.layers.includes(row.id));
-    assert.deepEqual(layers.map((row) => row.name), [LONG.layer, 'Cliff', 'Dirt', 'Forest', 'Grass', 'Gravel', 'Ice', 'Moss', 'Mud', 'Rock', 'Sand', 'Scree', 'Snow', 'Wet']);
-    assert.ok(layers.every((row) => row.source === 'from Slope'));
-    assert.deepEqual(rows.find((row) => row.id === ids.off)!.tags, ['Off']);
-    assert.deepEqual(rows.find((row) => row.id === ids.loose)!.tags, ['No input']);
-    assert.deepEqual(await head(app), ['An export node has no input', 'Color Texture: nothing is connected to its input.', 'warning']);
+    // ---- before a build: the plan of all of it, every target with its files; the two a build does not write for say why ----
+    await planned(app);
+    const standing = await expectPlan(app, doc, 'the crowded project');
+    const targets = standing.targets.filter((target) => target.kind !== 'base' && target.kind !== 'manifest');
+    assert.equal(targets.length, 17);
+    assert.deepEqual([targets[0]!.id, targets[0]!.title, targets[0]!.source], [ids.landscape, LONG.title, 'from Invert']);
+    // Fourteen layers, each a target of its own with the file of its name, and each fed by its slope mask.
+    const layers = targets.filter((target) => ids.layers.includes(target.id));
+    assert.equal(layers.length, 14);
+    assert.ok(layers.every((target) => target.kind === 'layer' && target.source === 'from Slope' && target.files.length >= 1));
+    assert.equal(new Set(layers.flatMap((target) => target.files.map((file) => file.path))).size, layers.reduce((sum, target) => sum + target.files.length, 0), 'no two layers share a file');
+    // What only a plan finds is said before Build is pressed: the export without an input, which stops a build, and the warning of many layers.
+    assert.deepEqual(standing.problems.map((problem) => problem.code), ['E_INPUT_MISSING', 'W_MANY_LAYERS']);
+    assert.match(standing.failed!, /a build would stop here, before it computes or writes anything\. Below is what the rest of the plan would write\.$/);
+    // And the two export nodes the plan has no target for stand under it, each with its reason.
+    assert.deepEqual(standing.left, [{ id: ids.loose, tags: ['No input'] }, { id: ids.off, tags: ['Off'] }]);
+    const missing = planOf(doc).problems.find((problem) => problem.code === 'E_INPUT_MISSING')!.message;
+    assert.deepEqual(await head(app), ['An export node has no input', missing, 'warning']);
     assert.deepEqual((await fit(app)).spills, []);
     await scrollTo(app, '[data-build-section="plan"]');
-    t.diagnostic(`capture: ${await capture(app, 'cases-02-crowded-exports')}`);
+    t.diagnostic(`capture: ${await capture(app, 'cases-02-crowded-plan')}`);
 
     // ---- five presses of Mod+B before the folder dialog has answered: one dialog, one build ----
     await app.eval(`void orogenTest.shell.answers.chooseFolder.push(${quote(out)}, ${quote(path.join(FOLDER, 'never'))})`);
@@ -149,7 +155,8 @@ test('three hundred nodes with long names: what is listed, input faster than a b
     assert.deepEqual(await head(app), ['Build out of date', 'The project has changed since', 'warning']);
     assert.equal(await text(app, '[data-build="stale"]'), 'The project has changed since this build.');
     assert.match((await text(app, '[data-build-note="unreal-stale"]'))!, /^These are the numbers of the last build, and the project has changed since\./);
-    assert.equal(await text(app, '[data-build-section="plan"] > button'), 'Exports', 'the plan was of the state before');
+    // The plan of the build was of the state before: what stands there now is the plan of the project as it is.
+    await planned(app);
     await dismissNotices(app);
     await scrollTo(app, '[data-build-section="run"]');
     t.diagnostic(`capture: ${await capture(app, 'cases-05-out-of-date')}`);
@@ -171,7 +178,8 @@ test('three hundred nodes with long names: what is listed, input faster than a b
     assert.deepEqual(await head(app), ['Not built yet', 'Build asks for the output folder', null]);
     assert.equal(await enabled(app, 'build.revealFolder'), false);
     assert.equal(await text(app, '[data-build="folder-name"]'), 'Not chosen', 'a project without a file has no folder of another');
-    assert.equal((await texts(app, '[data-build-export]')).length, 3);
+    await planned(app);
+    assert.equal((await shownPlan(app)).targets.length, 5, 'the plan is of the project that is open now: three exports, the base layer and the manifest');
     await run(app, 'build.revealFolder');
     await run(app, 'build.copyImportValues');
     await run(app, 'build.selectProblemNode');
@@ -196,13 +204,23 @@ test('settings at their limits: a terrain of one meter, a custom size no landsca
     // One meter over 2048 quads is half a millimeter, and is written as one.
     assert.equal(await text(app, '#build-resolution .og-select-value'), '2049 × 2049 (custom)');
     assert.equal(await text(app, '[data-build="spacing"]'), '0.488 mm per vertex');
-    assert.equal(await text(app, '[data-build="layout"]'), 'A custom size: whether Unreal has a landscape of it is checked when a build is planned');
-    assert.deepEqual(await head(app), ['Not built yet', 'Build asks for the output folder', null]);
 
-    // The plan refuses the size, and the panel says so under the resolution, with the sizes the pipeline names.
+    // The plan of the project refuses the size, and the panel says so before a build is asked for: at its head,
+    // under the resolution with the sizes the pipeline names, and as a problem of the plan with its node.
+    await planned(app);
+    const size = planOf(doc).problems.find((problem) => problem.code === 'E_SIZE_NOT_LANDSCAPE')!;
+    assert.deepEqual(await head(app), ['Unreal has no landscape of this size', size.message, 'warning']);
+    assert.deepEqual([await text(app, '[data-build="layout"]'), await attr(app, '[data-build="layout"]', 'data-tone')], [size.message, 'error']);
+    const standing = await expectPlan(app, doc, 'a size no landscape has');
+    assert.deepEqual(standing.problems.map((problem) => problem.code), ['E_SIZE_NOT_LANDSCAPE']);
+    assert.equal(await text(app, '[data-build="plan-problems"] [data-build-problem="E_SIZE_NOT_LANDSCAPE"] [data-build-select]'), 'Select node');
+    t.diagnostic(`capture: ${await capture(app, 'cases-06a-custom-size-before-a-build')}`);
+
+    // A build of it is not held back, and is refused for the same reason in the same words.
     await chooseFolder(app, path.join(FOLDER, 'limits-out'));
     const refused = await build(app);
     assert.deepEqual([refused.status, refused.problems.map((problem) => [problem.code, problem.nodeId])], ['errors', [['E_SIZE_NOT_LANDSCAPE', ids.landscape]]]);
+    assert.equal(refused.problems[0]!.message, size.message);
     assert.deepEqual([await text(app, '[data-build="layout"]'), await attr(app, '[data-build="layout"]', 'data-tone')], [refused.problems[0]!.message, 'error']);
     assert.match(refused.problems[0]!.message, /2049 x 2049 is not a size an Unreal landscape can have; the nearest valid build resolutions are 2033 and 3025\.$/);
     assert.equal(await text(app, '[data-build="problems"] [data-build-problem="E_SIZE_NOT_LANDSCAPE"] [data-build-select]'), 'Select node');

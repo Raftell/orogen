@@ -17,6 +17,7 @@ import {
   port, quote, ready, redo, selection, settled, sleep, text, titleOf, undo, vanishes, wires, withApp,
   type Point,
 } from './rig.ts';
+import { panelSize } from '../shell/rig.ts';
 
 const REGISTRY = createRegistry(nodes);
 const PALETTE = '[data-graph="palette"]';
@@ -212,8 +213,14 @@ test('awkward: a wire onto a node and off its input, and drags ended by Escape a
     assert.ok(second, 'a double click in the library adds its node');
     assert.equal((await docOf(app)).nodes[second]!.type, asked);
     assert.deepEqual(await selection(app), [second]);
+    // No place was pointed at: the node goes to the middle of what the graph shows, or as near it as it can lie
+    // without covering another node, and is in view (8.7 rule 8). A generator has no input to be wired to.
     const centred = await nodeBox(app, second);
-    near(centred.x + centred.width / 2, pane.x + pane.width / 2, 2, 'at the centre of what the graph shows');
+    assert.ok(centred.x >= pane.x && centred.x + centred.width <= pane.x + pane.width && centred.y >= pane.y && centred.y + centred.height <= pane.y + pane.height, `in view: ${JSON.stringify(centred)}`);
+    for (const other of Object.keys((await docOf(app)).nodes).filter((id) => id !== second)) {
+      const box = await nodeBox(app, other);
+      assert.ok(centred.x >= box.x + box.width || box.x >= centred.x + centred.width || centred.y >= box.y + box.height || box.y >= centred.y + centred.height, `it does not cover ${other}`);
+    }
     assert.deepEqual((await history(app)).slice(-2).map((label) => label.slice(0, 4)), ['Add ', 'Add ']);
     t.diagnostic(`capture: ${await capture(app, 'awkward-02b-nodes-from-the-library')}`);
   });
@@ -237,18 +244,18 @@ test('awkward: every node type is drawn with the whole of every port label and o
     await graphSettled(app);
     await focusGraph(app);
     const count = REGISTRY.list().length;
-    assert.equal(await app.eval<number>(`document.querySelectorAll('[data-node]').length`), count);
+    assert.equal(await app.eval<number>(`document.querySelectorAll('[data-graph="root"] [data-node]').length`), count);
     assert.equal(await app.eval<string>(`graphTest.lod()`), 'far');
     t.diagnostic(`capture: ${await capture(app, 'awkward-03-every-type-fitted')}`);
 
     // Close up on the simulations, whose ports have the longest labels: labels are drawn at this zoom, and every
     // node is laid out whether the panel shows it or not.
-    const rivers = await app.eval<string>(`[...document.querySelectorAll('[data-node]')].find((node) => node.getAttribute('data-type') === 'simulate/rivers').getAttribute('data-node')`);
+    const rivers = await app.eval<string>(`[...document.querySelectorAll('[data-graph="root"] [data-node]')].find((node) => node.getAttribute('data-type') === 'simulate/rivers').getAttribute('data-node')`);
     const box = await nodeBox(app, rivers);
     const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     for (let tick = 0; tick < 30 && (await app.eval<number>(`graphTest.drawn().zoom`)) < 1; tick++) await app.eval(`void graphTest.wheel(${at.x}, ${at.y}, -100)`);
     assert.equal(await app.eval<string>(`graphTest.lod()`), 'near');
-    const drawn = await app.eval<{ type: string; cut: string[]; title: boolean; width: number; told: number; height: number; toldHeight: number; widest: number; spills: boolean; ports: number }[]>(`[...document.querySelectorAll('[data-node]')].map((node) => {
+    const drawn = await app.eval<{ type: string; cut: string[]; title: boolean; width: number; told: number; height: number; toldHeight: number; widest: number; spills: boolean; ports: number }[]>(`[...document.querySelectorAll('[data-graph="root"] [data-node]')].map((node) => {
       const labels = [...node.querySelectorAll('[data-port] span')];
       const title = node.querySelector('[data-role="title"]');
       const wrapper = node.parentElement;
@@ -286,7 +293,7 @@ test('awkward: every node type is drawn with the whole of every port label and o
   });
 });
 
-test('awkward: in the least window the palette is whole, and thumbnails come back after their canvases were emptied', async (t) => {
+test('awkward: in a panel lower than the palette the palette is whole, and thumbnails come back after their canvases were emptied', async (t) => {
   await withApp({ open: 'tests/graphs/03-simulate.orogen' }, async (app) => {
     await ready(app);
     await docked(app);
@@ -313,20 +320,19 @@ test('awkward: in the least window the palette is whole, and thumbnails come bac
     await app.eval(`void document.querySelector('[data-node="talus"] canvas').dispatchEvent(new Event('contextrestored'))`);
     assert.equal(await painted('talus'), 1);
 
-    // ---- the least window the application has: the graph panel is lower than the palette ----
-    await app.eval(`void window.resizeTo(960, 600)`);
-    await app.waitFor(`innerWidth <= 960 && innerHeight <= 600`, PAGE_BACKSTOP_MS);
-    // The dock lays its panels out again for the new window: the graph ends where the panels beside it begin.
-    await app.waitFor(`(() => { const box = graphTest.graph(); return box.y + box.height <= innerHeight + 1 && box.x + box.width <= innerWidth - 150; })()`, PAGE_BACKSTOP_MS);
-    await graphSettled(app).catch(() => {});
+    // ---- a graph panel as low as the least window (960 by 600) makes it, 274 pixels, which is lower than the palette, ----
+    // ---- and as wide as the dock lets it be, so that its right edge is near the window's ----
+    // The size is the panel's, set through the dock: a window that was never shown cannot be resized (testing.md 8.5).
+    const sized = await panelSize(app, 'graph', { width: 5000, height: 274 });
+    assert.ok(sized.width > 1300 && sized.height < 274, JSON.stringify(sized));
+    await app.waitFor(`(() => { const box = graphTest.graph(); return Math.abs(box.width - ${sized.width}) <= 2 && box.height < 274; })()`, PAGE_BACKSTOP_MS);
+    await graphSettled(app);
     const small = await graphBox(app);
     assert.ok(small.height < 360, `the panel is ${small.height} pixels high, the palette 360`);
-    // The resize of a window that was never shown costs the engine its device (measured, tests/ui/inspector):
-    // the thumbnails are in main memory and stay.
-    for (const id of ['fbm', 'talus', 'steep']) assert.equal(await painted(id), 1, `the thumbnail of ${id} after the window was resized`);
+    for (const id of ['fbm', 'talus', 'steep']) assert.equal(await painted(id), 1, `the thumbnail of ${id} in the small panel`);
     t.diagnostic(`capture: ${await capture(app, 'awkward-05-least-window')}`);
     await focusGraph(app);
-    // The pointer near the right edge of the panel, above the shell's notice of the lost device.
+    // The pointer near the right edge of the panel.
     const pointer = { x: small.x + small.width - 60, y: small.y + 70 };
     assert.equal(await app.eval<boolean>(`document.elementFromPoint(${pointer.x}, ${pointer.y})?.closest('[data-graph="root"]') !== null`), true);
     await app.eval(`void graphTest.hover(${pointer.x}, ${pointer.y})`);
@@ -382,7 +388,7 @@ test('awkward: a narrow panel and a wide one hold the graph, its toolbar and its
     /** Whether every node lies wholly inside the panel. */
     const allInside = (): Promise<boolean> => app.eval<boolean>(`(() => {
       const view = document.querySelector('[data-graph="root"]').getBoundingClientRect();
-      return [...document.querySelectorAll('[data-node]')].every((node) => {
+      return [...document.querySelectorAll('[data-graph="root"] [data-node]')].every((node) => {
         const r = node.getBoundingClientRect();
         return r.left >= view.left && r.right <= view.right && r.top >= view.top && r.bottom <= view.bottom;
       });
@@ -391,7 +397,7 @@ test('awkward: a narrow panel and a wide one hold the graph, its toolbar and its
     // ---- narrow: a third of the width the panel has by default ----
     await widen(360);
     const narrow = await graphBox(app);
-    assert.equal(await app.eval<number>(`document.querySelectorAll('[data-node]').length`), 5, 'the graph is there in the panel the dock made anew');
+    assert.equal(await app.eval<number>(`document.querySelectorAll('[data-graph="root"] [data-node]').length`), 5, 'the graph is there in the panel the dock made anew');
     await key(app, 'Home');
     await app.waitFor(`graphTest.drawn().zoom < 0.5`, PAGE_BACKSTOP_MS);
     assert.equal(await allInside(), true, 'fitted, the five nodes lie inside the narrow panel');
@@ -414,16 +420,26 @@ test('awkward: a narrow panel and a wide one hold the graph, its toolbar and its
     await key(app, 'KeyB');
     assert.equal((await docOf(app)).nodes.talus!.bypass, true);
     await undo(app);
+    const five = await docOf(app);
     await app.eval(`void window.dispatchEvent(new CustomEvent('orogen:add-node', { detail: { type: 'filter/blur' } }))`);
-    assert.equal(Object.keys((await docOf(app)).nodes).length, 6);
+    const six = await docOf(app);
+    assert.equal(Object.keys(six.nodes).length, 6);
+    // The node asked for from outside continued from the selected one (8.7 rule 8): wired to its output.
+    const asked = Object.keys(six.nodes).find((id) => !Object.hasOwn(five.nodes, id))!;
+    assert.ok(Object.values(six.edges).some((edge) => edge.from.node === 'talus' && edge.to.node === asked && edge.to.port === 'in'), 'the blur is fed by the thermal erosion that was selected');
     const copied = await app.eval<{ taken: boolean; text: string }>(`graphTest.clipboard('copy')`);
     assert.equal(copied.taken, true);
     await app.eval(`graphTest.clipboard('paste', ${quote(copied.text)})`);
     assert.equal(Object.keys((await docOf(app)).nodes).length, 7);
     assert.deepEqual(await history(app), ['Add Blur', 'Paste']);
+    // The graph of the file again: what follows is about its five nodes.
+    await undo(app);
+    await undo(app);
+    assert.equal(Object.keys((await docOf(app)).nodes).length, 5);
 
     // ---- wide: nearly the whole window ----
-    await widen(1440);
+    // As wide as the dock lets the column be: the side column keeps its least width (runtime.md 8.7 rule 7).
+    await widen(1370);
     await key(app, 'Home');
     await app.waitFor(`graphTest.drawn().zoom > 0.9`, PAGE_BACKSTOP_MS);
     const zoom = await app.eval<number>(`graphTest.drawn().zoom`);

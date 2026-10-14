@@ -10,10 +10,10 @@ import type { StoreApi } from 'zustand/vanilla';
 import type { FieldStats } from '../../../../src/core/api.ts';
 import {
   DEFAULT_PREFERENCES, moveNodes, newDoc, serveSession, setGroup, setNodeFlags, setParam, setView,
-  type BuildResult, type CameraState, type EngineEvent, type EngineSession, type GpuCaps, type GraphDoc, type PickResult,
+  type BuildPlan, type BuildResult, type CameraState, type EngineEvent, type EngineSession, type GpuCaps, type GraphDoc, type PickResult,
   type SessionPort, type ViewportDisplay,
 } from '../../../../src/core/runtime.ts';
-import { createEngineClient, type EngineClient } from '../../../../src/app/engine/client.ts';
+import { createEngineClient, ENGINE_WATCH, EngineReplacedError, type EngineClient } from '../../../../src/app/engine/client.ts';
 import type { DocState } from '../../../../src/app/state/doc-store.ts';
 import { INITIAL_ENGINE_STATE } from '../../../../src/app/state/engine-store.ts';
 import { createPage, difference, REGISTRY, until, type Page, same, different } from './_page.ts';
@@ -25,7 +25,7 @@ interface FarEnd {
   readonly port: SessionPort;
   readonly calls: Call[];
   /** What `inspect`, `build`, `viewport.pick` and `dispose` answer next, in order; an Error rejects. Without an answer, `inspect` and `build` stay open. */
-  readonly answers: { inspect: unknown[]; build: unknown[]; pick: unknown[] };
+  readonly answers: { inspect: unknown[]; build: unknown[]; pick: unknown[]; plan: unknown[] };
   emit(event: EngineEvent): void;
   methods(from?: number): string[];
   close(): void;
@@ -34,7 +34,7 @@ interface FarEnd {
 function farEnd(): FarEnd {
   const calls: Call[] = [];
   const listeners = new Set<(e: EngineEvent) => void>();
-  const answers: FarEnd['answers'] = { inspect: [], build: [], pick: [] };
+  const answers: FarEnd['answers'] = { inspect: [], build: [], pick: [], plan: [] };
   const tell = (method: string) => (...args: unknown[]): void => { calls.push({ method, args }); };
   const ask = (method: string, kind: keyof FarEnd['answers'] | null) => (...args: unknown[]): Promise<never> => {
     calls.push({ method, args });
@@ -47,7 +47,7 @@ function farEnd(): FarEnd {
     setProject: tell('setProject'), setDocument: tell('setDocument'), beginGesture: tell('beginGesture'), endGesture: tell('endGesture'),
     setPaused: tell('setPaused'), requestThumbnails: tell('requestThumbnails'), cancelBuild: tell('cancelBuild'),
     setPreferences: tell('setPreferences'), retryDevice: tell('retryDevice'),
-    inspect: ask('inspect', 'inspect'), build: ask('build', 'build'),
+    inspect: ask('inspect', 'inspect'), build: ask('build', 'build'), plan: ask('plan', 'plan'),
     subscribe(listener) {
       listeners.add(listener);
       return () => void listeners.delete(listener);
@@ -324,7 +324,7 @@ test('the facade: every method of EngineSession reaches the session with its arg
     const camera: CameraState = { kind: 'top', center: [0.5, 0.5], span: 1 };
     const display: ViewportDisplay = { verticalScale: 2, showSea: true, sunAzimuth: 315, sunElevation: 40 };
     const picked: PickResult = { uv: [0.25, 0.5], height: 0.75, position: [500, 1000, 450] };
-    const built = { requestId: 9, status: 'ok', problems: [], files: [{ path: 'Land.orogen.json', bytes: 120 }], manifest: 'Land.orogen.json', report: 'Land.report.json', outDir: '/out' } as BuildResult;
+    const built = { requestId: 9, status: 'ok', problems: [], files: [{ path: 'Land.orogen.json', bytes: 120 }], manifest: 'Land.orogen.json', report: 'Land.report.json', outDir: '/out', peakPoolBytes: 4096 } as BuildResult;
     const doc = r.page.doc.getState().doc;
 
     r.client.setPaused(true);
@@ -343,6 +343,11 @@ test('the facade: every method of EngineSession reaches the session with its arg
     assert.deepEqual(await r.client.build({ doc, outDir: '/out' }), built);
     await assert.rejects(r.client.build({ doc, outDir: '/out' }), /A build is already running/);
     r.client.cancelBuild();
+    // A plan without a build (7.6): the document goes over, the plan comes back as plain values, and no event is its.
+    const planned = { ok: false, resolution: 1009, name: 'Land', items: [], files: [], problems: [{ severity: 'error', code: 'E_NOTHING_TO_EXPORT', message: 'Nothing to export' }] };
+    r.far.answers.plan.push(planned, new Error('This session was given no planner'));
+    assert.deepEqual(await r.client.plan(doc), planned);
+    await assert.rejects(r.client.plan(doc), /no planner/);
     r.client.retryDevice();
     r.client.viewport.detach();
     // What docStore usually drives is there for code that has no store.
@@ -355,7 +360,7 @@ test('the facade: every method of EngineSession reaches the session with its arg
     const calls = r.far.calls.slice(from);
     assert.deepEqual(calls.map((call) => call.method), [
       'setPaused', 'requestThumbnails', 'setPreferences', 'viewport.attach', 'viewport.resize', 'viewport.setCamera', 'viewport.setDisplay',
-      'viewport.pick', 'inspect', 'inspect', 'build', 'build', 'cancelBuild', 'retryDevice', 'viewport.detach',
+      'viewport.pick', 'inspect', 'inspect', 'build', 'build', 'cancelBuild', 'plan', 'plan', 'retryDevice', 'viewport.detach',
       'setProject', 'beginGesture', 'setDocument', 'endGesture',
     ]);
     const args = (method: string): readonly unknown[] => calls.find((call) => call.method === method)!.args;
@@ -371,6 +376,7 @@ test('the facade: every method of EngineSession reaches the session with its arg
     assert.deepEqual(args('inspect'), [{ node: r.soft, port: 'out' }]);
     assert.deepEqual((args('build')[0] as { outDir: string }).outDir, '/out');
     assert.equal(difference((args('build')[0] as { doc: GraphDoc }).doc, doc), null);
+    assert.equal(difference(args('plan')[0] as GraphDoc, doc), null, 'the plan is of the document it was asked for');
     assert.deepEqual(args('setProject'), [{ path: '/elsewhere/a.orogen' }]);
     assert.equal(args('setDocument')[1], 40);
   } finally {
@@ -398,6 +404,7 @@ test('connect: a new worker is told everything again, the store starts over, and
     // The old worker never answers these: it is gone.
     const inspecting = r.client.inspect({ node: r.land, port: 'out' });
     const building = r.client.build({ doc: r.page.doc.getState().doc, outDir: '/out' });
+    const planning = r.client.plan(r.page.doc.getState().doc);
     const heard: string[] = [];
     r.client.subscribe((event) => heard.push(event.type));
 
@@ -411,8 +418,10 @@ test('connect: a new worker is told everything again, the store starts over, and
     r.client.connect(second.port);
     await assert.rejects(inspecting, /The engine worker was replaced/);
     await assert.rejects(building, /The engine worker was replaced/);
+    await assert.rejects(planning, /The engine worker was replaced/);
     const startedOver = r.page.engineState.getState();
-    assert.deepEqual(startedOver, INITIAL_ENGINE_STATE, 'the report of a session that is gone says nothing of the new one');
+    // The pause is the client's own, and the new session is told of it: it is the one member that stays.
+    assert.deepEqual(startedOver, { ...INITIAL_ENGINE_STATE, paused: true }, 'the report of a session that is gone says nothing of the new one');
     different(startedOver.device, INITIAL_ENGINE_STATE.device, 'its device is an object of its own: whoever holds a canvas sees that the engine is another');
     // The client's listener on that port ran before this one: the late event has been through the client.
     await until(() => lateArrived, 'the late event of the old worker arrived');
@@ -447,6 +456,67 @@ test('connect: a new worker is told everything again, the store starts over, and
   } finally {
     r.far.close();
     second.close();
+  }
+});
+
+test('the pause is in the store: the client writes what it tells the session, and panels read it there', async () => {
+  const r = await rig();
+  try {
+    assert.equal(r.page.engineState.getState().paused, false);
+    const told: boolean[] = [];
+    const stop = r.page.engineState.subscribe((next, previous) => { if (next.paused !== previous.paused) told.push(next.paused); });
+    r.client.setPaused(true);
+    r.client.setPaused(true);
+    assert.equal(r.page.engineState.getState().paused, true);
+    // No event sets it and none clears it: the session says nothing of a pause.
+    r.far.emit({ type: 'device-ready', epoch: 1, caps: CAPS, budgetBytes: 1 });
+    r.far.emit({ type: 'device-lost', reason: 'unknown', message: 'gone' });
+    await until(() => r.page.engineState.getState().device.state === 'lost', 'the events arrived');
+    assert.equal(r.page.engineState.getState().paused, true);
+    r.client.setPaused(false);
+    stop();
+    assert.deepEqual(told, [true, false], 'subscribers are told when it changes, and only then');
+    await arrived(r);
+    assert.deepEqual(r.far.calls.filter((call) => call.method === 'setPaused').map((call) => call.args[0]), [true, true, false]);
+  } finally {
+    r.far.close();
+  }
+});
+
+test('connect keeps what the last build wrote and reported: the folder still holds it, whatever became of the worker', async () => {
+  const r = await rig();
+  const second = farEnd();
+  const third = farEnd();
+  try {
+    const result = { requestId: 4, status: 'ok', problems: [], files: [{ path: 'Land.orogen.json', bytes: 120 }], manifest: 'Land.orogen.json', report: 'Land.report.json', outDir: '/out', peakPoolBytes: 1 } as BuildResult;
+    const plan = { ok: true, resolution: 1009, name: 'Land' } as unknown as BuildPlan;
+    r.far.emit({ type: 'build-start', requestId: 4, resolution: 1009, outDir: '/out' });
+    r.far.emit({ type: 'build-plan', requestId: 4, plan });
+    r.far.emit({ type: 'build-result', requestId: 4, result });
+    r.far.emit({ type: 'build-end', requestId: 4, status: 'ok' });
+    await until(() => r.page.engineState.getState().build.lastStatus === 'ok', 'the build of the first worker ended');
+    const built = r.page.engineState.getState().build;
+
+    r.client.connect(second.port);
+    const after = r.page.engineState.getState();
+    same(after.build, built, 'the finished build is the store\'s as it was');
+    assert.deepEqual([after.device.state, after.view, after.evaluation, after.nodes], ['starting', null, null, {}], 'everything else starts over');
+
+    // A build that was running when its worker went never ends by an event: it ended with the worker, without a result.
+    second.emit({ type: 'build-start', requestId: 2, resolution: 1009, outDir: '/out' });
+    second.emit({ type: 'build-plan', requestId: 2, plan });
+    await until(() => r.page.engineState.getState().build.requestId === 2 && r.page.engineState.getState().build.plan !== null, 'the second worker began a build');
+    const running = r.page.engineState.getState().build;
+    assert.equal(running.running, true);
+    r.client.connect(third.port);
+    const stopped = r.page.engineState.getState().build;
+    assert.deepEqual([stopped.running, stopped.requestId, stopped.lastStatus, stopped.result, stopped.target, stopped.phase], [false, 2, 'aborted', null, null, null]);
+    same(stopped.plan, running.plan, 'what it had planned is still what it planned');
+    assert.equal(r.page.engineState.getState().evaluation, null, 'nothing is said to be running');
+  } finally {
+    r.far.close();
+    second.close();
+    third.close();
   }
 });
 
@@ -546,5 +616,114 @@ test('dispose ends the session and the client\'s hold on the document store', as
   } finally {
     far.close();
     other.close();
+  }
+});
+
+test('another project: what the engine reported of the one before is forgotten, and what its requests still say is not this project\'s', async () => {
+  const r = await rig();
+  try {
+    await arrived(r);
+    const engine = (): ReturnType<typeof r.page.engineState.getState> => r.page.engineState.getState();
+    const thumb = (nodeId: string, contentKey: string): EngineEvent => ({ type: 'thumbnail', requestId: 5, nodeId, contentKey, resolution: 253, rgba: new Uint8ClampedArray(128 * 128 * 4) } as EngineEvent);
+    // The first project is computed and shown, with a node that failed.
+    r.far.emit({ type: 'device-ready', epoch: 1, caps: CAPS, budgetBytes: 2 ** 30 });
+    r.far.emit({ type: 'request-start', requestId: 5, revision: 2, purpose: 'view' });
+    r.far.emit({ type: 'keys', revision: 2, keys: { [r.land]: 'k-land', [r.soft]: 'k-soft' } });
+    r.far.emit({ type: 'node-done', requestId: 5, nodeId: r.land, cached: false, wallMs: 10, gpuMs: null, peakBytes: 64, resolution: 1009 });
+    r.far.emit({ type: 'node-error', requestId: 5, error: { nodeId: r.soft, nodeType: 'ref/blur', kind: 'node-exception', message: 'No file selected' } });
+    r.far.emit({ type: 'view-updated', requestId: 5, revision: 2, resolution: 1009, draft: false, height: true, overlay: false });
+    r.far.emit(thumb(r.land, 'k-land'));
+    r.far.emit(thumb(r.soft, 'k-soft'));
+    r.far.emit({ type: 'eval-end', requestId: 5, status: 'errors' } as EngineEvent);
+    await arrived(r);
+    assert.deepEqual([Object.keys(engine().nodes).sort(), engine().view?.revision, Object.keys(engine().keys).length], [[r.land, r.soft].sort(), 2, 2]);
+    assert.deepEqual([r.page.thumbnails.size, engine().thumbnailKeys], [2, { [r.land]: 'k-land', [r.soft]: 'k-soft' }]);
+    let softDrawn = 0;
+    r.page.thumbnails.subscribe(r.soft, () => { softDrawn++; });
+
+    // Another project whose nodes bear the same ids, as two examples do.
+    const before = r.page.doc.getState();
+    r.page.doc.getState().load(structuredClone(before.doc), null);
+    assert.deepEqual([engine().nodes, engine().keys, engine().thumbnailKeys, engine().view], [{}, {}, {}, null], 'nothing of the project before is said of this one');
+    assert.equal(engine().device.state, 'ready', 'the device is the application\'s');
+    // A request that was made for the project before still reports: none of it is this project's.
+    r.far.emit({ type: 'node-done', requestId: 5, nodeId: r.land, cached: true, wallMs: 0, gpuMs: null, peakBytes: 0, resolution: 1009 });
+    r.far.emit({ type: 'node-skipped', requestId: 5, nodeId: r.soft, reason: 'aborted' } as EngineEvent);
+    r.far.emit({ type: 'keys', revision: 2, keys: { [r.land]: 'k-land' } });
+    r.far.emit({ type: 'view-updated', requestId: 5, revision: 2, resolution: 1009, draft: false, height: true, overlay: false });
+    await arrived(r);
+    assert.deepEqual([engine().nodes, engine().keys, engine().view], [{}, {}, null]);
+    // The session hears of the new document a moment after the page has it: an idle evaluation it began for the
+    // old one in between has a newer request id, and says the revision it is made for.
+    r.far.emit({ type: 'request-start', requestId: 9, revision: 2, purpose: 'thumbnails' });
+    r.far.emit({ type: 'node-done', requestId: 9, nodeId: r.land, cached: true, wallMs: 0, gpuMs: null, peakBytes: 0, resolution: 253 });
+    r.far.emit({ type: 'eval-end', requestId: 9, status: 'aborted' } as EngineEvent);
+    await arrived(r);
+    assert.deepEqual([engine().nodes, engine().evaluation], [{}, null], 'its nodes are not this project\'s, and its end is heard');
+    // The requests of this project are heard as ever.
+    const sent = r.page.doc.getState().engineRevision;
+    // The keys of this project: the node that has the content it had keeps its thumbnail, which the engine sends
+    // no second time, and is known as current; the node of other content under the same id loses the picture of
+    // the project before, and whoever draws it is told.
+    r.far.emit({ type: 'keys', revision: sent, keys: { [r.land]: 'k-land', [r.soft]: 'other-content' } });
+    await arrived(r);
+    assert.deepEqual([r.page.thumbnails.get(r.land)?.contentKey, r.page.thumbnails.get(r.soft), engine().thumbnailKeys, softDrawn], ['k-land', null, { [r.land]: 'k-land' }, 1]);
+    r.far.emit({ type: 'request-start', requestId: 10, revision: sent, purpose: 'view' });
+    r.far.emit({ type: 'keys', revision: sent, keys: { [r.land]: 'k2' } });
+    r.far.emit({ type: 'node-done', requestId: 10, nodeId: r.land, cached: false, wallMs: 12, gpuMs: null, peakBytes: 64, resolution: 1009 });
+    r.far.emit({ type: 'view-updated', requestId: 10, revision: sent, resolution: 1009, draft: false, height: true, overlay: false });
+    await arrived(r);
+    assert.deepEqual([engine().nodes[r.land]?.state, engine().nodes[r.land]?.wallMs, engine().keys, engine().view?.revision], ['done', 12, { [r.land]: 'k2' }, sent]);
+    // An edit, an undo and a save are no other project.
+    r.page.doc.getState().transact('Octaves', (draft) => setParam(draft, REGISTRY, r.land, 'octaves', 3));
+    r.page.doc.getState().undo();
+    assert.equal(engine().nodes[r.land]?.state, 'done');
+  } finally {
+    await r.client.dispose().catch(() => undefined);
+    r.far.close();
+  }
+});
+
+test('an engine that is silent is said: asked after a while without a word, and called silent when that question stands too long', async () => {
+  const page = createPage();
+  page.add('ref/fbm');
+  const far = farEnd();
+  const client = createEngineClient({ port: far.port, doc: page.doc, engineState: page.engineState, thumbnails: page.thumbnails, watch: { intervalMs: 20, limitMs: 60 } });
+  const silent = (): boolean => page.engineState.getState().silent;
+  const next = farEnd();
+  try {
+    await until(() => far.calls.length >= 3, 'the client introduced itself');
+    // An engine that is starting is not asked: it answers when it has its device.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.deepEqual([far.methods().includes('inspect'), silent()], [false, false]);
+
+    // Ready, and quiet: it is asked something that costs nothing, and its answer is all that was wanted.
+    far.emit({ type: 'device-ready', epoch: 1, caps: CAPS, budgetBytes: 2 ** 30 });
+    far.answers.inspect.push(null, null, null, null);
+    await until(() => far.methods().includes('inspect'), 'the engine was asked');
+    assert.deepEqual(far.calls.find((call) => call.method === 'inspect')!.args, [{ node: '', port: '' }]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(silent(), false, 'an engine that answers is not silent');
+
+    // No answer any more, as from a worker whose thread ended: said after the limit, not before.
+    far.answers.inspect.length = 0;
+    await until(() => silent(), 'the engine is called silent');
+    assert.equal(page.engineState.getState().device.state, 'ready', 'the device is what it last said: only `silent` says that it says nothing');
+    // Anything heard of it ends that.
+    far.emit({ type: 'memory', budgetBytes: 1, workingBytes: 0, cacheBytes: 0, pinnedBytes: 0, freeBytes: 0, reservedBytes: 0 } as EngineEvent);
+    await until(() => !silent(), 'an event was heard');
+
+    // Another worker in its place is not silent, and is watched in its turn.
+    far.answers.inspect.length = 0;
+    await until(() => silent(), 'silent again');
+    client.connect(next.port);
+    assert.equal(silent(), false);
+    assert.deepEqual(ENGINE_WATCH, { intervalMs: 5000, limitMs: 15_000 });
+    assert.equal(new EngineReplacedError().message, 'The engine worker was replaced');
+  } finally {
+    // Disposed while its far end still answers: a closed port would leave the answer out for ever.
+    await client.dispose().catch(() => undefined);
+    far.close();
+    next.close();
   }
 });

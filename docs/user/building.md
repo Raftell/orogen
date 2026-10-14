@@ -4,9 +4,11 @@ A **build** computes the whole graph at the project's build resolution and write
 imports. This page says what decides the files, where they go, what is in them, and what can go wrong.
 [Importing into Unreal Engine 5.8](unreal-import.md) takes over where this page ends.
 
-The build pipeline is built and tested on Linux, on an NVIDIA card and on a software adapter. It has not been
-run on Windows. What the files do in Unreal Engine has not been tried by anyone at Orogen: wherever this page
-says what Unreal will do with a file, the import guide says how far that has been checked.
+The build pipeline is built and tested on Linux, on an NVIDIA card and on a software adapter, and its tests
+pass on Windows' software adapter in the project's automated checks, the swap of the output folder included.
+It has not been run on a Windows machine with a graphics card, nor beside the programs such a machine runs.
+What the files do in Unreal Engine has not been tried by anyone at Orogen: wherever this page says what Unreal
+will do with a file, the import guide says how far that has been checked.
 
 ## 1. Export nodes decide what is written
 
@@ -64,6 +66,14 @@ Give every project a build folder of its own, and keep nothing else in it.
   your output folder are Orogen's; the disk holds the old and the new build until the swap.
 - **A build that fails or is cancelled changes nothing in the output folder.** When it got as far as
   computing, its report is in `<dir>.partial`, and the next build removes that folder.
+- **On Windows, close what holds the folder.** The swap renames the output folder, which Windows refuses while
+  another program holds the folder or a file in it: a terminal whose current folder it is, an image viewer, a
+  virus scanner or a cloud-sync client that is still reading what was just written, possibly Unreal Engine
+  after an import. Orogen does not try again. Build into a folder that is not synchronised: on Windows 11 the
+  folders *Documents* and *Desktop* often are, by OneDrive. The build then ends with `E_COMMIT_FAILED`, the complete build stays in `<dir>.partial`,
+  and the old one is put back; close the other program and build again. A file that cannot be given its name
+  while the build writes ends it with `E_WRITE_FAILED`. Neither has been seen on Windows: nobody has built there
+  with other programs open.
 
 ## 3. What a build writes
 
@@ -81,13 +91,21 @@ Give every project a build folder of its own, and keep nothing else in it.
 | `<Name>.report.json` | every build that got as far as computing | times, measured heights, warnings |
 
 The example writes `RidgeHeight.png`, `RidgeHeight.r16`, `LayerBase.png`, `LayerBase.r8`, `LayerRock.png`,
-`LayerRock.r8`, `T_Normal_1024.png`, `Ridge.orogen.json` and `Ridge.report.json`.
+`LayerRock.r8`, `T_Normal_1024.png`, `Ridge.orogen.json` and `Ridge.report.json`: nine files in the folder.
+**The number of files a build states is one less**, eight here: it counts what the manifest lists, the
+manifest included, and not the report, which is about the build and no part of it. The command line, the Build
+panel and the tables of this guide all count that way.
 
 **Why the names are so plain.** The files Unreal's landscape importer reads have names made of letters only.
 Users have reported import errors that went away when digits, spaces and similar file names were removed
 (unconfirmed, and not reproduced on 5.8; [known risks](unreal-import.md#4-known-risks-and-workarounds), item
 3). One consequence: two layers named `Rock1` and `Rock2` would both be `LayerRock.png`, and the build refuses
 them (`E_FILE_COLLISION`). Name them `RockA` and `RockB`.
+
+**Names Windows keeps for itself.** An Image File named `con`, `prn`, `aux`, `nul`, `com1` to `com9` or
+`lpt1` to `lpt9`, and an Unreal Landscape whose name reduces to one of these words, would be written as
+`nul.png` or `Con.orogen.json`: Windows has long treated such names as devices, whatever follows the dot.
+Orogen does not refuse them. Choose another name.
 
 **The manifest is the only authority** on which file is which. Nothing is ever told apart by its position in
 a folder listing.
@@ -227,7 +245,8 @@ Numbers are written with all their digits. Copy them whole.
 
 `<Name>.report.json` holds what happened: start and end time, the time each export took, the time the layer
 weights took (`weightsMs`) and the time it took to finish the files and put them in place (`commitMs`), the
-measured lowest and highest height, every warning and error. The manifest holds no time, so that the same project builds to
+most graphics memory the build held at once (`peakPoolBytes`, in bytes), the measured lowest and highest
+height, every warning and error. The manifest holds no time, so that the same project builds to
 the same bytes.
 
 ## 9. Problems a build reports
@@ -242,7 +261,7 @@ Every problem has a code and one sentence that names the node. Errors stop the b
 | `E_SIZE_NOT_LANDSCAPE` | the resolution is not a size a landscape can have |
 | `E_SEVERAL_LANDSCAPES` | more than one enabled Unreal Landscape node |
 | `E_LAYER_WITHOUT_LANDSCAPE` | a Landscape Layer without an Unreal Landscape node |
-| `E_NAME_INVALID` | a name has no usable character, or too many |
+| `E_NAME_INVALID` | a name has no usable character, or too many, or is one Windows keeps for a device (`Con`, `Nul`, `Aux`, `Prn`, `Com1`, `Lpt1` and the like) |
 | `E_LAYER_NAME_INVALID`, `E_LAYER_NAME_DUPLICATE` | a layer name breaks the rule above, or two differ only in capitals |
 | `E_TOO_MANY_LAYERS` | more than 15 weight-blended layers |
 | `E_RANGE_INVALID` | a fixed height range whose highest is not above its lowest |
@@ -265,12 +284,13 @@ Every problem has a code and one sentence that names the node. Errors stop the b
 
 ## Time and memory
 
-Measured on the development machine: Linux, GTX 1660 Ti with 6 GB, 16 GB of memory.
+Measured on the development machine: Linux, GTX 1660 Ti with 6 GB, 16 GB of memory. *Files* is the build's
+count, without the report: the folder holds one file more.
 
 | Project | Resolution | Time | Files | Peak graphics memory of Orogen's fields | Peak process memory |
 | --- | --- | --- | --- | --- | --- |
-| `examples/ridge.orogen` | 1009 | 0.54 s | 8 files, 5.7 MB | 15.4 MB | 390.5 MB |
-| `examples/ridge.orogen` with `--res 4033` | 4033 | 4.59 s | 8 files, 87.7 MB | 213.1 MB | 523.8 MB |
+| `docs/user/examples/ridge.orogen` | 1009 | 0.54 s | 8 files, 5.7 MB | 15.4 MB | 390.5 MB |
+| `docs/user/examples/ridge.orogen` with `--res 4033` | 4033 | 4.59 s | 8 files, 87.7 MB | 213.1 MB | 523.8 MB |
 | a mountain range with one layer (measured by the pipeline's authors) | 8129 | 12.0 s | 7 files, 305.3 MB | 836.8 MB | 631.4 MB |
 
 These graphs are small: a generator and a mask. A graph with erosion takes much longer, and the largest

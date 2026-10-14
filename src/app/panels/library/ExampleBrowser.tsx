@@ -72,7 +72,7 @@ export function ExampleBrowser(props: { readonly place: 'panel' | 'dialog' }) {
       select(EXAMPLES[at]?.id ?? null);
       event.preventDefault();
     } else if (event.key === 'Enter' && selected !== null) {
-      requestExample(ctx, selected);
+      void requestExample(ctx, selected);
       event.preventDefault();
     }
   }
@@ -106,7 +106,7 @@ export function ExampleBrowser(props: { readonly place: 'panel' | 'dialog' }) {
               aria-selected={example.id === selected}
               data-example={example.id}
               onClick={() => select(example.id)}
-              onDoubleClick={() => requestExample(ctx, example.id)}
+              onDoubleClick={() => { void requestExample(ctx, example.id); }}
             >
               {example.picture !== null
                 ? <img className={styles.examplePicture} src={example.picture} alt="" draggable={false} />

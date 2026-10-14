@@ -11,7 +11,7 @@ import { appears, capture, docked, exists, key, PAGE_BACKSTOP_MS, press, quote, 
 
 interface Gallery {
   amount: number; length: number; angle: number; count: number; frequency: number; offset: number; slider: number;
-  checked: boolean; choice: string; text: string; color: [number, number, number]; events: string[];
+  checked: boolean; choice: string; text: string; color: [number, number, number]; search: string; events: string[];
 }
 
 const gallery = (app: AppDriver): Promise<Gallery> => app.eval<Gallery>(`orogenTest.shell.gallery.getState()`);
@@ -322,6 +322,71 @@ test('controls: the colour swatch opens a picker that takes a drag, a hex code a
     await key(app, 'Escape', {}, '[data-ui="color-picker"]');
     await vanishes(app, '[data-ui="color-picker"]');
     assert.equal(await exists(app, '[data-dialog="gallery"]'), true);
+  });
+});
+
+test('controls: a property row stacks where it is narrow, the metric text of a number field gives way with an ellipsis, and the search field is emptied by Escape and by its button', async (t) => {
+  await withApp({}, async (app) => {
+    await openGallery(app);
+    interface Box { readonly x: number; readonly y: number; readonly width: number; readonly height: number; readonly right: number; readonly bottom: number }
+    const rects = (selector: string): Promise<{ label: Box; control: Box; row: Box }> => app.eval(`(() => {
+      const row = shellTest.el(${quote(selector)}).closest('[data-ui="row"]');
+      const box = (element) => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, right: r.right, bottom: r.bottom }; };
+      return { label: box(row.querySelector('.og-row-label')), control: box(row.querySelector('.og-row-control')), row: box(row) };
+    })()`);
+
+    // ---- a row of the usual width: the label beside its control, in the label column ----
+    const wide = await rects(field('Radius'));
+    assert.ok(wide.row.width >= 280, `the row is ${wide.row.width} pixels wide`);
+    assert.ok(wide.control.x >= wide.label.right && Math.abs((wide.label.y + wide.label.height / 2) - (wide.control.y + wide.control.height / 2)) <= 2, 'the label stands beside its control');
+    near(wide.label.width, wide.row.width * 0.38, 2, 'the label column');
+
+    // ---- a row narrower than 280 pixels: the label above its control, each at the full width, the label read whole ----
+    const narrow = await rects(field('Narrow radius'));
+    assert.ok(narrow.row.width < 280 && narrow.row.width >= 190, `the row is ${narrow.row.width} pixels wide`);
+    assert.ok(narrow.control.y >= narrow.label.bottom - 0.5, `the control stands below its label: ${JSON.stringify([narrow.label, narrow.control])}`);
+    near(narrow.control.width, narrow.row.width, 1, 'the control has the width of the row');
+    assert.equal(await app.eval<boolean>(`(() => { const label = shellTest.el(${quote(field('Narrow radius'))}).closest('[data-ui="row"]').querySelector('.og-row-label'); return label.scrollWidth <= label.clientWidth; })()`), true, 'the label is not cut');
+
+    // ---- the number field in it: the value is whole, the metric text is cut with an ellipsis and stays inside the field ----
+    const parts = await app.eval<{ field: number[]; value: number[]; secondary: number[]; cut: boolean; overflow: string; ellipsis: string; label: string }>(`(() => {
+      const root = shellTest.el(${quote(field('Narrow radius'))});
+      const span = (element) => { const r = element.getBoundingClientRect(); return [r.left, r.right]; };
+      const secondary = root.querySelector('.og-number-secondary');
+      const style = getComputedStyle(secondary);
+      return {
+        field: span(root), value: span(root.querySelector('.og-number-value')), secondary: span(secondary),
+        cut: secondary.scrollWidth > secondary.clientWidth, overflow: style.overflowX, ellipsis: style.textOverflow, label: root.querySelector('.og-number-label').textContent,
+      };
+    })()`);
+    assert.deepEqual([parts.cut, parts.overflow, parts.ellipsis], [true, 'hidden', 'ellipsis'], 'the metric text says that it was cut');
+    assert.ok(parts.secondary[1]! <= parts.field[1]! + 0.5 && parts.secondary[0]! >= parts.value[1]! - 0.5, `it lies between the value and the edge of the field: ${JSON.stringify(parts)}`);
+    assert.ok(parts.value[0]! >= parts.field[0]! && parts.value[1]! <= parts.field[1]!, 'the value itself is whole');
+    assert.equal(await app.eval<string>(`shellTest.text(${quote(`${field('Narrow radius')} .og-number-value`)})`), '0.100000');
+    // The wide field of the same value has room for its metres: nothing is cut there.
+    assert.equal(await app.eval<boolean>(`(() => { const secondary = shellTest.el(${quote(`${field('Radius')} .og-number-secondary`)}); return secondary.scrollWidth <= secondary.clientWidth; })()`), true);
+    t.diagnostic(`capture: ${await capture(app, 'controls-narrow-row')}`);
+
+    // ---- the search field: typed text is the caller's; Escape empties it and is not the dialog's then; the button does the same ----
+    const search = '[data-ui="search-field"] input[aria-label="Search the gallery"]';
+    assert.equal(await exists(app, '[data-ui="search-field"] [data-action="clear"]'), false, 'an empty field has nothing to clear');
+    await app.eval(`void shellTest.focus(${quote(search)})`);
+    await app.eval(`void shellTest.type(${quote(search)}, 'ero')`);
+    await app.waitFor(`orogenTest.shell.gallery.getState().search === 'ero'`, PAGE_BACKSTOP_MS);
+    await appears(app, '[data-ui="search-field"] [data-action="clear"]');
+    await key(app, 'ArrowDown', {}, search);
+    await key(app, 'Escape', {}, search);
+    await app.waitFor(`orogenTest.shell.gallery.getState().search === ''`, PAGE_BACKSTOP_MS);
+    assert.equal(await exists(app, '[data-dialog="gallery"]'), true, 'the key was the field\'s: the dialog around it stays open');
+    assert.deepEqual((await value(app, 'events')).filter((event) => event.startsWith('search:')), ['search:key:ArrowDown', 'search:key:Escape'], 'every key reaches the caller first');
+    await app.eval(`void shellTest.type(${quote(search)}, 'blur')`);
+    await appears(app, '[data-ui="search-field"] [data-action="clear"]');
+    await press(app, '[data-ui="search-field"] [data-action="clear"]');
+    await app.waitFor(`orogenTest.shell.gallery.getState().search === ''`, PAGE_BACKSTOP_MS);
+    assert.equal(await app.eval<boolean>(`document.activeElement === shellTest.el(${quote(search)})`), true, 'the keyboard is back in the field');
+    // Escape in the empty field is whoever's is around it: the dialog closes.
+    await key(app, 'Escape', {}, search);
+    await vanishes(app, '[data-dialog="gallery"]');
   });
 });
 

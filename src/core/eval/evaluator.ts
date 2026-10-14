@@ -540,7 +540,7 @@ export function createEvaluator(deps: EvaluatorDeps): Evaluator {
       } else {
         nodesRun++;
       }
-      emit({ type: 'node-done', requestId, nodeId, cached: done.cached, wallMs: done.wallMs(), gpuMs: done.gpuMs, peakBytes: done.peakBytes });
+      emit({ type: 'node-done', requestId, nodeId, cached: done.cached, resolution, wallMs: done.wallMs(), gpuMs: done.gpuMs, peakBytes: done.peakBytes });
 
       if (withThumbnails && primary) {
         const shown = slots.get(step.keys!.outputs[primary.name]!.content.id)?.texture;

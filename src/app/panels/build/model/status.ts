@@ -30,6 +30,11 @@ export interface StatusInput {
     /** The project has changed since. */
     readonly changed: boolean;
   } | null;
+  /**
+   * The project's build ended with the engine worker that ran it (Engine > Restart Engine, 8.5): it has no result
+   * and wrote nothing into the output folder.
+   */
+  readonly interrupted?: boolean;
   /** What would stop a build of the project as it stands, errors only: a plan's when there is one, else what the document alone says (plan.ts). */
   readonly blockers: readonly Pick<ProblemView, 'title' | 'message'>[];
   /** The title of the section that lists them. */
@@ -72,6 +77,9 @@ export function describeStatus(input: StatusInput): StatusView {
     // How the last build ended stays said while the device is away: a lost device is how some builds end.
     const took = last.durationMs === null ? '' : last.ok ? `in ${formatDuration(last.durationMs)}` : last.computed ? `after ${formatDuration(last.durationMs)}` : '';
     return { line: last.outcome.headline, sub: away ?? took, tone: last.outcome.tone === 'neutral' ? null : last.outcome.tone };
+  }
+  if (input.interrupted && !last) {
+    return { line: 'Build stopped: the engine was restarted', sub: away ?? 'The output folder holds what it held before', tone: 'warning' };
   }
   if (away !== null) return { line: away, sub: '', tone: device === 'failed' ? 'error' : null };
   // A build of an earlier state of the project says nothing of this one: what counts is what stands in the way now.

@@ -218,6 +218,18 @@ test('E_NAME_INVALID, E_LAYER_NAME_INVALID, E_RANGE_INVALID and E_FORMAT_INVALID
   one({ out: { type: 'io/export-field', params: { name: '' }, in: 'land.out' } }, 'E_NAME_INVALID');
   one({ out: raw({ kind: 'image', name: 'x'.repeat(65) }) }, 'E_NAME_INVALID');
   assert.deepEqual(codes(plan({ out: raw({ kind: 'image', name: 'x'.repeat(64) }) })), []);
+  // A name Windows keeps for a device, where it would be the whole base name of a file: Con.orogen.json, NUL.r16.
+  for (const name of ['Con', 'c-o-n', 'NUL', 'aux', 'Prn 1']) {
+    const device = one({ out: landscape({ name }) }, 'E_NAME_INVALID');
+    assert.match(device.message, /which Windows keeps for a device and cannot open as a file; choose another name\.$/, name);
+  }
+  assert.match(one({ out: { type: 'io/export-field', params: { name: 'com1' }, in: 'land.out' } }, 'E_NAME_INVALID').message, /gives the file name com1, which Windows keeps for a device/);
+  one({ out: { type: 'io/export-field', params: { name: 'LPT9', format: 'r16' }, in: 'land.out' } }, 'E_NAME_INVALID');
+  // Not the whole base name: a landscape named Console, an image named com10, and any texture or layer.
+  assert.deepEqual(codes(plan({ out: landscape({ name: 'Console' }) })), []);
+  assert.deepEqual(codes(plan({ out: { type: 'io/export-field', params: { name: 'com10' }, in: 'land.out' } })), []);
+  assert.deepEqual(codes(plan({ out: { type: 'io/export-color', params: { name: 'con' }, in: 'paint.out' } })), []);
+  assert.deepEqual(codes(plan({ land2: landscape(), out: layer('Con', false) })), []);
   // A landscape without a usable name is still planned, under the name of a build without one.
   assert.equal(plan({ out: landscape({ name: '42' }) }).name, 'Export');
 
@@ -251,12 +263,13 @@ test('E_NAME_INVALID, E_LAYER_NAME_INVALID, E_RANGE_INVALID and E_FORMAT_INVALID
 
 test('layer names are unique ignoring case, the base layer among them when it exists; at most 15 are weight-blended', () => {
   const twice = plan({ land2: landscape(), a: layer('Rock'), b: { ...layer('rock'), title: 'Wet Rock' } });
-  // Their files collide as well: the PNG and the raw file of each.
-  assert.deepEqual(codes(twice), ['E_LAYER_NAME_DUPLICATE', 'E_FILE_COLLISION', 'E_FILE_COLLISION']);
+  // Their files collide as well, the PNG and the raw file of each, for that one reason: it is said once.
+  assert.deepEqual(codes(twice), ['E_LAYER_NAME_DUPLICATE']);
+  assert.equal(twice.ok, false);
   assert.match(problemOf(twice, 'E_LAYER_NAME_DUPLICATE').message, /^Wet Rock: the layer name "rock" is also used by Landscape Layer/);
 
   const base = plan({ land2: landscape(), a: layer('base') });
-  assert.deepEqual(codes(base), ['E_LAYER_NAME_DUPLICATE', 'E_FILE_COLLISION', 'E_FILE_COLLISION']);
+  assert.deepEqual(codes(base), ['E_LAYER_NAME_DUPLICATE']);
   assert.match(problemOf(base, 'E_LAYER_NAME_DUPLICATE').message, /is also used by the base layer of Unreal Landscape/);
   // Without a weight-blended layer there is no base layer to collide with.
   assert.deepEqual(codes(plan({ land2: landscape(), a: layer('base', false) })), []);

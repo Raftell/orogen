@@ -32,7 +32,7 @@ test('smoke: the application starts with the default project in its frame', asyn
     assert.deepEqual(page.panels, ['build', 'graph', 'inspector', 'library', 'viewport']);
     assert.deepEqual([...page.tabs].sort(), ['Build', 'Graph', 'Inspector', 'Library', 'Viewport']);
     // 8.8 rule 7: the shell's four menus, then those the panels name.
-    assert.deepEqual(page.menus, ['File', 'Edit', 'View', 'Engine', 'Viewport', 'Graph', 'Inspector', 'Library']);
+    assert.deepEqual(page.menus, ['File', 'Edit', 'View', 'Engine', 'Viewport', 'Graph', 'Inspector', 'Library', 'Help']);
     assert.equal(page.status, 'ready');
     assert.ok(page.adapter !== null && page.adapter.trim() !== '', 'the status bar names the adapter');
     assert.equal(/software/i.test(page.adapter), caps.software, 'a software adapter is said, and only one');

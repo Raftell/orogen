@@ -8,16 +8,27 @@
 //
 // `vite build` builds the page; the plugin below then builds the four scripts, each a bundle of its own with
 // its own format. Every output has a source map.
+//
+// Nothing is written into dist/ while the build runs: all of it goes to a folder beside it, dist.partial-<pid>,
+// which takes the place of dist/ by a rename when the last script is built (tools/build-folder.ts). Whoever
+// starts the application meanwhile finds the build of before, and a build that fails leaves it.
+// OROGEN_DIST names another folder than dist/ to build into: the test of the build uses it.
 
 import { builtinModules } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import fs from 'node:fs';
+
 import react from '@vitejs/plugin-react';
 import { build, defineConfig, type InlineConfig, type Plugin } from 'vite';
 
+import { removeStale, replaceFolder, stagingFolder } from './tools/build-folder.ts';
+
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
-const DIST = path.join(ROOT, 'dist');
+const DIST = path.resolve(ROOT, process.env.OROGEN_DIST || 'dist');
+/** Where this build writes. It becomes DIST when everything is in it. */
+const STAGING = stagingFolder(DIST);
 
 interface Script {
   readonly entry: string;
@@ -67,7 +78,7 @@ function scriptConfig(script: Script): InlineConfig {
     // A library build leaves this to the consumer; these scripts are the consumer.
     define: { 'process.env.NODE_ENV': '"production"' },
     build: {
-      outDir: DIST,
+      outDir: STAGING,
       emptyOutDir: false,
       copyPublicDir: false,
       sourcemap: true,
@@ -84,22 +95,38 @@ function scriptConfig(script: Script): InlineConfig {
   };
 }
 
-/** Builds the scripts once the page is written. */
+/** Builds the scripts once the page is written, and then puts the whole build in place. */
 function scripts(): Plugin {
   let written = false;
+  const discard = (): void => fs.rmSync(STAGING, { recursive: true, force: true });
   return {
     name: 'orogen:scripts',
     apply: 'build',
+    buildStart() {
+      removeStale(DIST);
+    },
     writeBundle() {
       written = true;
     },
     async closeBundle() {
       // Not after a page build that failed: its error is the one to read.
-      if (!written) return;
-      for (const script of SCRIPTS) {
-        await build(scriptConfig(script));
-        this.info(`built dist/${script.file}`);
+      if (!written) {
+        discard();
+        return;
       }
+      const shown = path.relative(ROOT, DIST) || DIST;
+      try {
+        for (const script of SCRIPTS) {
+          await build(scriptConfig(script));
+          this.info(`built ${shown}/${script.file}`);
+        }
+      } catch (thrown) {
+        // The folder in use stays the build of before.
+        discard();
+        throw thrown;
+      }
+      const how = replaceFolder(STAGING, DIST);
+      this.info(how === 'renamed' ? `${shown}/ is the new build` : `${shown}/ is in use and could not be moved: its files were replaced one by one`);
     },
   };
 }
@@ -110,7 +137,7 @@ export default defineConfig({
   base: './',
   plugins: [react(), scripts()],
   build: {
-    outDir: DIST,
+    outDir: STAGING,
     emptyOutDir: true,
     sourcemap: true,
     target: 'esnext',

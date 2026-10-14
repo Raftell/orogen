@@ -68,7 +68,7 @@ interface HeightInfo { readonly measuredMin: number; readonly measuredMax: numbe
 
 /** Runs a plan: evaluates through the engine, converts on the CPU, writes through the sink. Rejects only for a malformed call. */
 export async function buildProject(engine: Engine, opts: BuildOptions): Promise<BuildResult> {
-  if (typeof engine?.evaluate !== 'function' || typeof engine.read !== 'function') throw new TypeError('buildProject: the first argument is the Engine');
+  if (typeof engine?.evaluate !== 'function' || typeof engine.read !== 'function' || typeof engine.memory !== 'function') throw new TypeError('buildProject: the first argument is the Engine');
   if (typeof opts !== 'object' || opts === null) throw new TypeError('buildProject: the options are an object');
   const { doc, sink, requestId } = opts;
   if (typeof doc !== 'object' || doc === null || typeof doc.nodes !== 'object' || typeof doc.settings !== 'object') throw new TypeError('buildProject: doc is a GraphDoc');
@@ -82,7 +82,7 @@ export async function buildProject(engine: Engine, opts: BuildOptions): Promise<
   const plan: BuildPlan = planBuild(doc, registry, opts.resolution !== undefined ? { resolution: opts.resolution } : undefined);
   emit({ type: 'build-plan', requestId, plan });
   if (!plan.ok) {
-    const result: BuildResult = { requestId, status: 'errors', problems: plan.problems, files: [], manifest: null, report: null, outDir: null };
+    const result: BuildResult = { requestId, status: 'errors', problems: plan.problems, files: [], manifest: null, report: null, outDir: null, peakPoolBytes: null };
     emit({ type: 'build-result', requestId, result });
     return result;
   }
@@ -148,6 +148,18 @@ export async function buildProject(engine: Engine, opts: BuildOptions): Promise<
     end: (): Promise<void[]> => Promise.all(encoders.map(({ path, encoder }) => filing(path, encoder.end(), nodeId))),
   });
 
+  // ---- memory (3.10) ----------------------------------------------------------------------------------------------
+  // What the engine held at its height: the pool's ledger, read at every event and every band. A node's own peak
+  // lies between two events: it is what the node held as WORKING at the most, on top of what was published and
+  // reserved when it started, all of which stays until the node has run (runtime.md 2.8).
+  const pool = { peak: 0, heldAtNodeStart: 0 };
+  const sample = (event?: EvalEvent): void => {
+    const memory = engine.memory();
+    pool.peak = Math.max(pool.peak, memory.workingBytes + memory.cacheBytes + memory.pinnedBytes + memory.freeBytes + memory.reservedBytes);
+    if (event?.type === 'node-start') pool.heldAtNodeStart = memory.cacheBytes + memory.pinnedBytes + memory.reservedBytes;
+    if (event?.type === 'node-done' && !event.cached) pool.peak = Math.max(pool.peak, pool.heldAtNodeStart + event.peakBytes);
+  };
+
   // ---- progress ----------------------------------------------------------------------------------------------------
   const outputRows = (item: ExportItem): number => (item.kind === 'texture' ? textureSide(item.size, res) : res);
   const totalRows = items.reduce((sum, { item }) => sum + outputRows(item), 0) + (blended.length > 0 ? res : 0);
@@ -155,6 +167,7 @@ export async function buildProject(engine: Engine, opts: BuildOptions): Promise<
   let lastProgress = -Infinity;
   const advance = (rows: number, phase: 'targets' | 'weights'): void => {
     doneRows += rows;
+    if (phase === 'targets') sample();
     const now = performance.now();
     if (now - lastProgress < PROGRESS_MS) return;
     lastProgress = now;
@@ -382,6 +395,7 @@ export async function buildProject(engine: Engine, opts: BuildOptions): Promise<
       requestId,
       signal: controller.signal,
       onEvent(event) {
+        sample(event);
         if (event.type === 'node-error') {
           nodeErrors.push(event.error);
           controller.abort(new DOMException('A node failed', 'AbortError'));
@@ -587,6 +601,7 @@ export async function buildProject(engine: Engine, opts: BuildOptions): Promise<
     targets: report,
     weightsMs,
     commitMs,
+    peakPoolBytes: pool.peak,
     height: h === null ? null : { measuredMin: h.measuredMin, measuredMax: h.measuredMax, valueMin: h.a, valueMax: h.b, clippedSamples: h.clipped },
     // The layers whose bytes were written: all of them in a build that succeeded.
     layers: plan.layers.filter((layer) => layerSums.has(layer.name)).map((layer) => ({ name: layer.name, base: layer.base, blend: layer.blend, meanWeight: meanWeight(layer.name) })),
@@ -607,6 +622,7 @@ export async function buildProject(engine: Engine, opts: BuildOptions): Promise<
     manifest: status === 'ok' ? manifestPath : null,
     report: reportWritten,
     outDir: null,
+    peakPoolBytes: pool.peak,
   };
   emit({ type: 'build-result', requestId, result });
   return result;

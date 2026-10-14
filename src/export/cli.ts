@@ -171,19 +171,10 @@ async function build(args: readonly string[], signal: AbortSignal): Promise<numb
     throw thrown;
   }
 
-  // What the build held at its height: the pool's ledger, read at every event, and the process's resident memory.
-  // A node's own peak lies between two events: it is what the node held as WORKING at the most, on top of what
-  // was published and reserved when it started, all of which stays until the node has run (runtime.md 2.8).
-  let peakPoolBytes = 0;
-  let heldAtNodeStart = 0;
   let lastTenth = -1;
   const started = performance.now();
   const titles = new Map(Object.values(doc.nodes).map((node) => [node.id, node.title || registry.get(node.type)?.title || node.type]));
   const onEvent = (event: EvalEvent | BuildEvent): void => {
-    const memory = engine.memory();
-    peakPoolBytes = Math.max(peakPoolBytes, memory.workingBytes + memory.cacheBytes + memory.pinnedBytes + memory.freeBytes + memory.reservedBytes);
-    if (event.type === 'node-start') heldAtNodeStart = memory.cacheBytes + memory.pinnedBytes + memory.reservedBytes;
-    if (event.type === 'node-done' && !event.cached) peakPoolBytes = Math.max(peakPoolBytes, heldAtNodeStart + event.peakBytes);
     if (command.json) {
       process.stdout.write(`${JSON.stringify(event)}\n`);
       if (event.type === 'build-problem') printProblem(event.problem);
@@ -233,7 +224,7 @@ async function build(args: readonly string[], signal: AbortSignal): Promise<numb
   switch (result.status) {
     case 'ok': {
       const bytes = result.files.reduce((sum, file) => sum + file.bytes, 0);
-      say(`done in ${seconds(performance.now() - started)}: ${result.files.length} files, ${megabytes(bytes)}; peak GPU pool ${megabytes(peakPoolBytes)}, peak process memory ${megabytes(peakProcessBytes)}`);
+      say(`done in ${seconds(performance.now() - started)}: ${result.files.length} files, ${megabytes(bytes)}; peak GPU pool ${megabytes(result.peakPoolBytes ?? 0)}, peak process memory ${megabytes(peakProcessBytes)}`);
       if (!command.json) process.stdout.write(`${path.join(result.outDir!, result.manifest!)}\n`);
       return EXIT.ok;
     }

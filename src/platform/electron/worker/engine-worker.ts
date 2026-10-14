@@ -6,10 +6,11 @@ import path from 'node:path';
 
 import { nodes } from '../../../core/nodes/index.ts';
 import {
-  budgetBytes, createEngine, createRegistry, createSession, DEFAULT_PREFERENCES, GpuUnavailableError, openGpu, serveSession,
+  budgetBytes, createEngine, createRegistry, createSession, DEFAULT_PREFERENCES, GpuUnavailableError, openFirstDevice, openGpu, serveSession,
   type ClientMessage, type GpuContext, type GpuProfile, type SessionPort, type WorkerMessage,
 } from '../../../core/runtime.ts';
 import { buildToFolder } from '../../../export/folder.ts';
+import { planBuild } from '../../../export/plan.ts';
 import { createViewportRenderer } from '../../../viewport/index.ts';
 import { NodeFileSink, NodeFileSource } from '../../node/files.ts';
 import { createWebCpuRunner } from './cpu.ts';
@@ -91,53 +92,65 @@ const log = environment.OROGEN_GPU_LOG === '1';
 
 const messageOf = (thrown: unknown): string => (thrown instanceof Error ? thrown.message : String(thrown));
 
+/** A device that is lost while the engine is made on it is tried once more: there is no session yet to recover it. */
+const ENGINE_ROUNDS = 2;
+
 async function start(): Promise<void> {
   if (!navigator.gpu) {
     fail('WebGPU is not available in this window');
     return;
   }
-  let gpu: GpuContext;
-  try {
-    gpu = await openGpu(navigator.gpu, { profile, log });
-  } catch (thrown) {
-    if (!(thrown instanceof GpuUnavailableError)) console.error('[orogen] the GPU device could not be opened', thrown);
-    fail(messageOf(thrown));
-    return;
-  }
+  for (let round = 1; ; round++) {
+    let gpu: GpuContext;
+    try {
+      // 8.3 step 1: on the schedule of recovery (7.8 rule 2). One missing adapter is not final: a GPU process
+      // that ended while the application started is back a moment later.
+      gpu = await openFirstDevice(() => openGpu(navigator.gpu, { profile, log }));
+    } catch (thrown) {
+      if (!(thrown instanceof GpuUnavailableError)) console.error('[orogen] the GPU device could not be opened', thrown);
+      fail(messageOf(thrown));
+      return;
+    }
 
-  // Recovery opens the next device, and the lost one is destroyed first (7.8 rule 2).
-  current = gpu;
-  const reopenGpu = async (): Promise<GpuContext> => {
-    current?.destroy();
-    current = null;
-    // One that arrives after the session's end is destroyed by the session, which alone has it then.
-    const next = await openGpu(navigator.gpu, { profile, log });
-    if (!closed) current = next;
-    return next;
-  };
+    // Recovery opens the next device, and the lost one is destroyed first (7.8 rule 2).
+    current = gpu;
+    const reopenGpu = async (): Promise<GpuContext> => {
+      current?.destroy();
+      current = null;
+      // One that arrives after the session's end is destroyed by the session, which alone has it then.
+      const next = await openGpu(navigator.gpu, { profile, log });
+      if (!closed) current = next;
+      return next;
+    };
 
-  try {
-    const engine = await createEngine({
-      gpu,
-      registry: createRegistry(nodes),
-      files: NodeFileSource(null),
-      cpu: createWebCpuRunner(),
-      budgetBytes: budgetBytes(gpu.caps, DEFAULT_PREFERENCES),
-    });
-    const session = createSession({
-      engine,
-      reopenGpu,
-      createFiles: (projectPath) => NodeFileSource(projectPath === null ? null : path.dirname(projectPath)),
-      build: (host, o) => buildToFolder(host, { ...o, createSink: NodeFileSink }),
-      renderer: createViewportRenderer(),
-    });
-    // The same task as createSession (8.3 step 4): the first subscriber is the server, so no event is missed.
-    serveSession(session, port);
-  } catch (thrown) {
-    console.error('[orogen] the engine could not be created', thrown);
-    gpu.destroy();
-    current = null;
-    fail(messageOf(thrown));
+    try {
+      const engine = await createEngine({
+        gpu,
+        registry: createRegistry(nodes),
+        files: NodeFileSource(null),
+        cpu: createWebCpuRunner(),
+        budgetBytes: budgetBytes(gpu.caps, DEFAULT_PREFERENCES),
+      });
+      const session = createSession({
+        engine,
+        reopenGpu,
+        createFiles: (projectPath) => NodeFileSource(projectPath === null ? null : path.dirname(projectPath)),
+        build: (host, o) => buildToFolder(host, { ...o, createSink: NodeFileSink }),
+        plan: (host, doc) => planBuild(doc, host.registry),
+        renderer: createViewportRenderer(),
+      });
+      // The same task as createSession (8.3 step 4): the first subscriber is the server, so no event is missed.
+      serveSession(session, port);
+      return;
+    } catch (thrown) {
+      const lost = gpu.lost;
+      gpu.destroy();
+      current = null;
+      if (lost && round < ENGINE_ROUNDS) continue;
+      console.error('[orogen] the engine could not be created', thrown);
+      fail(messageOf(thrown));
+      return;
+    }
   }
 }
 

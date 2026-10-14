@@ -6,10 +6,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { addNode, parseDoc, serializeDoc, setParam, setSettings, type DocDraft, type GraphDoc } from '../../../../src/core/runtime.ts';
-import { editRoute, SHELL_KEYS, SHELL_MENU, shellCommands } from '../../../../src/app/shell/app-commands.ts';
+import { editRoute, HELP_PAGES, SHELL_KEYS, SHELL_MENU, shellCommands } from '../../../../src/app/shell/app-commands.ts';
 import { RegistrationError } from '../../../../src/app/shell/commands.ts';
 import { defaultDoc, DEFAULT_NODE, recentWith, RECENT_MAX, relocatedFiles } from '../../../../src/app/shell/project.ts';
-import { LOG_KEPT, NOTICES_SHOWN } from '../../../../src/app/shell/shell.ts';
+import { DEVICE_BACK_NOTICE, DEVICE_LOST_NOTICE, LOG_KEPT, NOTICES_SHOWN, SOFTWARE_ADAPTER_NOTICE } from '../../../../src/app/shell/shell.ts';
 import { CAPS, createRig, fakePanels, REGISTRY, run, turn, type Rig } from './_shell.ts';
 
 const edit = (rig: Rig, seed: number): void => rig.doc.getState().transact('Seed', (draft) => setSettings(draft, { seed }));
@@ -65,7 +65,8 @@ test('the registry of the shell holds the default keys of the contract, and ever
     'edit.selectAll', 'edit.preferences', 'view.commandPalette', 'view.resetLayout', 'engine.togglePause', 'build.start',
   ]) assert.ok(ids.includes(id), id);
   assert.ok(SHELL_MENU.every((entry) => ids.includes(entry.command)));
-  assert.deepEqual(rig.shell.menus().map((menu) => menu.title), ['File', 'Edit', 'View', 'Engine']);
+  // 8.8 rule 7: the shell's menus, then those the panels name, then Help.
+  assert.deepEqual(rig.shell.menus().map((menu) => menu.title), ['File', 'Edit', 'View', 'Engine', 'Help']);
   assert.equal(ids.includes('view.controlGallery'), false, 'the gallery of controls is no command of the product');
   assert.equal(createRig({ testMode: true }).shell.commands.get('view.controlGallery')?.owner, 'shell');
 });
@@ -536,11 +537,12 @@ test('what the engine reports beside its state reaches the notification area and
   rig.engine.emit({ type: 'engine-error', message: 'A slice ran for 2100 ms', fatal: false });
   rig.engine.emit({ type: 'engine-error', message: 'A slice ran for 2100 ms', fatal: false });
   rig.engine.emit({ type: 'device-lost', reason: 'unknown', message: 'Device was destroyed.' });
+  assert.deepEqual(rig.shell.state.getState().notices.at(-1)?.message, DEVICE_LOST_NOTICE);
   rig.engine.emit({ type: 'engine-error', message: 'No adapter', fatal: true });
   const state = rig.shell.state.getState();
+  // The recovery failed: "is being recovered" is no longer true, and the engine's own words stand in its place.
   assert.deepEqual(state.notices.map((notice) => [notice.level, notice.message, notice.count]), [
     ['warning', 'A slice ran for 2100 ms', 2],
-    ['warning', 'The graphics device was lost and is being recovered', 1],
     ['error', 'The engine stopped: No adapter', 1],
   ]);
   assert.equal(state.log.length, 4, 'the log holds every one');
@@ -551,7 +553,7 @@ test('what the engine reports beside its state reaches the notification area and
   assert.deepEqual([rig.engine.calls.at(-1), rig.restarts], [['retryDevice'], 0], 'an engine that had a device recovers in place');
 
   rig.shell.dismissNotice(state.notices[0]!.id);
-  assert.equal(rig.shell.state.getState().notices.length, 2);
+  assert.equal(rig.shell.state.getState().notices.length, 1);
   for (let index = 0; index < LOG_KEPT + 20; index++) rig.shell.notify({ level: 'info', message: `Message ${index}` });
   assert.equal(rig.shell.state.getState().notices.length, NOTICES_SHOWN);
   assert.equal(rig.shell.state.getState().log.length, LOG_KEPT);
@@ -576,6 +578,65 @@ test('an engine that never started is retried with another worker, and the engin
   assert.ok(rig.shell.menus().find((menu) => menu.title === 'Engine')!.items.some((item) => item.kind === 'command' && item.command === 'engine.restart'), 'the Engine menu offers it');
 });
 
+test('a lost device is said while it is being recovered, and no longer: the notice leaves when the device is back, which is said once', () => {
+  const rig = createRig();
+  const shown = (): [string, string][] => rig.shell.state.getState().notices.map((notice) => [notice.level, notice.message]);
+  rig.engine.emit({ type: 'device-ready', epoch: 1, caps: CAPS, budgetBytes: 2 ** 30 });
+  assert.deepEqual(shown(), [], 'the first device of a session is no news');
+
+  rig.engine.emit({ type: 'device-lost', reason: 'unknown', message: 'A valid external Instance reference no longer exists.' });
+  assert.deepEqual(shown(), [['warning', DEVICE_LOST_NOTICE]]);
+  assert.equal(rig.shell.state.getState().notices[0]!.detail, 'A valid external Instance reference no longer exists.');
+  rig.shell.notify({ level: 'info', message: 'Something else' });
+
+  rig.engine.emit({ type: 'device-ready', epoch: 2, caps: CAPS, budgetBytes: 2 ** 30 });
+  assert.deepEqual(shown(), [['info', 'Something else'], ['info', DEVICE_BACK_NOTICE]], 'the warning is withdrawn, and other notices stay');
+  // A device that is ready again without having been lost meanwhile says nothing more.
+  rig.engine.emit({ type: 'device-ready', epoch: 2, caps: CAPS, budgetBytes: 2 ** 30 });
+  assert.deepEqual(shown().map(([, message]) => message), ['Something else', DEVICE_BACK_NOTICE]);
+
+  // Lost twice before it is back (a loss during the recovery): one warning, and one "back".
+  for (const id of rig.shell.state.getState().notices.map((notice) => notice.id)) rig.shell.dismissNotice(id);
+  rig.engine.emit({ type: 'device-lost', reason: 'unknown', message: 'first' });
+  rig.engine.emit({ type: 'device-lost', reason: 'unknown', message: 'second' });
+  assert.deepEqual(rig.shell.state.getState().notices.map((notice) => [notice.message, notice.count]), [[DEVICE_LOST_NOTICE, 2]]);
+  rig.engine.emit({ type: 'device-ready', epoch: 3, caps: CAPS, budgetBytes: 2 ** 30 });
+  assert.deepEqual(shown(), [['info', DEVICE_BACK_NOTICE]]);
+
+  // A warning the user dismissed is not brought back by its withdrawal, and the log holds all of it.
+  rig.engine.emit({ type: 'device-lost', reason: 'unknown', message: 'third' });
+  rig.shell.dismissNotice(rig.shell.state.getState().notices.at(-1)!.id);
+  rig.engine.emit({ type: 'device-ready', epoch: 4, caps: CAPS, budgetBytes: 2 ** 30 });
+  assert.deepEqual(shown().map(([, message]) => message), [DEVICE_BACK_NOTICE]);
+  assert.equal(rig.shell.state.getState().notices[0]!.count, 2);
+  assert.deepEqual(rig.shell.state.getState().log.filter((entry) => entry.message === DEVICE_LOST_NOTICE).length, 4);
+});
+
+test('an engine that comes back on a software adapter after it had the graphics card says so once, with what brings the card back', () => {
+  const SOFTWARE = { ...CAPS, software: true } as typeof CAPS;
+  const warnings = (rig: Rig): string[] => rig.shell.state.getState().log.filter((entry) => entry.level === 'warning').map((entry) => entry.message);
+  // An application that only ever had a software adapter (a machine without a graphics card, a CI runner) is told nothing.
+  const always = createRig();
+  always.engine.emit({ type: 'device-ready', epoch: 1, caps: SOFTWARE, budgetBytes: 2 ** 30 });
+  always.engine.emit({ type: 'device-lost', reason: 'unknown', message: 'gone' });
+  always.engine.emit({ type: 'device-ready', epoch: 2, caps: SOFTWARE, budgetBytes: 2 ** 30 });
+  assert.ok(!warnings(always).includes(SOFTWARE_ADAPTER_NOTICE));
+
+  // The graphics card, a loss, and SwiftShader in its place: the status says "Ready", and this says what happened.
+  const rig = createRig();
+  rig.engine.emit({ type: 'device-ready', epoch: 1, caps: CAPS, budgetBytes: 2 ** 30 });
+  rig.engine.emit({ type: 'device-lost', reason: 'unknown', message: 'gone' });
+  rig.engine.emit({ type: 'device-ready', epoch: 2, caps: SOFTWARE, budgetBytes: 2 ** 30 });
+  assert.deepEqual(warnings(rig).filter((message) => message === SOFTWARE_ADAPTER_NOTICE).length, 1);
+  assert.match(SOFTWARE_ADAPTER_NOTICE, /Restart Orogen/);
+  // A restarted engine that is still on it is not said again; the card that is back, and lost again, is.
+  rig.engine.emit({ type: 'device-ready', epoch: 1, caps: SOFTWARE, budgetBytes: 2 ** 30 });
+  assert.deepEqual(warnings(rig).filter((message) => message === SOFTWARE_ADAPTER_NOTICE).length, 1);
+  rig.engine.emit({ type: 'device-ready', epoch: 1, caps: CAPS, budgetBytes: 2 ** 30 });
+  rig.engine.emit({ type: 'device-ready', epoch: 1, caps: SOFTWARE, budgetBytes: 2 ** 30 });
+  assert.deepEqual(warnings(rig).filter((message) => message === SOFTWARE_ADAPTER_NOTICE).length, 2);
+});
+
 test('the main process keeps the machine awake while a build runs, and the end of a build is said', async () => {
   const rig = createRig();
   await rig.shell.project.start();
@@ -585,7 +646,7 @@ test('the main process keeps the machine awake while a build runs, and the end o
   rig.engine.emit({ type: 'request-start', requestId: 5, revision: 1, purpose: 'build' });
   rig.engine.emit({ type: 'build-start', requestId: 5, resolution: 4033, outDir: '/work/out' });
   assert.deepEqual(rig.platform.buildActive, [true]);
-  const result = { requestId: 5, status: 'ok' as const, problems: [], files: [{ path: 'a.png', bytes: 1 }, { path: 'a.orogen.json', bytes: 2 }], manifest: 'a.orogen.json', report: null, outDir: '/work/out' };
+  const result = { requestId: 5, status: 'ok' as const, problems: [], files: [{ path: 'a.png', bytes: 1 }, { path: 'a.orogen.json', bytes: 2 }], manifest: 'a.orogen.json', report: null, outDir: '/work/out', peakPoolBytes: null };
   rig.engine.emit({ type: 'build-result', requestId: 5, result });
   rig.engine.emit({ type: 'build-end', requestId: 5, status: 'ok' });
   assert.deepEqual(rig.platform.buildActive, [true, false]);
@@ -593,6 +654,408 @@ test('the main process keeps the machine awake while a build runs, and the end o
 
   rig.engine.emit({ type: 'build-result', requestId: 6, result: { ...result, status: 'errors', files: [], problems: [{ severity: 'error', code: 'E_OUT_DIR', message: 'The folder holds files that are not a build' }] } });
   assert.deepEqual(rig.shell.state.getState().notices.at(-1)?.message, 'Build failed: The folder holds files that are not a build');
+});
+
+test('the outcome of a build is the build panel\'s to show: its notice is one at the most, and none while the panel is in view', () => {
+  const rig = createRig();
+  const messages = (): string[] => rig.shell.state.getState().notices.map((notice) => notice.message);
+  const result = { requestId: 1, status: 'ok' as const, problems: [], files: [{ path: 'a.png', bytes: 1 }], manifest: 'a.orogen.json', report: null, outDir: '/work/out', peakPoolBytes: null };
+  const failed = { ...result, status: 'errors' as const, files: [], problems: [{ severity: 'error' as const, code: 'E_OUT_DIR' as const, message: 'The folder holds files that are not a build' }] };
+  const build = (requestId: number, outcome: typeof result | typeof failed): void => {
+    rig.engine.emit({ type: 'build-start', requestId, resolution: 1009, outDir: '/work/out' });
+    rig.engine.emit({ type: 'build-result', requestId, result: { ...outcome, requestId } });
+    rig.engine.emit({ type: 'build-end', requestId, status: outcome.status });
+  };
+
+  // Without a dock (a window that has none yet) and with the panel behind another tab, the outcome is said.
+  rig.shell.notify({ level: 'info', message: 'Something else' });
+  build(1, failed);
+  build(2, failed);
+  build(3, result);
+  assert.deepEqual(messages(), ['Something else', 'Build finished: 1 file in out'], 'three builds, one notice: errors that stay until dismissed do not stack up');
+  assert.equal(rig.shell.state.getState().notices.at(-1)!.panel, 'build');
+
+  // A build that starts takes the word of the build before it with it.
+  rig.engine.emit({ type: 'build-start', requestId: 4, resolution: 1009, outDir: '/work/out' });
+  assert.deepEqual(messages(), ['Something else']);
+  rig.engine.emit({ type: 'build-result', requestId: 4, result: { ...failed, requestId: 4 } });
+  assert.deepEqual(messages(), ['Something else', 'Build failed: The folder holds files that are not a build']);
+
+  // The user brings the build panel to the front: it says the same with everything that belongs to it, under where the notice lies.
+  rig.shell.panelShown('graph');
+  assert.equal(messages().length, 2, 'another panel coming into view changes nothing');
+  rig.shell.panelShown('build');
+  assert.deepEqual(messages(), ['Something else']);
+
+  // While the build panel is in view its outcome is no notice at all; the log holds it all the same.
+  let inView = true;
+  rig.shell.attachDock({ show: () => undefined, visible: (id) => id === 'build' && inView });
+  const logged = rig.shell.state.getState().log.length;
+  build(5, failed);
+  build(6, result);
+  assert.deepEqual(messages(), ['Something else']);
+  assert.equal(rig.shell.state.getState().log.length, logged + 2);
+  inView = false;
+  build(7, { ...result, status: 'aborted' as unknown as 'ok' });
+  assert.deepEqual(messages(), ['Something else', 'Build cancelled']);
+  // A notice that names no panel is shown wherever the panels are.
+  inView = true;
+  rig.shell.notify({ level: 'warning', message: 'The value could not be copied' });
+  assert.equal(messages().at(-1), 'The value could not be copied');
+});
+
+// ---- leaving a project while a build runs ----
+
+/** A build is running, as the engine's events say it. */
+function startBuild(rig: Rig, requestId = 9): void {
+  rig.engine.emit({ type: 'request-start', requestId, revision: 1, purpose: 'build' });
+  rig.engine.emit({ type: 'build-start', requestId, resolution: 1009, outDir: '/work/out' });
+}
+function endBuild(rig: Rig, requestId = 9): void {
+  rig.engine.emit({ type: 'build-end', requestId, status: 'aborted' });
+}
+const cancels = (rig: Rig): number => rig.engine.calls.filter(([name]) => name === 'cancelBuild').length;
+
+test('new, open, an example and closing the window ask before a running build is left; "Keep Building" leaves everything as it is', async () => {
+  const rig = createRig();
+  await rig.shell.project.start();
+  rig.platform.files.set('/work/alps.orogen', projectText((draft) => setSettings(draft, { seed: 41 })));
+  const before = rig.doc.getState().doc;
+  startBuild(rig);
+
+  for (const [what, leaving, go] of [
+    ['file.new', 'new', () => run(rig, 'file.new')],
+    ['file.open', 'open', () => run(rig, 'file.open')],
+    ['a recent project', 'open', async () => { void rig.shell.project.openPath('/work/alps.orogen'); await turn(); }],
+    ['an example', 'open', async () => { void rig.shell.services.openDocument(defaultDoc(REGISTRY)); await turn(); }],
+    ['closing the window', 'close', async () => { rig.platform.requestClose(); await turn(); }],
+  ] as const) {
+    await go();
+    assert.deepEqual(dialog(rig), { kind: 'building', leaving }, what);
+    rig.shell.answerBuilding(false);
+    await turn();
+    assert.deepEqual([dialog(rig), cancels(rig), rig.doc.getState().doc === before, rig.platform.confirmed], [null, 0, true, 0], what);
+  }
+  assert.deepEqual(rig.platform.asked, [], 'no file dialog was opened behind the question');
+  assert.equal(rig.engineState.getState().build.running, true);
+
+  // Escape, or the dialog's own close, is "Keep Building".
+  await run(rig, 'file.new');
+  rig.shell.closeDialog();
+  await turn();
+  assert.deepEqual([dialog(rig), cancels(rig), rig.doc.getState().doc === before], [null, 0, true]);
+});
+
+test('"Stop Build" cancels the build, waits for it to end, and then does what was asked; unsaved changes are asked about after it', async () => {
+  const rig = createRig();
+  await rig.shell.project.start();
+  edit(rig, 12);
+  startBuild(rig);
+
+  await run(rig, 'file.new');
+  assert.deepEqual(dialog(rig), { kind: 'building', leaving: 'new' });
+  rig.shell.answerBuilding(true);
+  await turn();
+  assert.equal(cancels(rig), 1);
+  assert.deepEqual([dialog(rig), seedOf(rig)], [null, 12], 'the project is not left while the build still runs');
+  endBuild(rig);
+  await turn();
+  assert.deepEqual(dialog(rig), { kind: 'unsaved', project: 'Untitled' }, 'then the question about the changes, as without a build');
+  rig.shell.answerUnsaved('discard');
+  await turn();
+  assert.deepEqual([seedOf(rig), rig.doc.getState().unsaved], [0, false]);
+
+  // The window: it closes once the build has ended.
+  startBuild(rig, 10);
+  rig.platform.requestClose();
+  await turn();
+  rig.shell.answerBuilding(true);
+  await turn();
+  assert.deepEqual([cancels(rig), rig.platform.confirmed], [2, 0]);
+  endBuild(rig, 10);
+  await turn();
+  assert.equal(rig.platform.confirmed, 1);
+});
+
+test('a build that ends by itself while the question stands has answered it, and an engine that never stops the build keeps nobody from their project', async () => {
+  const rig = createRig({ buildStopBackstopMs: 20 });
+  await rig.shell.project.start();
+  rig.platform.files.set('/work/alps.orogen', projectText((draft) => setSettings(draft, { seed: 41 })));
+  startBuild(rig);
+  void rig.shell.project.openPath('/work/alps.orogen');
+  await turn();
+  assert.equal(dialog(rig)?.kind, 'building');
+  endBuild(rig);
+  await turn();
+  assert.deepEqual([dialog(rig), cancels(rig), rig.doc.getState().path], [null, 0, '/work/alps.orogen'], 'there was nothing left to stop');
+
+  // The engine is told to stop and says nothing: after the backstop the project is left all the same.
+  startBuild(rig, 11);
+  await run(rig, 'file.new');
+  rig.shell.answerBuilding(true);
+  await turn();
+  assert.deepEqual([cancels(rig), rig.doc.getState().path], [1, '/work/alps.orogen']);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(rig.doc.getState().path, null);
+});
+
+test('an example opens through the project service: a new project without a file, after the question about unsaved changes', async () => {
+  const rig = createRig();
+  await rig.shell.project.start();
+  const example = parseDoc(projectText((draft) => setSettings(draft, { seed: 99 })), REGISTRY).doc;
+
+  // Nothing unsaved: it opens at once.
+  assert.equal(await rig.shell.services.openDocument(example), true);
+  assert.deepEqual([seedOf(rig), rig.doc.getState().path, rig.doc.getState().unsaved, rig.doc.getState().past.length], [99, null, false, 0]);
+  assert.deepEqual(rig.shell.state.getState().preferences.recent, [], 'an example is no file: it is no recent project');
+
+  // Unsaved changes: the shell's own question, with its three answers.
+  edit(rig, 5);
+  const cancelled = rig.shell.services.openDocument(example);
+  await turn();
+  assert.deepEqual(dialog(rig), { kind: 'unsaved', project: 'Untitled' });
+  rig.shell.answerUnsaved('cancel');
+  assert.equal(await cancelled, false);
+  assert.equal(seedOf(rig), 5);
+
+  const saved = rig.shell.services.openDocument(example);
+  await turn();
+  rig.platform.answers.save.push('/work/mine.orogen');
+  rig.shell.answerUnsaved('save');
+  assert.equal(await saved, true);
+  assert.equal(parseDoc(rig.platform.files.get('/work/mine.orogen')!, REGISTRY).doc.settings.seed, 5, 'the project was saved before it was replaced');
+  assert.deepEqual([seedOf(rig), rig.doc.getState().path, rig.doc.getState().unsaved], [99, null, false]);
+
+  // "Save" whose file dialog is cancelled opens nothing.
+  edit(rig, 6);
+  const unsavedStill = rig.shell.services.openDocument(example);
+  await turn();
+  rig.shell.answerUnsaved('save');
+  assert.equal(await unsavedStill, false);
+  assert.equal(seedOf(rig), 6);
+});
+
+// ---- a file that another program changed (8.6) ----
+
+test('a save onto a file that another program changed since it was opened asks first: overwrite, save as, or leave both', async () => {
+  const rig = createRig({ launchProject: '/work/alps.orogen' });
+  rig.platform.touch('/work/alps.orogen', projectText());
+  await rig.shell.project.start();
+  /** A command runs through several answers of the bridge: each has had its turn after this. */
+  const settle = async (): Promise<void> => { for (let turns = 0; turns < 8; turns++) await turn(); };
+
+  // Untouched since it was opened: saved without a question, and again after that save.
+  edit(rig, 5);
+  await run(rig, 'file.save');
+  await settle();
+  assert.deepEqual([dialog(rig), rig.doc.getState().unsaved], [null, false]);
+  edit(rig, 6);
+  await run(rig, 'file.save');
+  await settle();
+  assert.deepEqual([dialog(rig), parseDoc(rig.platform.files.get('/work/alps.orogen')!, REGISTRY).doc.settings.seed], [null, 6]);
+
+  // A second Orogen (or any program) saves the file with a node of its own.
+  const theirs = projectText((draft) => { addNode(draft, REGISTRY, 'filter/blur', { x: 300, y: 0 }); });
+  rig.platform.touch('/work/alps.orogen', theirs);
+  edit(rig, 999);
+  void run(rig, 'file.save');
+  await settle();
+  assert.deepEqual(dialog(rig), { kind: 'changed', file: '/work/alps.orogen' });
+  assert.equal(rig.platform.files.get('/work/alps.orogen'), theirs, 'nothing is written while the question stands');
+  rig.shell.answerChanged('cancel');
+  await settle();
+  assert.deepEqual([dialog(rig), rig.doc.getState().unsaved, rig.platform.files.get('/work/alps.orogen') === theirs], [null, true, true], 'cancelled: both are as they were');
+
+  // Save As: this project goes to another file, and theirs stays.
+  rig.platform.answers.save.push('/work/alps-mine.orogen');
+  void run(rig, 'file.save');
+  await settle();
+  rig.shell.answerChanged('saveAs');
+  await settle();
+  assert.equal(rig.platform.files.get('/work/alps.orogen'), theirs);
+  assert.equal(parseDoc(rig.platform.files.get('/work/alps-mine.orogen')!, REGISTRY).doc.settings.seed, 999);
+  assert.deepEqual([rig.doc.getState().path, rig.doc.getState().unsaved], ['/work/alps-mine.orogen', false]);
+
+  // Overwrite: asked once, and the file is this application's again afterwards.
+  await rig.shell.project.openPath('/work/alps.orogen');
+  rig.platform.touch('/work/alps.orogen', theirs);
+  edit(rig, 31);
+  void run(rig, 'file.save');
+  await settle();
+  assert.equal(dialog(rig)?.kind, 'changed');
+  rig.shell.answerChanged('overwrite');
+  await settle();
+  assert.equal(parseDoc(rig.platform.files.get('/work/alps.orogen')!, REGISTRY).doc.settings.seed, 31);
+  edit(rig, 32);
+  await run(rig, 'file.save');
+  await settle();
+  assert.deepEqual([dialog(rig), rig.doc.getState().unsaved], [null, false], 'no question for the file this application wrote itself');
+
+  // A file that is gone is written anew without a question; closing the dialog is cancelling.
+  rig.platform.files.delete('/work/alps.orogen');
+  edit(rig, 33);
+  await run(rig, 'file.save');
+  await settle();
+  assert.deepEqual([dialog(rig), rig.platform.files.has('/work/alps.orogen')], [null, true]);
+  rig.platform.touch('/work/alps.orogen', theirs);
+  edit(rig, 34);
+  void run(rig, 'file.save');
+  await settle();
+  rig.shell.closeDialog();
+  await settle();
+  assert.equal(rig.platform.files.get('/work/alps.orogen'), theirs);
+});
+
+// ---- recovery (8.6) ----
+
+test('an unsaved project is kept for recovery a moment after it changed, and what is kept goes when the project is saved or given up', async () => {
+  const rig = createRig({ recoveryDelayMs: 5 });
+  const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
+  /** Read through a call: the compiler takes what an assertion saw of it for what it still is. */
+  const kept = (): { path: string | null; text: string } | null => rig.platform.recovery;
+  await rig.shell.project.start();
+  assert.deepEqual([kept(), rig.platform.recoveryWrites], [null, []], 'a project nobody changed is not kept');
+
+  edit(rig, 4711);
+  assert.equal(kept(), null, 'not at every change: a drag changes a value sixty times a second');
+  await settle();
+  assert.equal(kept()?.path, null);
+  assert.equal(parseDoc(kept()!.text, REGISTRY).doc.settings.seed, 4711);
+  // Several changes in a row are one write, of the last.
+  for (const seed of [1, 2, 3]) edit(rig, seed);
+  await settle();
+  assert.equal(rig.platform.recoveryWrites.length, 2);
+  assert.equal(parseDoc(kept()!.text, REGISTRY).doc.settings.seed, 3);
+
+  // Saved: the changes are in a file, and nothing is kept.
+  rig.platform.answers.save.push('/work/kept.orogen');
+  await run(rig, 'file.save');
+  await settle();
+  assert.equal(kept(), null);
+  // Changed again: kept again, now with the path of its file.
+  edit(rig, 8);
+  await settle();
+  assert.deepEqual([kept()?.path, parseDoc(kept()!.text, REGISTRY).doc.settings.seed], ['/work/kept.orogen', 8]);
+  // Given up for a new project: nothing of it is offered at the next start.
+  await run(rig, 'file.new');
+  rig.shell.answerUnsaved('discard');
+  await settle();
+  assert.equal(kept(), null);
+
+  // A build keeps the project at once: the engine that builds lives in the page's process.
+  const slow = createRig({ recoveryDelayMs: 3_600_000 });
+  await slow.shell.project.start();
+  edit(slow, 77);
+  slow.engine.emit({ type: 'build-start', requestId: 3, resolution: 1009, outDir: '/out' });
+  await turn();
+  assert.equal(parseDoc(slow.platform.recovery!.text, REGISTRY).doc.settings.seed, 77);
+  // The window closes with the user's consent: nothing is left for the next start to offer.
+  slow.platform.requestClose();
+  await turn();
+  slow.shell.answerBuilding(true);
+  slow.engine.emit({ type: 'build-end', requestId: 3, status: 'aborted' });
+  await turn();
+  slow.shell.answerUnsaved('discard');
+  await turn();
+  await turn();
+  assert.deepEqual([slow.platform.confirmed, slow.platform.recovery], [1, null]);
+  slow.stop();
+  rig.stop();
+});
+
+test('what a run before kept is offered at start-up: restored it is the project of its file, unsaved; discarded it is gone', async () => {
+  const kept = projectText((draft) => setSettings(draft, { seed: 4711 }));
+  const onDisk = projectText((draft) => setSettings(draft, { seed: 1 }));
+
+  // The page's process went with an unsaved change to a saved project: the next start offers what was kept.
+  const rig = createRig({ recovery: { path: '/work/alps.orogen', text: kept, savedAt: 1_700_000_000_000 }, recoveryDelayMs: 5 });
+  rig.platform.touch('/work/alps.orogen', onDisk);
+  const starting = rig.shell.project.start();
+  await turn();
+  assert.deepEqual(dialog(rig), { kind: 'recover', project: 'alps', savedAt: 1_700_000_000_000 });
+  assert.equal(seedOf(rig), 0, 'the default project stands behind the question');
+  rig.shell.answerRecover(true);
+  await starting;
+  assert.deepEqual([dialog(rig), seedOf(rig), rig.doc.getState().path, rig.doc.getState().unsaved], [null, 4711, '/work/alps.orogen', true]);
+  assert.equal(rig.platform.files.get('/work/alps.orogen'), onDisk, 'the file is not touched until the project is saved');
+  assert.notEqual(rig.platform.recovery, null, 'what was kept stays until then: a second crash loses nothing');
+  // Save writes it where it belongs, without the question about a changed file, and nothing is kept any more.
+  await run(rig, 'file.save');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual([dialog(rig), parseDoc(rig.platform.files.get('/work/alps.orogen')!, REGISTRY).doc.settings.seed, rig.doc.getState().unsaved, rig.platform.recovery], [null, 4711, false, null]);
+  rig.stop();
+
+  // Discarded: the project the application started with stays, and the record is removed.
+  const other = createRig({ recovery: { path: null, text: kept, savedAt: 0 } });
+  const second = other.shell.project.start();
+  await turn();
+  assert.deepEqual(dialog(other), { kind: 'recover', project: 'Untitled', savedAt: 0 });
+  other.shell.answerRecover(false);
+  await second;
+  assert.deepEqual([seedOf(other), other.doc.getState().unsaved, other.platform.recovery], [0, false, null]);
+  other.stop();
+
+  // The question must be answered: another dialog does not take its place, and what was kept is not given up by one.
+  const asked = createRig({ recovery: { path: null, text: kept, savedAt: 0 } });
+  const third = asked.shell.project.start();
+  await turn();
+  await run(asked, 'help.about');
+  assert.equal(dialog(asked)?.kind, 'recover');
+  assert.notEqual(asked.platform.recovery, null);
+  asked.shell.answerRecover(true);
+  await third;
+  assert.deepEqual([seedOf(asked), asked.doc.getState().path, asked.doc.getState().unsaved], [4711, null, true]);
+  asked.stop();
+
+  // What is no project is not offered, and is removed.
+  const broken = createRig({ recovery: { path: null, text: '{ "format": "orogen", ', savedAt: 0 } });
+  await broken.shell.project.start();
+  assert.deepEqual([dialog(broken), broken.platform.recovery], [null, null]);
+  broken.stop();
+});
+
+test('a project file a second start of the application was given is opened here, after the question about unsaved changes', async () => {
+  const rig = createRig();
+  rig.platform.touch('/work/other.orogen', projectText((draft) => setSettings(draft, { seed: 55 })));
+  await rig.shell.project.start();
+  rig.platform.requestOpen('/work/other.orogen');
+  await turn();
+  await turn();
+  assert.deepEqual([rig.doc.getState().path, seedOf(rig)], ['/work/other.orogen', 55]);
+
+  edit(rig, 56);
+  rig.platform.touch('/work/third.orogen', projectText((draft) => setSettings(draft, { seed: 60 })));
+  rig.platform.requestOpen('/work/third.orogen');
+  await turn();
+  assert.equal(dialog(rig)?.kind, 'unsaved');
+  rig.shell.answerUnsaved('cancel');
+  await turn();
+  assert.deepEqual([rig.doc.getState().path, seedOf(rig)], ['/work/other.orogen', 56], 'cancelled: the project that was open stays');
+  rig.stop();
+});
+
+// ---- help ----
+
+test('the Help menu shows the pages of the user documentation in the application: no program of the system is asked', async () => {
+  const rig = createRig();
+  const help = rig.shell.menus().find((menu) => menu.title === 'Help')!;
+  assert.deepEqual(help.items.map((item) => (item.kind === 'command' ? item.title : '-')), ['User Guide', 'Unreal Import Guide', 'First-Run Checklist', '-', 'About Orogen']);
+  assert.deepEqual(HELP_PAGES.map((page) => page.document), ['README.md', 'unreal-import.md', 'first-run-on-windows.md']);
+
+  for (const page of HELP_PAGES) {
+    await run(rig, page.id);
+    assert.deepEqual(dialog(rig), { kind: 'help', page: page.document }, page.id);
+  }
+  // A stock Windows has no program for .md, and one that exists shows the source: the bridge is not asked to open a page.
+  assert.deepEqual(rig.platform.opened, []);
+  assert.deepEqual(rig.shell.state.getState().notices, []);
+  rig.shell.closeDialog();
+  assert.equal(dialog(rig), null);
+
+  await run(rig, 'help.about');
+  assert.deepEqual(dialog(rig), { kind: 'about' });
+  rig.shell.closeDialog();
+  assert.equal(dialog(rig), null);
 });
 
 test('a command of the native menu runs, and one this page does not have is passed over without an error', async () => {
@@ -637,12 +1100,12 @@ test('after stop the shell hears neither the engine nor the main process', () =>
   assert.deepEqual([rig.shell.state.getState().notices.length, rig.shell.state.getState().paused, rig.platform.confirmed], [0, false, 0]);
 });
 
-test('shellCommands makes a list that the registry takes: every id begins with file, edit, view or engine', () => {
+test('shellCommands makes a list that the registry takes: every id begins with file, edit, view, engine or help', () => {
   const rig = createRig();
   const host = {
     project: rig.shell.project, edit: { textField: () => false, inTextField: () => undefined, clipboardEvent: () => undefined }, testMode: true,
     hasCommand: () => false, recent: () => [], paused: () => false, setPaused: () => undefined, openPalette: () => undefined, showDialog: () => undefined,
-    resetLayout: () => undefined, closeWindow: () => undefined, restartEngine: () => undefined,
+    resetLayout: () => undefined, closeWindow: () => undefined, restartEngine: () => undefined, openHelp: () => undefined,
   };
-  for (const command of shellCommands(host)) assert.match(command.id, /^(file|edit|view|engine)\.[a-zA-Z]+$/);
+  for (const command of shellCommands(host)) assert.match(command.id, /^(file|edit|view|engine|help)\.[a-zA-Z]+$/);
 });

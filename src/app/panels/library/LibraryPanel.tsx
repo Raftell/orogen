@@ -4,12 +4,11 @@
 import { useEffect, useMemo, type KeyboardEvent } from 'react';
 import { useStore } from 'zustand';
 
-import { Button, commandItems, Dialog, IconButton, Menu, useApp } from '../../ui/index.ts';
-import { answerUnsaved, bindElement, bindPanel } from './actions.ts';
+import { commandItems, Dialog, IconButton, Menu, useApp } from '../../ui/index.ts';
+import { bindElement, bindPanel } from './actions.ts';
 import { catalogOf } from './catalog.ts';
 import { EXAMPLES } from './example-files.ts';
 import { ExampleBrowser } from './ExampleBrowser.tsx';
-import { projectName } from './examples.ts';
 import styles from './library.module.css';
 import { NodeBrowser } from './NodeBrowser.tsx';
 import { libraryStore, watchAddedNodes, type LibraryTab } from './state.ts';
@@ -31,8 +30,6 @@ export function LibraryPanel() {
   const { ctx } = app;
   const tab = useStore(libraryStore, (state) => state.tab);
   const gallery = useStore(libraryStore, (state) => state.gallery);
-  const confirm = useStore(libraryStore, (state) => state.confirm);
-  const path = useStore(ctx.doc, (state) => state.path);
   const catalog = useMemo(() => catalogOf(ctx.registry), [ctx.registry]);
 
   // The dock keeps this component while another tab is in front: the recent nodes follow the document from the
@@ -53,8 +50,6 @@ export function LibraryPanel() {
     event.currentTarget.parentElement?.querySelector<HTMLElement>(`[data-tab="${next.id}"]`)?.focus();
     event.preventDefault();
   }
-
-  const waiting = confirm === null ? undefined : EXAMPLES.find((example) => example.id === confirm);
 
   return (
     <div className={styles.root} data-library="root" ref={bindElement}>
@@ -85,22 +80,6 @@ export function LibraryPanel() {
       <Dialog open={gallery} name="library-examples" title="Open Example" width={880} onClose={() => libraryStore.setState({ gallery: false })}>
         {gallery ? <ExampleBrowser place="dialog" /> : null}
       </Dialog>
-
-      {/* The question File > Open asks, with its three answers (src/app/shell/Dialogs.tsx). */}
-      <Dialog
-        open={waiting !== undefined}
-        name="library-unsaved"
-        title={`Save the changes to ${projectName(path)}?`}
-        description={`${waiting?.title ?? 'The example'} opens as a new project in place of this one. The changes are lost if they are not saved.`}
-        onClose={() => answerUnsaved(ctx, 'cancel')}
-        actions={
-          <>
-            <Button className={styles.answerStart} variant="danger" data-action="discard" onClick={() => answerUnsaved(ctx, 'discard')}>Don&rsquo;t Save</Button>
-            <Button data-action="cancel" onClick={() => answerUnsaved(ctx, 'cancel')}>Cancel</Button>
-            <Button variant="primary" data-action="save" autoFocus onClick={() => answerUnsaved(ctx, 'save')}>Save</Button>
-          </>
-        }
-      />
     </div>
   );
 }

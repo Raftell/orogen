@@ -1,5 +1,5 @@
 import type { ProjectSettings } from './doc.ts';
-import { isBuildResolution, ladderLevel, MAX_LEVEL } from './ladder.ts';
+import { isBuildResolution, ladder, ladderLevel, MAX_LEVEL } from './ladder.ts';
 
 /** The defaults of runtime.md 4.2. */
 export const DEFAULT_SETTINGS: ProjectSettings = {
@@ -94,4 +94,28 @@ export function normalizeSettings(stored: Readonly<Record<string, unknown>>): {
 /** (buildResolution − 1) / 2^previewLevel + 1. */
 export function previewResolution(settings: ProjectSettings): number {
   return (settings.buildResolution - 1) / 2 ** settings.previewLevel + 1;
+}
+
+/**
+ * The ladder level of `buildResolution` whose resolution is nearest to `resolution`, in vertices per side; of two
+ * equally near, the coarser, which is the cheaper. Level 0, the build resolution itself, is a preview level like
+ * any other (runtime.md 4.2).
+ */
+export function previewLevelNearest(buildResolution: number, resolution: number): number {
+  const levels = ladder(buildResolution);
+  let nearest = 0;
+  for (let k = 1; k < levels.length; k++) {
+    if (Math.abs(levels[k]! - resolution) <= Math.abs(levels[nearest]! - resolution)) nearest = k;
+  }
+  return nearest;
+}
+
+/**
+ * What `setSettings` is given when the build resolution changes (runtime.md 4.2): the new build resolution as
+ * normalizeSettings stores it, and the preview level that keeps the preview resolution nearest to what it is
+ * now. Without it a smaller build would coarsen the previews with it and a larger one make them as much heavier.
+ */
+export function withBuildResolution(settings: ProjectSettings, next: number): { readonly buildResolution: number; readonly previewLevel: number } {
+  const build = buildResolution({ buildResolution: next }).value;
+  return { buildResolution: build, previewLevel: previewLevelNearest(build, previewResolution(settings)) };
 }

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { LaunchError, readLaunch } from '../../../../src/platform/electron/main/launch.ts';
+import { LaunchError, readLaunch, secondStartProject } from '../../../../src/platform/electron/main/launch.ts';
 
 const CWD = path.resolve('/work/project');
 const DRIVER = path.resolve('/repo/tests/electron/driver.cjs');
@@ -44,4 +44,17 @@ test('launch: the profile and the adapter take their values and no others', () =
   assert.equal(readLaunch({ OROGEN_ELECTRON_GPU: 'software' }, ['electron', '.'], dev).software, true);
   assert.equal(readLaunch({ OROGEN_ELECTRON_GPU: 'hardware' }, ['electron', '.'], dev).software, false);
   assert.throws(() => readLaunch({ OROGEN_ELECTRON_GPU: 'swiftshader' }, ['electron', '.'], dev), LaunchError);
+});
+
+test('launch: a second start hands over the project file it was given, read as a first start reads its own', () => {
+  const cwd = path.resolve('/home/ada/Terrain');
+  // Packaged: the executable, then the file. From source: the executable, the application's folder, then the file.
+  assert.equal(secondStartProject(['C:\\Orogen\\Orogen.exe', 'alps.orogen'], { packaged: true, cwd }), path.resolve(cwd, 'alps.orogen'));
+  assert.equal(secondStartProject(['electron', '.', '/work/andes.orogen'], { packaged: false, cwd }), path.resolve('/work/andes.orogen'));
+  // Chromium adds switches of its own to what it passes on: they are no file.
+  assert.equal(secondStartProject(['Orogen.exe', '--allow-file-access-from-files', '--original-process-start-time=1', 'alps.orogen'], { packaged: true, cwd }), path.resolve(cwd, 'alps.orogen'));
+  // A second start without a file only brings the window forward.
+  assert.equal(secondStartProject(['Orogen.exe'], { packaged: true, cwd }), null);
+  assert.equal(secondStartProject(['electron', '.'], { packaged: false, cwd }), null);
+  assert.equal(secondStartProject([], { packaged: true, cwd }), null);
 });

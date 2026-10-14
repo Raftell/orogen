@@ -16,14 +16,16 @@ export { HARD_CEILING_MS, RATE_INITIAL } from './gpu/tuning.ts';
 
 // 4. The document
 export type { Edge, GraphDoc, NodeGroup, NodeInstance, PortRef, ProjectSettings, ViewBinding } from './graph/doc.ts';
-export { previewResolution } from './graph/settings.ts';
-export { outputKind, validateConnection } from './graph/validate.ts';
+export { previewLevelNearest, previewResolution, withBuildResolution } from './graph/settings.ts';
+export { isBuildResolution, ladder, ladderLevel } from './graph/ladder.ts';
+export { cycleNodes, endpointProblem, inputKey, inputSources, missingInputs, outputKind, usedEdges, validateConnection } from './graph/validate.ts';
+export { canBypass, inputsOf, portLabel } from './graph/ports.ts';
 export { normalizeParams } from './graph/params.ts';
 export { DocFormatError, newDoc, newId, parseDoc, serializeDoc } from './graph/serialize.ts';
 export type { DocProblem } from './graph/serialize.ts';
 export {
   addNode, connect, copyNodes, disconnect, moveNodes, pasteNodes, removeGroups, removeNodes, resetParam, setGraphViewport,
-  setGroup, setNodeFlags, setParam, setSettings, setView,
+  setGroup, setNodeFlags, setParam, setSettings, setView, setViewportState,
 } from './graph/commands.ts';
 export type { DocDraft, DocFragment, Mutable } from './graph/commands.ts';
 
@@ -42,6 +44,7 @@ export type { EngineTestHooks } from './eval/hooks.ts';
 
 // 6. Files and CPU tasks
 export { FileError } from './io/files.ts';
+export { BUSY_DELAYS_MS, BUSY_RM, retryBusy } from './io/retry.ts';
 export type { FileSink, FileSource, FileWriter } from './io/files.ts';
 export type { CpuRunner } from './cpu/runner.ts';
 export { serveCpuTasks } from './cpu/serve.ts';
@@ -52,6 +55,7 @@ export type { CpuTaskReply, CpuTaskRequest } from './cpu/protocol.ts';
 export { createSession } from './session/session.ts';
 export type { BuildRequest, EnginePreferences, EngineSession, SessionBuildOptions } from './session/session.ts';
 export { budgetBytes, DEFAULT_PREFERENCES } from './session/budget.ts';
+export { openFirstDevice } from './session/recovery.ts';
 export { createSessionClient, serveSession } from './session/protocol.ts';
 export type { ClientMessage, SessionPort, WorkerMessage } from './session/protocol.ts';
 export { viewAfterSelect } from './graph/view.ts';

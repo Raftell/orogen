@@ -20,9 +20,9 @@ test('commands: the menu bar offers the commands of the shell and of the panels,
     await ready(app);
     await docked(app);
     await settled(app);
-    // 8.8 rule 7: the shell's menus, then those the panels name.
+    // 8.8 rule 7: the shell's menus, then those the panels name, then Help.
     const titles = await app.eval<string[]>(`shellTest.texts('.og-menubar-item')`);
-    assert.deepEqual(titles, ['File', 'Edit', 'View', 'Engine', 'Viewport', 'Graph', 'Inspector', 'Library']);
+    assert.deepEqual(titles, ['File', 'Edit', 'View', 'Engine', 'Viewport', 'Graph', 'Inspector', 'Library', 'Help']);
     const menus: Record<string, string[]> = {};
     const keys: Record<string, string | null> = {};
     for (const title of titles) {
@@ -33,7 +33,7 @@ test('commands: the menu bar offers the commands of the shell and of the panels,
       await closeMenu(app);
     }
     // The default project at start: one node, nothing selected, the graph in front with the focus, the inspector
-    // in front of the library and the build panel.
+    // above the library, and the library in front of the build panel.
     assert.deepEqual(menus, {
       File: ['file.new', 'file.open', 'file.openRecent (disabled)', 'library.browseExamples', 'file.save', 'file.saveAs', 'file.exit'],
       // Nothing to undo. The graph has the focus: it takes the clipboard events, has nothing selected to delete, and a node to select.
@@ -52,11 +52,12 @@ test('commands: the menu bar offers the commands of the shell and of the panels,
         'inspector.rename (disabled)', 'inspector.toggleBypass (disabled)', 'inspector.resetParameter (disabled)', 'inspector.resetAll (disabled)', 'inspector.randomizeSeed',
         'inspector.reloadFiles (disabled)', 'inspector.expandAll (disabled)', 'inspector.collapseAll (disabled)',
       ],
-      // The library is behind the inspector: what shows one of its lists brings it to the front, what acts on a list is disabled.
+      // The library is in view with no node selected in its list: there is nothing to add, and nothing folded to unfold.
       Library: [
         'library.search', 'library.addNode (disabled)', 'library.showNodes', 'library.showExamples', 'library.expandAll (disabled)', 'library.collapseAll',
         'library.clearRecent (disabled)', 'library.openExample (disabled)',
       ],
+      Help: ['help.userGuide', 'help.unrealImport', 'help.firstRun', 'help.about'],
     });
     // The keys of runtime.md 8.8, as a person reads them. A key of a panel's scope is shown in that panel's menu.
     assert.deepEqual(
@@ -356,6 +357,46 @@ test('commands: keys run commands through the keymap, and undo and redo follow i
   });
 });
 
+test('commands: the Help menu opens the pages of the user documentation, and About says the version and the graphics adapter', async (t) => {
+  await withApp({}, async (app) => {
+    const caps = await ready(app);
+    await docked(app);
+    await settled(app);
+    const items = await openMenu(app, 'Help');
+    assert.deepEqual(items.map((item) => [item.id, item.label, item.enabled]), [
+      ['help.userGuide', 'User Guide', true], ['help.unrealImport', 'Unreal Import Guide', true], ['help.firstRun', 'First-Run Checklist', true], ['help.about', 'About Orogen', true],
+    ]);
+    await closeMenu(app);
+
+    // Each page is one the bridge finds in the documentation that came with the application (8.6): in test mode it
+    // answers as it would and starts no program. A page it had refused would be said in the notification area.
+    for (const [item, page] of [['help.userGuide', 'README.md'], ['help.unrealImport', 'unreal-import.md'], ['help.firstRun', 'first-run-on-windows.md']] as const) {
+      assert.equal(fs.existsSync(path.join(import.meta.dirname, '../../../docs/user', page)), true, page);
+      assert.equal(await app.eval<boolean>(`orogenTest.ctx.platform.openDocument(${quote(page)})`), true, page);
+      await choose(app, 'Help', item);
+    }
+    assert.equal(await app.eval<boolean>(`orogenTest.ctx.platform.openDocument('no-such-page.md')`), false);
+    // The three calls have answered by the time another call through the same bridge has.
+    await app.eval(`orogenTest.ctx.platform.getPreferences()`);
+    assert.deepEqual(await app.eval<string[]>(`orogenTest.shell.state.getState().log.map((entry) => entry.message)`), [], 'every page was opened');
+
+    // About: the version of package.json, and the adapter the status bar names.
+    await choose(app, 'Help', 'help.about');
+    await appears(app, '[data-dialog="about"]');
+    const facts = await app.eval<Record<string, string>>(`Object.fromEntries([...document.querySelectorAll('[data-dialog="about"] [data-about]')].map((fact) => [fact.getAttribute('data-about'), fact.querySelector('dd').textContent]))`);
+    const version = (JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '../../../package.json'), 'utf8')) as { version: string }).version;
+    assert.equal(facts.version, version);
+    const shown = await app.eval<string>(`shellTest.text('[data-status="adapter"] .og-status-text')`);
+    assert.equal(facts.adapter, caps.software ? `${shown} (software adapter)` : shown);
+    assert.equal(facts.profile, 'core');
+    assert.match(facts.texture!, /^\d+ × \d+$/);
+    assert.equal(await app.eval<string>(`shellTest.text('[data-dialog="about"] .og-dialog-title')`), 'Orogen');
+    t.diagnostic(`capture: ${await capture(app, 'help-about')}`);
+    await press(app, '[data-dialog="about"] [data-action="ok"]');
+    await vanishes(app, '[data-dialog="about"]');
+  });
+});
+
 test('commands: the palette finds a command by a few of its letters and runs it', async (t) => {
   await withApp({}, async (app) => {
     await ready(app);
@@ -376,7 +417,7 @@ test('commands: the palette finds a command by a few of its letters and runs it'
     assert.equal(listed.find((entry) => entry.id === 'viewport.toggleTop')?.disabled, false);
     // Read from top to bottom, the list is the whole list: every command of the shell and of the five panels but the palette's own.
     const declared = await app.eval<string[]>(`[...document.querySelectorAll('.og-menubar-item')].map((item) => item.getAttribute('data-menu'))`);
-    assert.ok(declared.length === 8 && listed.length > 70, `${listed.length} commands are listed`);
+    assert.ok(declared.length === 9 && listed.length > 70, `${listed.length} commands are listed`);
     for (const id of ['graph.fit', 'graph.toggleMinimap', 'inspector.collapseAll', 'library.browseExamples', 'build.cancel', 'build.importGuide', 'build.selectProblemNode', 'viewport.removeOverlay']) assert.ok(ids.includes(id), id);
     assert.equal(new Set(ids).size, ids.length, 'each once');
     // Two panels have a command of one title: the list says whose each is.

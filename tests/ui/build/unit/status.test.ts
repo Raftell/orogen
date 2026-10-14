@@ -67,6 +67,9 @@ test('a build that has ended: how, and how long it took when it took any time wo
   assert.deepEqual(said({ last: last('device-lost') }), ['Build stopped: device lost', 'after 2.4 s', 'error']);
   // A build that was refused at its folder, or stopped at its plan, did not run: "in 0.0 s" says nothing.
   assert.deepEqual(said({ last: last('errors', { durationMs: 4, computed: false }, ['E_OUT_DIR']) }), ['The output folder was refused', '', 'error']);
+  // The engine was restarted while the build ran: it has no result, and nothing was put in place.
+  assert.deepEqual(said({ interrupted: true, folder: OUT }), ['Build stopped: the engine was restarted', 'The output folder holds what it held before', 'warning']);
+  assert.deepEqual(said({ interrupted: true, device: 'starting' }), ['Build stopped: the engine was restarted', 'Waiting for the graphics device', 'warning']);
   // A build nobody timed.
   assert.deepEqual(said({ last: last('ok', { durationMs: null }) }), ['Build finished', '', 'ok']);
   // While the device is away, how the last build ended stays said: a lost device is how some builds end.

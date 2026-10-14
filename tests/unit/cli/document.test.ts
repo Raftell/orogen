@@ -482,6 +482,20 @@ test('a project file: the document as stored, the node named, and the terrain co
   assert.equal(projectDocument(full, project(), 'loose', 'island.orogen').terrain, null, 'the height input is unconnected');
   assert.equal(projectDocument(full, project(), 'fed', 'island.orogen').terrain, null, 'the edge comes from a node of unknown type');
 
+  // Without a terrain of its own a node is drawn over the terrain the project shows: the height of its view.
+  const viewing = (height: unknown): string => JSON.stringify({ ...JSON.parse(project()) as object, ui: { view: { height } } });
+  const shown = viewing({ node: 'noise', port: 'out' });
+  assert.deepEqual(projectDocument(full, shown, 'loose', 'island.orogen').terrain, { node: 'noise', port: 'out' }, 'a node whose height input is unconnected');
+  assert.deepEqual(projectDocument(full, shown, 'fed', 'island.orogen').terrain, { node: 'noise', port: 'out' });
+  assert.deepEqual(projectDocument(full, viewing({ node: 'picked', port: 'out' }), 'painted', 'island.orogen').terrain, { node: 'noise', port: 'out' }, 'what is connected to the height input comes first');
+  assert.equal(projectDocument(full, shown, 'noise', 'island.orogen').terrain, null, 'a height output is still drawn by itself');
+  for (const [height, why] of [
+    [{ node: 'loose', port: 'out' }, 'the view shows the node itself'], [{ node: 'gone', port: 'out' }, 'the view names a node the project lacks'],
+    [{ node: 'noise', port: 'none' }, 'an output its node lacks'], [{ node: 'lost', port: 'out' }, 'a node of a type no build has'], [{ node: 7 }, 'no port at all'],
+  ] as const) {
+    assert.equal(projectDocument(full, viewing(height), 'loose', 'island.orogen').terrain, null, why);
+  }
+
   // A node of a type the registry lacks is planned: the evaluation reports it.
   const lost = projectDocument(full, project(), 'lost', 'island.orogen');
   assert.deepEqual([lost.type, lost.def, lost.terrain], ['weather/rain', null, null]);

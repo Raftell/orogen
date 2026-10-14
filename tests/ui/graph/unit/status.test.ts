@@ -5,9 +5,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { setNodeFlags, type EngineEvent, type NodeError } from '../../../../src/core/runtime.ts';
-import { createNodeFeed, isCurrent, isStale, runtimeOf } from '../../../../src/app/panels/graph/engine-feed.ts';
+import { createNodeFeed, isCurrent, isPaused, isStale, runtimeOf } from '../../../../src/app/panels/graph/engine-feed.ts';
 import { formatDuration, nodeStatus } from '../../../../src/app/panels/graph/status.ts';
-import { applyEngineEvent } from '../../../../src/app/state/engine-store.ts';
+import { applyEngineEvent, setEnginePaused } from '../../../../src/app/state/engine-store.ts';
 import { bench, type Bench } from './_graph.ts';
 
 function chain(b: Bench): { range: string; erosion: string; fail: string; after: string; open: string } {
@@ -26,7 +26,7 @@ const feed = (b: Bench, events: readonly EngineEvent[]): void => { for (const ev
 function status(b: Bench, id: string, upstreamTitle: string | null = null) {
   const state = b.engineState.getState();
   const runtime = state.nodes[id];
-  return nodeStatus(b.views().get(id)!, runtime, state.evaluation !== null && runtime?.requestId === state.evaluation.requestId, upstreamTitle);
+  return nodeStatus(b.views().get(id)!, runtime, state.evaluation !== null && runtime?.requestId === state.evaluation.requestId, upstreamTitle, isPaused(state));
 }
 
 test('durations are short and never read as nothing', () => {
@@ -48,7 +48,7 @@ test('a node waits, computes with its progress, is done with its time, and is ca
   feed(b, [{ type: 'node-start', requestId: 1, nodeId: range }]);
   assert.deepEqual([status(b, range).state, status(b, range).text, status(b, range).fraction], ['running', 'Computing 0%', 0]);
   feed(b, [
-    { type: 'node-done', requestId: 1, nodeId: range, cached: false, wallMs: 12.4, gpuMs: 9, peakBytes: 1024 },
+    { type: 'node-done', requestId: 1, nodeId: range, cached: false, resolution: 1009, wallMs: 12.4, gpuMs: 9, peakBytes: 1024 },
     { type: 'node-start', requestId: 1, nodeId: erosion },
     { type: 'node-progress', requestId: 1, nodeId: erosion, fraction: 0.424, label: 'Eroding', etaMs: 4200 },
   ]);
@@ -58,7 +58,7 @@ test('a node waits, computes with its progress, is done with its time, and is ca
   feed(b, [{ type: 'node-progress', requestId: 1, nodeId: erosion, fraction: 0.9, etaMs: 300 }]);
   assert.equal(status(b, erosion).text, 'Computing 90%', 'a remaining time under a second is not worth saying');
   feed(b, [
-    { type: 'node-done', requestId: 1, nodeId: erosion, cached: false, wallMs: 5300, gpuMs: null, peakBytes: 1 },
+    { type: 'node-done', requestId: 1, nodeId: erosion, cached: false, resolution: 1009, wallMs: 5300, gpuMs: null, peakBytes: 1 },
     { type: 'eval-end', requestId: 1, status: 'ok', wallMs: 5400 },
   ]);
   assert.deepEqual([status(b, erosion).state, status(b, erosion).text, status(b, erosion).fraction], ['done', '5.30 s', null]);
@@ -67,8 +67,8 @@ test('a node waits, computes with its progress, is done with its time, and is ca
   feed(b, [
     { type: 'request-start', requestId: 2, revision: 2, purpose: 'view' },
     { type: 'eval-start', requestId: 2, resolution: 1009, mode: 'preview', outputPeakBytes: null, plan: [{ nodeId: range, state: 'cached' }, { nodeId: erosion, state: 'cached' }] },
-    { type: 'node-done', requestId: 2, nodeId: range, cached: true, wallMs: 0, gpuMs: null, peakBytes: 0 },
-    { type: 'node-done', requestId: 2, nodeId: erosion, cached: true, wallMs: 0, gpuMs: null, peakBytes: 0 },
+    { type: 'node-done', requestId: 2, nodeId: range, cached: true, resolution: 1009, wallMs: 0, gpuMs: null, peakBytes: 0 },
+    { type: 'node-done', requestId: 2, nodeId: erosion, cached: true, resolution: 1009, wallMs: 0, gpuMs: null, peakBytes: 0 },
     { type: 'eval-end', requestId: 2, status: 'ok', wallMs: 1 },
   ]);
   assert.deepEqual([status(b, erosion).state, status(b, erosion).text, status(b, erosion).detail], ['cached', 'Cached', 'Cached; computed in 5.30 s']);
@@ -81,8 +81,8 @@ test('a node that failed shows what the engine said, and the nodes after it say 
   feed(b, [
     { type: 'request-start', requestId: 1, revision: 1, purpose: 'view' },
     { type: 'eval-start', requestId: 1, resolution: 1009, mode: 'preview', outputPeakBytes: null, plan: [range, erosion, fail, after].map((nodeId) => ({ nodeId, state: 'run' as const })) },
-    { type: 'node-done', requestId: 1, nodeId: range, cached: false, wallMs: 3, gpuMs: null, peakBytes: 0 },
-    { type: 'node-done', requestId: 1, nodeId: erosion, cached: false, wallMs: 3, gpuMs: null, peakBytes: 0 },
+    { type: 'node-done', requestId: 1, nodeId: range, cached: false, resolution: 1009, wallMs: 3, gpuMs: null, peakBytes: 0 },
+    { type: 'node-done', requestId: 1, nodeId: erosion, cached: false, resolution: 1009, wallMs: 3, gpuMs: null, peakBytes: 0 },
     { type: 'node-error', requestId: 1, error },
     { type: 'node-skipped', requestId: 1, nodeId: after, reason: 'upstream', upstream: fail },
     { type: 'eval-end', requestId: 1, status: 'errors', wallMs: 10 },
@@ -164,7 +164,7 @@ test('an event of the engine is told to the nodes it concerns and to no other', 
   // What one node does is told to that node.
   assert.deepEqual(during([{ type: 'node-start', requestId: 1, nodeId: range }]), [range]);
   assert.deepEqual(during([{ type: 'node-progress', requestId: 1, nodeId: range, fraction: 0.5, etaMs: null }]), [range]);
-  assert.deepEqual(during([{ type: 'node-done', requestId: 1, nodeId: range, cached: false, wallMs: 5, gpuMs: null, peakBytes: 0 }]), [range]);
+  assert.deepEqual(during([{ type: 'node-done', requestId: 1, nodeId: range, cached: false, resolution: 1009, wallMs: 5, gpuMs: null, peakBytes: 0 }]), [range]);
   assert.equal(runtimeOf(b.engineState.getState(), range)!.state, 'done');
   // What concerns no node is told to none: the evaluation's own progress, the memory in use.
   assert.deepEqual(during([{ type: 'eval-progress', requestId: 1, fraction: 0.5, etaMs: null }]), []);
@@ -185,4 +185,51 @@ test('an event of the engine is told to the nodes it concerns and to no other', 
   // A listener that is gone hears nothing, and the feed lets go of the store with its last listener.
   for (const stop of stops) stop();
   assert.deepEqual(during([{ type: 'node-start', requestId: 2, nodeId: range }]), []);
+});
+
+test('with the previews paused a node without a result says "Paused"; one that has a result, lacks a wire or exports says what it said', () => {
+  const b = bench();
+  const { range, erosion, open } = chain(b);
+  const landscape = b.add('io/export-landscape', { x: 600, y: 300 }, { in: `${range}.out` });
+  feed(b, [
+    { type: 'request-start', requestId: 1, revision: 1, purpose: 'view' },
+    { type: 'eval-start', requestId: 1, resolution: 1009, mode: 'preview', outputPeakBytes: null, plan: [{ nodeId: range, state: 'run' }, { nodeId: erosion, state: 'run' }] },
+    { type: 'node-done', requestId: 1, nodeId: range, cached: false, resolution: 1009, wallMs: 12, gpuMs: null, peakBytes: 0 },
+    { type: 'node-skipped', requestId: 1, nodeId: erosion, reason: 'aborted' },
+    { type: 'eval-end', requestId: 1, status: 'aborted', wallMs: 20 },
+  ]);
+  const texts = (): string[] => [range, erosion, open, landscape].map((id) => status(b, id).text);
+  assert.deepEqual(texts(), ['12 ms', '', 'Missing input: In', ''], 'not paused: a node nothing computes says nothing');
+
+  setEnginePaused(b.engineState, true);
+  assert.deepEqual(texts(), ['12 ms', 'Paused', 'Missing input: In', ''], 'the export node runs in no preview: the pause is not what it waits for');
+  const paused = status(b, erosion);
+  assert.deepEqual([paused.state, paused.failed, paused.fraction], ['paused', false, null]);
+  assert.match(paused.detail!, /resumed/);
+  // A node no event has named yet (added while paused) says the same.
+  const added = b.add('filter/blur', { x: 900, y: 300 }, { in: `${range}.out` });
+  assert.deepEqual([status(b, added).state, status(b, added).text], ['paused', 'Paused']);
+  // What the document says of a node comes first: a bypass, a cycle, an unknown type.
+  b.doc.getState().transact('Bypass', (draft) => setNodeFlags(draft, added, { bypass: true }));
+  assert.equal(status(b, added).text, 'Bypassed');
+
+  setEnginePaused(b.engineState, false);
+  assert.deepEqual(texts(), ['12 ms', '', 'Missing input: In', '']);
+});
+
+test('the pause is told to every node through the feed, once, and not to a node that no longer listens', () => {
+  const b = bench();
+  const { range, erosion, fail } = chain(b);
+  const nodes = createNodeFeed(b.engineState);
+  const told: string[] = [];
+  const stops = [range, erosion, fail].map((id) => nodes.subscribe(id, () => told.push(id)));
+  setEnginePaused(b.engineState, true);
+  assert.deepEqual([...told].sort(), [range, erosion, fail].sort());
+  told.length = 0;
+  setEnginePaused(b.engineState, true);
+  assert.deepEqual(told, [], 'a pause that is as it was is no news');
+  stops[0]!();
+  setEnginePaused(b.engineState, false);
+  assert.deepEqual([...told].sort(), [erosion, fail].sort());
+  for (const stop of stops) stop();
 });

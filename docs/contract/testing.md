@@ -559,7 +559,7 @@ it (`runtime.md` 8.2):
 
 | The launcher sets | The application then |
 | --- | --- |
-| `OROGEN_TEST=1` | creates its window with `show: false`, opens no dialog and no file manager, keeps its preferences in a temporary folder of the run (`orogen-test-…` in the system's temporary folder, set as Electron's user-data folder), and assigns `window.orogenTest = { ctx }` in the main window, where `ctx` is the `CommandContext` of `runtime.md` 8.8. The page does the last, when `PlatformApi.testMode` says so (`runtime.md` 8.6) |
+| `OROGEN_TEST=1` | creates its window with `show: false`, opens no dialog, no file manager and no other program (`openExternal`, `openDocument` and `openBuildFile` of `runtime.md` 8.6 answer as they would and start nothing), keeps its preferences in a temporary folder of the run (`orogen-test-…` in the system's temporary folder, set as Electron's user-data folder), and assigns `window.orogenTest = { ctx }` in the main window, where `ctx` is the `CommandContext` of `runtime.md` 8.8. The page does the last, when `PlatformApi.testMode` says so (`runtime.md` 8.6). It takes no single-instance lock (a test runs beside the user's own application, and two test applications may run at once), reads and keeps no window place and writes no log file (`runtime.md` 8.2 rules 8 to 10). When its page's process ends otherwise than cleanly, it loads the window again without a dialog, three times at the most, so that a test can see what the page then offers (rule 11); the end of that process is in `errors()`, so such a test reads `errors()` itself and does not rely on `close()` |
 | a project file as the first argument (`open`) | opens that project |
 | `OROGEN_TEST_DRIVER=<absolute path>` | `require`s that module in the main process once the main window has loaded and calls its default export with `{ app, win, errors }`. `errors` is the list the main process has kept since launch, and keeps: what `AppDriver.errors()` returns. The module is `tests/electron/driver.cjs`; it carries the `AppDriver` calls |
 | `OROGEN_GPU_PROFILE` | creates its device with that profile (`runtime.md` 1.1) |
@@ -581,6 +581,7 @@ reach through a command:
 | `state` | the shell's own vanilla store: the preferences as the shell holds them, `paused`, the palette, the dialog that is open, the notices |
 | `answers` | `{ openProjectDialog, saveProjectDialog, openFileDialog, chooseFolder }`, each a list of paths. Test mode opens no dialog, so `ctx.platform` answers each of these four calls with the next entry of its list, and as the bridge does (`null`) when the list is empty. A panel that asks for a file or a folder calls `ctx.platform`, so that its test can answer |
 | `layout()`, `restoreLayout()` | the dock's layout as it would be saved; applying `Preferences.layout` as start-up does, which resolves `'restored'` or `'default'` |
+| `dock.setSize(panelId, { width?, height? })`, `dock.size(panelId)` | gives the group of a panel a width, a height or both in CSS pixels, as dragging its dividers does, with its neighbours taking or giving the difference and no group going below the dock's least (220 by 100, `runtime.md` 8.7 rule 7); and the size the dock holds for it, or `null`. This is how a test makes a panel narrow, low or tall: `panelSize` and `tallest` of `tests/ui/shell/rig.ts` call it and wait until the panel's element has followed |
 | `gallery` | the values of the control gallery, the dialog of the command `view.controlGallery`, which exists in test mode only and holds one of every shared control of `src/app/ui/` |
 | `engineWorker()` | the engine worker of the moment, a `Worker`. A test ends it with `terminate()`, which nothing in the application does unasked, to see the application without one (`runtime.md` 8.5) |
 
@@ -1033,7 +1034,7 @@ British English; that is not a model for the product's text.
 | Enum value | begins with a lower-case letter or a digit; a value that names a kernel variant is lower-case | `ridged`, `png16` |
 | Kernel constant | camelCase, named for the pass | `const step = defineKernel({ name: 'simulate/thermal-erosion.step', ... })` |
 | Test file | the node's name with `.test.ts` | `tests/nodes/filter/blur.test.ts` |
-| Test data | at most 100 kB per file, in `assets/` | `tests/nodes/io/assets/ramp-16.png` |
+| Test data | at most 100 kB per file, in `assets/` | `tests/nodes/io/assets/terrain-193.png` |
 | WGSL | a template string tagged `/* wgsl */`, in a `.ts` file | |
 
 Released ids are permanent: a node type, a port name, a parameter name and an
@@ -1300,7 +1301,7 @@ What each layer contains:
 | Layer | Contains |
 | --- | --- |
 | Unit | uniform packing against the WGSL layout rules; the TypeScript hashes and `mixSeed` against fixed vectors; curves and bakers; `defineKernel`, `defineLib`, `defineNode` validation and their messages; `parseDoc`, `serializeDoc`, `normalizeParams` and migration; the document commands; the stores (`docStore` through transactions, `engineStore` as a reduction of recorded `EngineEvent`s); `planBuild`, encoders and decoders (round trips), the manifest; the registry lint, the node catalog against the registered nodes, and import boundaries; CPU task functions; the arguments of the command line and its usage errors, the document `render` evaluates, the gallery page; the node reference of the user documentation against the registry (what `tools/node-reference.ts --check` checks) and its example projects, parsed and planned (`docs.test.ts`); whose a failure of `verify`'s first two steps is |
-| GPU `tests/engine/` | every rule of `engine.md` and `runtime.md` that a node cannot break by itself: generated WGSL and accessors, the standard library (vertex-centred bilinear, clamping, `slopeAt`), TypeScript and WGSL hashes agreeing on 1000 inputs, per-run uniforms within one slice, call order, binding validation, tiles, the pool (states, reuse, budget, eviction), the out-of-memory retry with `failAllocAfter`, device loss, cache hits, keys and transient entries, `wants` re-runs, the maskable blend, bypass, conversion, progressive previews, thumbnails, CPU tasks, file identity, and every shared op including the coarse-to-fine driver; in `tests/engine/session/` the session (`runtime.md` section 7) on the real engine, with a recording renderer and a build function of the tests' own: latest-wins scheduling and what stays on screen, gestures and draft levels, the view and its loans, idle thumbnails, `inspect`, builds, watched files, device recovery, the event order, both ends of the protocol over a real `MessageChannel`, and the ledger at `dispose`; every subcommand of `orogen` as a child process, with its exit code and the pictures it writes decoded again |
+| GPU `tests/engine/` | every rule of `engine.md` and `runtime.md` that a node cannot break by itself: generated WGSL and accessors, the standard library (vertex-centred bilinear, clamping, `slopeAt`), TypeScript and WGSL hashes agreeing on 1000 inputs, per-run uniforms within one slice, call order, binding validation, tiles, the pool (states, reuse, budget, eviction), the out-of-memory retry with `failAllocAfter`, device loss, cache hits, keys and transient entries, `wants` re-runs, the maskable blend, bypass, conversion, progressive previews, thumbnails, CPU tasks, file identity, and every shared op including the coarse-to-fine driver; in `tests/engine/session/` the session (`runtime.md` section 7) on the real engine, with a recording renderer and a build function of the tests' own: latest-wins scheduling and what stays on screen, gestures and draft levels, the view and its loans, idle thumbnails at both resolutions, `inspect`, builds and plans, watched files, device recovery, the event order, both ends of the protocol over a real `MessageChannel`, the ledger at `dispose`, and a document of 300 nodes under bursts of 200 revisions (`scale.test.ts`: the session comes to rest and what it emits is bounded by the size of an idle evaluation); every subcommand of `orogen` as a child process, with its exit code and the pictures it writes decoded again |
 | GPU `tests/nodes/` | conformance and behaviour of each node |
 | GPU `tests/export/` | builds: the stages, the files, cancellation, the output folder |
 | GPU `tests/graphs/` | the acceptance graphs; `registry.test.ts`, which evaluates `registryDoc(nodes)`, the whole product (`runtime.md` 5.1), at 129 and requires every node to end `done`, except nodes with a `file` parameter |
@@ -1340,7 +1341,7 @@ What each layer contains:
 | `tests/env/warp.env` | `OROGEN_GPU_ADAPTER=Microsoft` |
 
 - Every test script starts its process through `tools/guard.mjs`, which on Linux puts it in its own memory-capped systemd scope (`OROGEN_GUARD_MEM`, default `2G`; `OROGEN_GUARD_TIMEOUT` seconds, default 1800; a script sets its own defaults with leading `--mem=` and `--timeout=`, as the unit script does with 600 seconds, because `--test-timeout` cannot interrupt a test that hangs synchronously) and elsewhere applies only the time limit. A test that leaks or loops then dies alone. Without the scope the kernel's out-of-memory killer ends the whole process group that launched it, the editor or terminal session included: a 13 GB runaway in one unit test did exactly that. Anything else that runs project code from a shell, a single test file or the command-line program, is started the same way: `tools/guard node --test tests/unit/foo.test.ts`. A run that needs more memory raises the cap explicitly, for example `OROGEN_GUARD_MEM=8G tools/guard npm run orogen -- build ...`.
-- The whole GPU suites and `verify` also pass `--lock`: on Linux such runs queue on one machine-wide lock, so that several people working on one machine do not exhaust the one GPU's memory or disturb each other's measured slice times. While developing, an owner runs the tests of its own folder, unlocked and small: `tools/guard node --test --test-concurrency=1 "tests/nodes/filter/*.test.ts"`. A render above 2049 from the command line takes the lock explicitly: `tools/guard --lock --mem=4G node src/cli/main.ts render ...`.
+- The whole GPU suites and `verify` also pass `--lock`: on Linux such runs queue on one machine-wide lock, so that several people working on one machine do not exhaust the one GPU's memory or disturb each other's measured slice times. The lock is taken outside the scope (`flock <file> systemd-run … -- <command>`), so the time limit begins when the run has the lock: a suite that queued behind another for most of its limit is not ended in the middle of its tests. A command that is ended is told why: the time limit ends it with SIGTERM, the memory cap kills it. On Windows the guard starts `npm` and `npx` through the shell, since both are scripts there. What the guard starts is `guardCommand` of `tools/guard-command.ts`, which `tests/unit/guard.test.ts` holds to this. While developing, an owner runs the tests of its own folder, unlocked and small: `tools/guard node --test --test-concurrency=1 "tests/nodes/filter/*.test.ts"`. A render above 2049 from the command line takes the lock explicitly: `tools/guard --lock --mem=4G node src/cli/main.ts render ...`.
 - No test hands data-sized values to `assert.deepEqual`, `deepStrictEqual`, `equal` or `strictEqual`: not a field, a pixel buffer, an encoded file or any array whose length grows with a resolution. When such an assertion fails, Node builds a textual diff of both sides; measured here, two 4000-byte arrays with half the bytes different cost 300 MB, and 16 000 bytes passed 1 GB. That is the runaway the guard exists for. Data is compared with the harness functions of 2.5 (or, below the harness, a loop that reports the first difference and a count), and `deepEqual` is kept for small structured values.
 - The glob patterns are quoted so that Node expands them, identically on Linux and Windows. A folder passed to `node --test` instead of a pattern fails.
 - `--env-file` sets the variables for the runner and for every test process, on every platform. A script never relies on `VAR=value command` syntax.
@@ -1348,6 +1349,7 @@ What each layer contains:
 - On the development machine the adapter name `llvmpipe` selects lavapipe while the NVIDIA driver is installed beside it; no other variable is needed. Lavapipe comes from the package `mesa-vulkan-drivers`.
 - `npm run expect -- <graph>` prints the statistics of an acceptance graph's targets in the format of its expectation file (10.3).
 - `npm run build` builds the application into `dist/` from one configuration, `vite.config.ts`, every file with a source map: the main-process script `main.cjs`, which `package.json` names in `main`, the preload script `preload.cjs`, the page `index.html` with its `assets/`, the engine worker `engine-worker.js` and the CPU worker `cpu-worker.js`. The two workers are classic scripts beside the page, which is how each is created (`runtime.md` 8.3, 6.3). `npm start` builds and runs the application. `npm run dist:win` builds it and packs it for Windows with `electron-builder` (`electron-builder.yml`) into `release/`: a zip and a portable executable, unsigned, holding `dist/` and no module of `node_modules`. `launchApp` (2.9), `npm run test:electron` and `npm run test:ui` start that build with `electron .` from the repository root and fail with a message that names `npm run build` when `dist/` is missing. The build configuration is the integrator's (`runtime.md` 8.10).
+- **A build never empties the folder in use.** `dist/` is shared: whoever builds, builds for everybody who starts the application meanwhile, and a build that emptied `dist/` first left tests that started in those seconds without an application ("The application is not built", measured as missing at 112 018 of 139 555 looks during one build). The build therefore writes everything into a folder beside it, `dist.partial-<pid>`, and puts that in the place of `dist/` when the last script is built: `dist/` is renamed aside, the new folder renamed to `dist/`, the old one deleted (`tools/build-folder.ts`, `replaceFolder`). Between the two renames there is no `dist/` for as long as it takes to make the second call; at every other moment it holds a whole build, the old or the new. A build that fails deletes its own folder and leaves `dist/` as it was. Where `dist/` cannot be renamed, as Windows refuses for a folder a running program has open, its files are replaced one by one and those the new build lacks are deleted last. A staging or replaced folder that a build left when it was interrupted is deleted by the next build once it is an hour old. `OROGEN_DIST` names another folder than `dist/` to build into; only `tests/ui/platform/build.test.ts` sets it, which builds into a folder of its own that holds an application of before, watches it while the build runs, and so needs neither the lock nor a window.
 
 ### 8.3 Concurrency
 
@@ -1419,7 +1421,7 @@ Facts that shape them:
 | Timers in the main process are never throttled | `waitFor` polls from the main process |
 | A window that was never shown does not have the system's focus: `document.hasFocus()` is false, `element.focus()` moves `document.activeElement`, and Chromium dispatches no `focus`, `blur`, `focusin` or `focusout` event (measured) | A control does not leave to a focus event what Enter or Escape must do as well. A test that needs one dispatches it |
 | What `capturePage()` copies in such a window can be older than the page: measured, a picture taken 1.3 s after a change showed parts of the page as they were before it, in the first seconds of the application above all | A capture waits for two page frames and a second more (`tests/ui/shell/rig.ts`); it is still a picture for a person (rule 1) |
-| In a window that was never shown, `window.resizeTo(w, h)` ends the GPU process within a frame (`device-lost`: "A valid external Instance reference no longer exists"), and the recovery that follows fails now and then with "No WebGPU adapter is available" (measured independently for four panels; a killed GPU process, by contrast, recovers in under a second). Whether a visible window that the user resizes does the same is not known | A test never resizes the window. A panel is given another size through the dock's layout (`orogenTest.shell.dock.restore` with other sizes), which is harmless. Resizing a visible window is on the list of what must be checked by hand on both machines |
+| In a window that was never shown, `window.resizeTo(w, h)` ends the GPU process within a frame (`device-lost`: "A valid external Instance reference no longer exists"), and the recovery that follows fails now and then with "No WebGPU adapter is available" (measured independently for four panels; a killed GPU process, by contrast, recovers in under a second). Whether a visible window that the user resizes does the same is not known | A test never resizes the window: no file under `tests/ui/` calls `window.resizeTo`. A panel is given another size through the dock (`orogenTest.shell.dock.setSize`, 2.9), which is harmless; what a panel looks like in a small window is tested at the size such a window gives the panel. The rigs of the panels give the panel under test all the height of its column, so that a change of the default layout changes no test but the layout's own. Resizing a visible window is on the list of what must be checked by hand on both machines |
 | In such a window `:focus` and `:focus-visible` do not match the element that `document.activeElement` names; `:focus-within` does (measured) | A focus ring cannot be captured or asserted there. That a control draws one is held by a lint of its style sheet, and looked at in a visible window |
 | A `DataTransfer` that a script made ignores what is assigned to its `effectAllowed` (measured: it stays `'none'`) | A test of a drag records the assignment itself (`tests/ui/library/rig.ts`) |
 | Input is synthesised in the page (`dispatchEvent`): the desktop sends none to a window that is not shown. A press is `pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click`; a submenu and a tooltip of `@base-ui/react` open on the pointer events of a hover, not on a press (measured) | `tests/ui/shell/rig.ts` installs these as `shellTest` in the page; the tests of a panel may import it |
@@ -1565,7 +1567,7 @@ orogen render <project.orogen> --node <id> [--res <n>] [--crop <size>]
 | | First form | Second form |
 | --- | --- | --- |
 | Document | one instance of the node type, its inputs connected by the wiring rule of 2.4: each height, data and `any` input from a terrain of its own, the first that of the node's category, masks from the slope mask, colours from a `ref/colorize` of their terrain, and an input named `stamp`, `flow` or `snow` from what it is named for. The plain variant, in which optional inputs are unconnected; with `--connected` the connected variant, a usage error for a node that has none. Settings: `terrainSize` 4096, `heightRange` 1024, `seed` 1, `seaLevel` 0.25, those of the tests (2.1), so that a node that reads the sea level has a sea to show | the project file |
-| Parameters | defaults; with `--max-params`, every `float`, `int` and `vec2` parameter at its `max`; then each `--param`, whose value is one the parameter holds as given: a value `normalizeParams` would change (`runtime.md` 4.4) is a usage error; `--seed` sets the node's `seed` | as stored |
+| Parameters | defaults; with `--max-params`, every `float`, `int` and `vec2` parameter at its `max`; then each `--param`, whose value is JSON, or a plain word (a letter, then letters, digits, `-` and `_`) that is no JSON and is taken as that text, so that a choice needs no quotes in any shell; the value is one the parameter holds as given: a value `normalizeParams` would change (`runtime.md` 4.4) is a usage error; `--seed` sets the node's `seed` | as stored |
 | Resolution | `--res`, default 513 | `--res`, default the project's preview resolution |
 
 Both evaluate in `mode: 'build'` with every output of the node as a target, so
@@ -1585,6 +1587,13 @@ terrain it left, never as a height sheet of the mask itself. For a node whose
 input. In the first form a node with neither is drawn over terrain 0, whose
 broad shape made the mask and whose colouring is the colour: the distance
 `select/distance` measures is shown on the ground whose slopes made the mask.
+In the second form a node with neither is drawn over the terrain the project
+shows, the `height` of its view (`runtime.md` 7.4), when that is an output of
+another node the evaluator would find: the last blend of two colour maps of a
+project has no terrain of its own and is the picture one wants of it. That
+terrain is one more target of the evaluation, so a failure in what makes it is
+reported like any other. A project that shows no terrain gives such a node its
+`color` picture alone.
 With `--crop`, they also write a `hillshade` (or `color`) of the centre window
 of that size at one texel per pixel, as `<output>-<res>-crop.png`. The
 connected variant writes files of its own, with `-connected` after the
@@ -1655,11 +1664,12 @@ CI runs on GitHub Actions, on hosted runners without a GPU.
 
 | Job | Runner | Runs | Required to merge |
 | --- | --- | --- | --- |
-| `check` | `ubuntu-latest` | `npm ci`; `npm run check`; `npm run test:unit`; on pull requests `node tests/tools/ownership.ts` | yes |
-| `gpu-linux` | `ubuntu-latest` | installs `mesa-vulkan-drivers libvulkan1`; `orogen probe`; `npm run test:gpu` with `OROGEN_GPU_ADAPTER=llvmpipe` | yes |
-| `gpu-windows` | `windows-latest` | `orogen probe`; `npm run test:gpu` with `OROGEN_GPU_ADAPTER=Microsoft` | yes |
-| `electron-kernels` | `ubuntu-latest` | builds the application; `xvfb-run -a npm run test:electron` with `OROGEN_ELECTRON_GPU=software` | no, until the integrator promotes it (9.3) |
-| `package-windows` | `windows-latest` | builds the application and packages it unsigned, as a zip and a portable executable (`npm run dist:win`); uploads both as the artifact `orogen-windows` | yes, on the main branch |
+| `check` | `ubuntu-latest` | `npm ci`; `npm run check`; `npm run test:unit`; `node --test .github/scripts/launch-check.test.mjs`, the verdicts of the launch check (below); on pull requests `node tests/tools/ownership.ts` | yes |
+| `gpu-linux` | `ubuntu-latest` | installs `mesa-vulkan-drivers libvulkan1`; `orogen probe`; `npm run test:gpu` with `OROGEN_GPU_ADAPTER=llvmpipe`. In the workflow it is two jobs, `gpu-linux-1` and `gpu-linux-2`, each a shard of the suite's test files (`node --test-shard`): on the software adapter one job no longer finishes in time | yes, every shard |
+| `gpu-windows` | `windows-latest` | `orogen probe`; `npm run test:gpu` with `OROGEN_GPU_ADAPTER=Microsoft`. Four jobs, `gpu-windows-1` to `gpu-windows-4`, for the same reason: Windows' software adapter is the slower one | yes, every shard |
+| `unit-windows` | `windows-latest` | `npm ci`; `npm run check`; `npm run test:unit`; `node --test .github/scripts/launch-check.test.mjs` | no, until it has passed there |
+| `electron-kernels` | `ubuntu-latest` | builds the application; the launch check under `xvfb-run -a` as the first start of the Electron binary (below); `xvfb-run -a npm run test:electron`, all with `OROGEN_ELECTRON_GPU=software` | no, until the integrator promotes it (9.3) |
+| `package-windows` | `windows-latest` | builds the application and packages it unsigned (`npm run dist:win`); uploads the application folder `release/win-unpacked` as the artifact `Orogen-windows-x64` and the portable executable as `Orogen-windows-x64-portable`; starts the packaged `Orogen.exe` with the launch check (below) and uploads what it saw as `launch-check-windows` | yes, on the main branch: the package, and that the packaged application loads its window. That its engine opens a device on the runner, and that the portable executable starts, are said and not required until they have passed there |
 
 ```yaml
 name: ci
@@ -1678,6 +1688,7 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run test:unit
+      - run: node --test .github/scripts/launch-check.test.mjs
       - if: github.event_name == 'pull_request'
         run: node tests/tools/ownership.ts
 
@@ -1720,10 +1731,25 @@ jobs:
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run build            # the application build
+      - name: First start of the application
+        run: xvfb-run -a node .github/scripts/launch-check.mjs --result test-output/launch-check/first-start.json
+        env: { OROGEN_LAUNCH_CHECK_OUTPUT: '1' }
       - run: xvfb-run -a npm run test:electron
       - if: always()
         uses: actions/upload-artifact@v4
         with: { name: test-output-electron-kernels, path: test-output }
+
+  unit-windows:
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 26, cache: npm }
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:unit
+      - run: node --test .github/scripts/launch-check.test.mjs
 
   package-windows:
     runs-on: windows-latest
@@ -1736,16 +1762,53 @@ jobs:
       - run: npm ci
       - run: npm run dist:win         # the build, then electron-builder (8.2)
       - uses: actions/upload-artifact@v4
-        with:
-          name: orogen-windows
-          path: |
-            release/*.zip
-            release/*.exe
-          if-no-files-found: error
+        with: { name: Orogen-windows-x64, path: release/win-unpacked, if-no-files-found: error }
+      - uses: actions/upload-artifact@v4
+        with: { name: Orogen-windows-x64-portable, path: release/*-portable.exe, if-no-files-found: error }
+      - name: Start the packaged application
+        run: node .github/scripts/launch-check.mjs --app release/win-unpacked/Orogen.exe --result test-output/launch-check/packaged.json
+      - name: Its engine opens a GPU device
+        continue-on-error: true
+        run: node .github/scripts/launch-check.mjs --read test-output/launch-check/packaged.json --require-device
+      - name: Start the portable executable
+        continue-on-error: true
+        shell: bash
+        run: node .github/scripts/launch-check.mjs --app "$(ls release/*-portable.exe | head -n 1)" --result test-output/launch-check/portable.json --settle 120
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: launch-check-windows, path: test-output/launch-check }
 ```
 
-The artifact `orogen-windows` of a run is the Windows build to download: the
-zip, and the portable executable.
+`.github/workflows/ci.yml` is this with what a runner needs beside it: time
+limits, the GPU layer split into shards (8.3), a listing of what the package
+holds.
+
+**The Windows build to download** is the artifact `Orogen-windows-x64` of a
+run: the application folder, which GitHub hands out as one zip, so that
+unpacking it once gives `Orogen.exe`. It holds what the zip of `npm run
+dist:win` holds, without a zip inside a zip. `Orogen-windows-x64-portable` is
+the one portable executable.
+
+**The launch check** (`.github/scripts/launch-check.mjs`) starts the
+application once in test mode (2.9) and says how far it came. Without `--app`
+it starts the build of the checkout with `electron .`; with `--app` a packaged
+executable, as it is, from the command line: `OROGEN_TEST=1` and
+`OROGEN_TEST_DRIVER` naming `.github/scripts/launch-check-driver.cjs`, which,
+unlike `tests/electron/driver.cjs`, needs no channel to a parent. The driver
+detaches the viewport as the kernel test does (8.4 step 1), waits for the
+engine's device to be `ready` or `failed`, and writes what it saw as JSON to
+the file `OROGEN_LAUNCH_CHECK_RESULT` names: the states the device went
+through with their times, the adapter, Chromium's GPU feature status when the
+window had loaded and at the end, whether the start-up project was computed,
+whether an adapter asked for at the end is still given, and the errors the
+application recorded. When the first start of the engine finds no device it
+runs the command `engine.retryDevice`, which is what the status bar's Retry
+does, and records the second start beside the first. The program exits with 0
+when the window loaded its interface, with 1 when the application did not
+start, did not load or left no result, and, with `--require-device`, with 3
+when no device was opened; `--read <file>` judges a result that was written
+before and starts nothing. It looks at no pixel and asserts nothing about
+values or time.
 
 The uploaded `test-output` holds the conformance previews and reports of every
 node, drawn from data computed on the software adapter. A reviewer can look at
@@ -1756,10 +1819,11 @@ any node's output without a GPU.
 | Job | Proves | Cannot prove |
 | --- | --- | --- |
 | `check` | the code type-checks; core uses no DOM or Node API; registry, naming, text and import rules hold; pure logic is correct; a pull request stays inside its owner's folders | anything that involves a GPU |
+| `unit-windows` | the type check and the pure logic hold where paths have drive letters and backslashes and the temporary folder is Windows' own; a checkout on Windows has the line ends the repository stores (`.gitattributes`), without which 17 of the tests that read the contract's Markdown fail (measured on a converted copy) | anything that involves a GPU |
 | `gpu-linux` | every kernel compiles through the SPIR-V path and runs on a device with default limits and no optional features; every node passes conformance and its own tests; the acceptance graphs meet their expectations; nothing depends on a hardware driver's rounding | performance; behaviour of hardware drivers; races that need real parallel hardware and large fields (`deterministic-large` is skipped); the compact formats and the `budget` check (lavapipe 25.2 has no `texture-formats-tier1`); anything about Windows |
 | `gpu-windows` | the same through D3D12 and the HLSL path: the only automatic evidence for the backend the product ships on | performance; behaviour of the NVIDIA D3D12 driver; large-field races; the compact formats, unless the probe shows WARP has them; the 2-second GPU watchdog, to which a CPU adapter is not subject; memory limits |
 | `electron-kernels` | the WGSL of every kernel is accepted by the compiler inside the Electron the product ships; every node evaluates there; a build writes its files from the engine worker | anything about values; the D3D12 backend inside Electron (the software adapter there is SwiftShader, a Vulkan implementation); the viewport |
-| `package-windows` | the application builds and packages | that it starts, or that anything in it works |
+| `package-windows` | the application builds and packages; the packaged application starts on Windows and loads its interface, with the driver of the launch check loaded from outside its archive; and, where the steps that are not required pass, that its engine worker opens a device on whatever adapter Electron offers a runner without a GPU, and that the portable executable starts | anything about a hardware adapter, a visible window, a dialog, an input device or a build: the window is hidden and nothing is clicked |
 
 No CI job proves: speed, memory behaviour at 8129, the watchdog, the `max`
 profile, the viewport, the UI, or the Unreal import. Sections 5.3, 8.5 and 11
@@ -1777,6 +1841,8 @@ cover those on real machines.
 - Software adapters are several times slower than a GPU (lavapipe: 119 ms against 16 ms for the first 257² render, compilation included). Tests keep to 257 and below where they can; the suite has no time assertions.
 - The application shows a permanent warning on a software adapter (`runtime.md` 1.3). That warning is not an error for `AppDriver.errors()`.
 - The `electron-kernels` job does not block merging while it is unproven. The integrator makes it required once it has passed reliably, and until then runs `npm run test:electron` locally before every batch of frozen-file changes and before every release.
+- **The first start on a runner.** On the one run on record (13 October 2026) the first of the four launches failed with `the engine did not start: No WebGPU adapter is available` and the three after it, one of them with the same profile, had SwiftShader. The message is that of the worker's own `requestAdapter()` resolving `null` (`runtime.md` 8.3 step 1), not that of a failed recovery, and the launch was the first start of the Electron binary on that machine: `npm ci` no longer fetches the binary, so the package downloaded it inside that test. `ARCHITECTURE.md` section 2 records the same answer after a GPU process has ended: a recovery that fails now and then for want of an adapter. It is not reproduced on the development machine, under `xvfb-run` with `OROGEN_ELECTRON_GPU=software`, with an empty home folder or with a renderer that asks seconds later; there Chromium reports `webgpu: disabled_off` and no GPU access from the moment the window has loaded and still gives every renderer SwiftShader. The job therefore makes the first start a step of its own, the launch check (9.1), which records what that start found and whether a second start of the engine finds an adapter, and the kernel test begins on a binary that has run once. What the application lacks is in `runtime.md` 8.3: an engine worker that is given no adapter stops for good, and only the Retry of the status bar starts another.
+- Whether the Electron of the Windows package offers any WebGPU adapter on `windows-latest`, which has no GPU, is not known: the launch check's device step in `package-windows` says it and is not required.
 - The feature sets of WARP and of the runners' lavapipe are not assumed; the `probe` step prints them.
 
 ---

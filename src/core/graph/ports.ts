@@ -28,6 +28,11 @@ export function inputsOf(def: NodeDef): readonly PortDef[] {
   return def.maskable ? [...def.inputs, MASK_PORT] : def.inputs;
 }
 
+/** engine.md 4.2: what a port is called where it is shown: its label, else its name with a capital. */
+export function portLabel(port: Pick<PortDef, 'name' | 'label'>): string {
+  return port.label ?? port.name.charAt(0).toUpperCase() + port.name.slice(1);
+}
+
 /** engine.md 4.14: inputs[0] and outputs[0] exist with the same type. */
 export function canBypass(def: Pick<NodeDef, 'inputs' | 'outputs'>): boolean {
   const input = def.inputs[0];

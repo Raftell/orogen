@@ -8,7 +8,7 @@ import { after } from 'node:test';
 import { defineKernel, defineNode, type EvalContext, type Field } from '../../../src/core/api.ts';
 import {
   createEngine, createRegistry, createSession,
-  type BuildResult, type Engine, type EngineEvent, type EngineSession, type EngineTestHooks, type EvalTarget, type FileSource,
+  type BuildPlan, type BuildResult, type Engine, type EngineEvent, type EngineSession, type EngineTestHooks, type EvalTarget, type FileSource,
   type GpuContext, type GraphDoc, type MemoryReport, type NodeRegistry, type PickResult, type ProjectSettings,
   type SessionBuildOptions, type SliceOverrun, type ViewBinding, type ViewportContent, type ViewportRenderer, type ViewportSize,
 } from '../../../src/core/runtime.ts';
@@ -202,6 +202,10 @@ export function recordingRenderer(): RecordingRenderer {
 export interface BuildLog {
   /** Every call the session made, with what each delivered target held. */
   readonly calls: { readonly requestId: number; readonly outDir: string; readonly resolution: number; readonly means: (number | null)[] }[];
+  /** The documents the session asked a plan for, in order. */
+  readonly planned: GraphDoc[];
+  /** What the next plan throws instead of planning. */
+  planFails?: unknown;
   /** Called when a target has been delivered, before the evaluation goes on. */
   onTarget?: (index: number) => void | Promise<void>;
   /** What the next call does instead of building. */
@@ -232,10 +236,24 @@ export function buildFunction(log: BuildLog, targets: (doc: GraphDoc) => EvalTar
       },
     });
     const built: BuildResult = {
-      requestId: o.requestId, status: result.status, problems: [], files: [], manifest: null, report: null, outDir: o.outDir,
+      requestId: o.requestId, status: result.status, problems: [], files: [], manifest: null, report: null, outDir: o.outDir, peakPoolBytes: null,
     };
     o.onEvent({ type: 'build-result', requestId: o.requestId, result: built });
     return built;
+  };
+}
+
+// ---- the planner -----------------------------------------------------------------------------------------------------
+
+/**
+ * The plan the session is handed in these tests, in place of planBuild: it holds what it was asked about, so a
+ * test tells one plan from another. `names` is the node ids of the document it was made for.
+ */
+export function planOf(doc: GraphDoc): BuildPlan {
+  return {
+    ok: false, resolution: doc.settings.buildResolution, name: Object.keys(doc.nodes).join('+'), items: [], targets: [], layout: null, layers: [], files: [],
+    problems: [{ severity: 'error', code: 'E_NOTHING_TO_EXPORT', message: 'The test registry has no export node.' }],
+    estimate: { planeBytes: 0, knownFileBytes: 0 },
   };
 }
 
@@ -370,12 +388,21 @@ export async function startSession(setup: SessionSetup = {}): Promise<SessionRig
   }) as Engine;
 
   const renderer = setup.renderer === undefined ? recordingRenderer() : setup.renderer;
-  const builds: BuildLog = { calls: [] };
+  const builds: BuildLog = { calls: [], planned: [] };
   const session = createSession({
     engine,
     reopenGpu: setup.reopenGpu ?? (() => Promise.reject(new Error('This test has no second device'))),
     createFiles: setup.createFiles ?? (() => memoryFiles()),
     build: buildFunction(builds, setup.buildTargets ?? (() => [{ ref: { node: 'out', port: 'out' } }])),
+    plan: (_engine, planned) => {
+      if (builds.planFails !== undefined) {
+        const reason = builds.planFails;
+        delete builds.planFails;
+        throw reason;
+      }
+      builds.planned.push(planned);
+      return planOf(planned);
+    },
     renderer,
   });
 

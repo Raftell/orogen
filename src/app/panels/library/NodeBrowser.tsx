@@ -1,13 +1,12 @@
 // The Nodes tab: a search field, the catalogue by category (or what a search found, best first), and the details
 // of the node under the pointer or of the selected one. A node goes into the graph by a drag, a double-click or
-// Enter (add-node.ts).
+// Enter (src/app/ui/add-node.ts).
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 import { useStore } from 'zustand';
 
-import { Button, Icon, IconButton, Tooltip, useCommandContext } from '../../ui/index.ts';
+import { Button, Icon, SearchField, startNodeDrag, Tooltip, useCommandContext } from '../../ui/index.ts';
 import { addNode } from './actions.ts';
-import { startNodeDrag } from './add-node.ts';
 import {
   catalogRows, categoryTitle, moveActive, RECENT_SECTION, SEARCH_SECTION, sectionKey,
   type Catalog, type CatalogEntry, type Move, type PortInfo, type PortKind, type Row, type SectionId,
@@ -56,14 +55,14 @@ function Ports(props: { readonly title: string; readonly ports: readonly PortInf
 }
 
 /** `selected`: the entry is the selected node, which the button adds; a node the pointer is on is only described. */
-function Details(props: { readonly entry: CatalogEntry | null; readonly selected: boolean; readonly height: number | null }) {
+function Details(props: { readonly entry: CatalogEntry | null; readonly selected: boolean; readonly height: number | null; readonly rest: boolean }) {
   const { entry } = props;
   const ctx = useCommandContext();
   const sized = props.height === null ? undefined : '';
   const height = props.height === null ? undefined : ({ '--library-details-height': `${props.height}px` } as CSSProperties);
   if (!entry) {
     return (
-      <div className={styles.details} id="library-node-details" data-library="details" data-sized={sized} style={height}>
+      <div className={styles.details} id="library-node-details" data-library="details" data-sized={sized} data-rest={props.rest ? '' : undefined} style={height}>
         <div className={styles.detailsHint}>Drag a node into the graph, or double-click it</div>
       </div>
     );
@@ -184,6 +183,12 @@ export function NodeBrowser(props: { readonly catalog: Catalog }) {
   const pointer = useRef<{ readonly x: number; readonly y: number } | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
+  /**
+   * Whether the details have described a node since the panel was made. Until they have, they are one line of
+   * hint and the list has the room: at first start the panel showed four nodes above an empty box. From the
+   * first node on they keep their height whatever they show, so that the list does not move as the pointer does.
+   */
+  const described = useRef(false);
 
   const index = useMemo(() => createSearchIndex(catalog), [catalog]);
   const searching = query.trim() !== '';
@@ -254,13 +259,9 @@ export function NodeBrowser(props: { readonly catalog: Catalog }) {
     return false;
   }
 
+  /** The arrows and Enter are the list's; Escape, which empties the field, is the field's own. */
   function onSearchKey(event: KeyboardEvent<HTMLInputElement>): void {
     if (navigate(event, MOVES)) event.preventDefault();
-    else if (event.key === 'Escape' && query !== '') {
-      setQuery(libraryStore, '');
-      event.preventDefault();
-      event.stopPropagation();
-    }
   }
 
   function onListKey(event: KeyboardEvent<HTMLDivElement>): void {
@@ -297,39 +298,24 @@ export function NodeBrowser(props: { readonly catalog: Catalog }) {
   }
 
   const shown = rowOf(hovered) ?? activeRow;
+  if (shown?.kind === 'node') described.current = true;
   const count = catalog.entries.length;
 
   return (
     // A key ends the look at the node under the pointer: the keyboard works on the selected one.
     <div className={`${styles.view} ${styles.browser}`} data-library="nodes" onKeyDownCapture={() => { if (hovered !== null) setHovered(null); }}>
       <div className={styles.search}>
-        <Icon name="search" className={styles.searchIcon} />
-        <input
+        <SearchField
           ref={input}
-          type="text"
-          className={styles.searchInput}
           data-library="search"
-          spellCheck={false}
-          autoComplete="off"
           maxLength={QUERY_MAX}
           placeholder={`Search ${count} nodes`}
           aria-label="Search nodes"
           aria-controls="library-node-list"
           value={query}
-          onChange={(event) => setQuery(libraryStore, event.target.value)}
+          onChange={(text) => setQuery(libraryStore, text)}
           onKeyDown={onSearchKey}
         />
-        {query !== '' ? (
-          <span className={styles.searchClear}>
-            <IconButton
-              icon="close" label="Clear the search" keyLabel="Esc" size="small" data-action="clear"
-              onClick={() => {
-                setQuery(libraryStore, '');
-                input.current?.focus();
-              }}
-            />
-          </span>
-        ) : null}
       </div>
 
       <div
@@ -409,7 +395,10 @@ export function NodeBrowser(props: { readonly catalog: Catalog }) {
       </div>
 
       <Splitter height={detailsHeight} onLive={setLiveHeight} />
-      <Details entry={shown?.kind === 'node' ? shown.entry : null} selected={shown !== undefined && shown === activeRow} height={liveHeight ?? detailsHeight} />
+      <Details
+        entry={shown?.kind === 'node' ? shown.entry : null} selected={shown !== undefined && shown === activeRow} height={liveHeight ?? detailsHeight}
+        rest={!described.current}
+      />
     </div>
   );
 }

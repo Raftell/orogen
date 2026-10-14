@@ -6,6 +6,7 @@ import {
   normalizeParams,
   type BuildPlan, type BuildProblem, type ExportItem, type FileEncoding, type GraphDoc, type NodeRegistry, type PlannedFile,
 } from '../../../../core/runtime.ts';
+import { formatBytes, plural } from './format.ts';
 import { describeLayout } from './sizes.ts';
 
 /** How a file is encoded, in the words of the user documentation (building.md, section 6). */
@@ -42,6 +43,8 @@ export interface PlanTargetView {
   readonly selectable: boolean;
   /** The node's title, as the pipeline names it in its problems. */
   readonly title: string;
+  /** The title of the node whose output the export node is wired to; null for the base layer and the manifest, and where the wiring is not known. */
+  readonly source: string | null;
   /** What the target is, in one line: 'Landscape Ridge', 'Layer Rock, weight-blended (advanced)'. */
   readonly detail: string;
   readonly files: readonly PlanFileView[];
@@ -60,6 +63,8 @@ export interface PlanView {
   readonly unsizedFiles: number;
   /** Main memory the build holds for the weight-blended layers until they are written together (3.7). */
   readonly planeBytes: number;
+  /** The plan exports the terrain; false for one of textures and images alone, which writes no heightmap. */
+  readonly landscape: boolean;
 }
 
 function titleOf(doc: Pick<GraphDoc, 'nodes'>, registry: NodeRegistry, nodeId: string): string {
@@ -105,13 +110,15 @@ function viewFile(file: PlannedFile): PlanFileView {
  * The plan, target by target. The files of an export node are those the plan gives its node id; what is left
  * without a node is the base layer (the weights the other layers leave) and the manifest.
  */
-export function viewPlan(plan: BuildPlan, doc: Pick<GraphDoc, 'nodes'>, registry: NodeRegistry): PlanView {
+export function viewPlan(plan: BuildPlan, doc: Pick<GraphDoc, 'nodes'> & Partial<Pick<GraphDoc, 'edges'>>, registry: NodeRegistry): PlanView {
   // A plan without an item lists the manifest all the same, and a build never writes a manifest alone (2.5).
   if (plan.items.length === 0) {
-    return { ok: plan.ok, resolution: plan.resolution, layout: null, targets: [], fileCount: 0, knownBytes: 0, unsizedFiles: 0, planeBytes: 0 };
+    return { ok: plan.ok, resolution: plan.resolution, layout: null, targets: [], fileCount: 0, knownBytes: 0, unsizedFiles: 0, planeBytes: 0, landscape: false };
   }
   const targets: PlanTargetView[] = [];
   const taken = new Set<PlannedFile>();
+  // What feeds each export node, as the list of export nodes says it: one pass over the wires for all of them.
+  const sources = new Map((doc.edges ? exportNodes({ nodes: doc.nodes, edges: doc.edges }, registry) : []).map((node) => [node.nodeId, node.source]));
   for (const [index, { nodeId, item }] of plan.items.entries()) {
     const files = plan.files.filter((file) => file.nodeId === nodeId && !taken.has(file));
     for (const file of files) taken.add(file);
@@ -121,6 +128,7 @@ export function viewPlan(plan: BuildPlan, doc: Pick<GraphDoc, 'nodes'>, registry
       nodeId,
       selectable: Object.hasOwn(doc.nodes, nodeId),
       title: titleOf(doc, registry, nodeId),
+      source: sources.get(nodeId) ?? null,
       detail: describeItem(item, plan),
       files: files.map(viewFile),
     });
@@ -137,6 +145,7 @@ export function viewPlan(plan: BuildPlan, doc: Pick<GraphDoc, 'nodes'>, registry
       nodeId: null,
       selectable: false,
       title: base ? base.name : 'Base',
+      source: null,
       detail: `The base layer: what the weight-blended layers leave${base ? ` (${base.blend})` : ''}. At every point the group totals 255`,
       files: baseFiles.map(viewFile),
     });
@@ -149,6 +158,7 @@ export function viewPlan(plan: BuildPlan, doc: Pick<GraphDoc, 'nodes'>, registry
       nodeId: null,
       selectable: false,
       title: 'Manifest',
+      source: null,
       detail: 'Which file is which, and every number Unreal needs. Written last, so a folder without it is no build',
       files: manifest.map(viewFile),
     });
@@ -162,8 +172,27 @@ export function viewPlan(plan: BuildPlan, doc: Pick<GraphDoc, 'nodes'>, registry
     knownBytes: plan.estimate.knownFileBytes,
     unsizedFiles: plan.files.filter((file) => file.bytes === null).length,
     planeBytes: plan.estimate.planeBytes,
+    landscape: hasLandscape(plan),
   };
 }
+
+/** Whether a plan exports the terrain: it has a landscape item, which is the one a heightmap is written for (export-unreal.md 2.2). */
+export function hasLandscape(plan: Pick<BuildPlan, 'items'>): boolean {
+  return plan.items.some((entry) => entry.item.kind === 'landscape');
+}
+
+/**
+ * The sum of a plan's files: what is known in advance, and how many files are sized only when they are written
+ * (a PNG, the manifest). A plan none of whose files has a known size says that, and no "0 B".
+ */
+export function totalText(knownBytes: number, unsizedFiles: number): string {
+  if (unsizedFiles === 0) return formatBytes(knownBytes);
+  if (knownBytes === 0) return 'sized when written';
+  return `${formatBytes(knownBytes)} and ${plural(unsizedFiles, 'file')} sized when written`;
+}
+
+/** Said of a plan, and of a build, that writes files and none of them the terrain: nothing else would say it. */
+export const NO_LANDSCAPE = 'No Unreal Landscape node: this build writes no heightmap. Connect the terrain to an Unreal Landscape node to export it.';
 
 // ---- before a plan exists ----------------------------------------------------------------------------------------------
 

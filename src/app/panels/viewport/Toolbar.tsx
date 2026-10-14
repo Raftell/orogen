@@ -22,6 +22,8 @@ const OVERLAY_KIND = { color: 'Color map', mask: 'Mask', heat: 'Data' } as const
 
 export interface ToolbarProps {
   readonly status: ViewStatus;
+  /** What can be done about the status, or what comes next; '' when there is nothing to add. */
+  readonly hint: string;
   /** The resolution of what is shown; null: nothing is. */
   readonly resolution: number | null;
   /** What the output shown is called; null: the view names none. */
@@ -50,7 +52,7 @@ export const Toolbar = memo(function Toolbar(props: ToolbarProps) {
 
   const word = STATUS_WORD[props.status];
   // A view that names nothing is shown at the preview resolution too (7.4 rule 5); there is nothing to give the size of.
-  const nothing = props.status === 'empty' || props.status === 'starting' || props.status === 'failed';
+  const nothing = props.status === 'empty' || props.status === 'bare' || props.status === 'starting' || props.status === 'failed';
   const size = props.resolution === null || nothing ? null : `${props.resolution} × ${props.resolution}`;
   const subject = nothing ? null : props.subject;
 
@@ -157,7 +159,7 @@ export const Toolbar = memo(function Toolbar(props: ToolbarProps) {
 
       <div className={styles.status} data-viewport="status" data-state={props.status} role="status">
         {word !== '' ? (
-          <Tooltip content={STATUS_TEXT[props.status]}>
+          <Tooltip content={props.hint !== '' ? `${STATUS_TEXT[props.status]}. ${props.hint}.` : STATUS_TEXT[props.status]}>
             <span className={styles.statusText} data-viewport="state">{word}</span>
           </Tooltip>
         ) : null}

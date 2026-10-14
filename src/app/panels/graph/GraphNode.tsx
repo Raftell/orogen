@@ -13,7 +13,7 @@ import { thumbnails as applicationThumbnails, THUMBNAIL_SIZE as THUMBNAIL_PIXELS
 import type { EngineState } from '../../state/engine-store.ts';
 import { Icon, TextField, Tooltip, useApp, useCommandContext } from '../../ui/index.ts';
 import { renameNode, TITLE_MAX_LENGTH } from './actions.ts';
-import { isCurrent, isStale, nodeFeed, runtimeOf } from './engine-feed.ts';
+import { isCurrent, isPaused, isStale, nodeFeed, runtimeOf } from './engine-feed.ts';
 import type { NodeView, PortView } from './flow.ts';
 import { BORDER, portY } from './geometry.ts';
 import styles from './graph.module.css';
@@ -50,7 +50,15 @@ const Thumbnail = memo(function Thumbnail(props: { readonly id: string }) {
     const element = canvas.current;
     const draw = (): void => {
       const entry = cache.get(id);
-      if (!entry || !element) return;
+      if (!element) return;
+      if (!entry) {
+        // The cache gave the image up (another project's node of this id, 8.5): nothing of it stays on the canvas.
+        if (element.parentElement?.getAttribute('data-thumbnail') === 'drawn') {
+          element.getContext('2d', CANVAS_SETTINGS)?.clearRect(0, 0, element.width, element.height);
+          element.parentElement.setAttribute('data-thumbnail', 'empty');
+        }
+        return;
+      }
       // Kept in main memory: a canvas kept by the GPU is emptied when the GPU process goes (runtime.md 7.8), and
       // the engine sends a thumbnail once for a content key (5.12), so nothing would fill it again.
       element.getContext('2d', CANVAS_SETTINGS)?.putImageData(entry.image as ImageData, 0, 0);
@@ -167,13 +175,14 @@ const NodeBody = memo(function NodeBody(props: { readonly view: NodeView; readon
   const ctx = app.ctx;
   const runtime = useNodeEngine(ctx.engineState, view.id, runtimeOf);
   const current = useNodeEngine(ctx.engineState, view.id, isCurrent);
+  const paused = useNodeEngine(ctx.engineState, view.id, isPaused);
   const upstream = runtime?.upstream ?? null;
   const upstreamTitle = useStore(ctx.doc, (state) => {
     const node = upstream === null ? undefined : own(state.doc.nodes, upstream);
     return node ? nodeTitle(node, ctx.registry.get(node.type)) : null;
   });
   const renaming = useStore(graphStore, (state) => state.renaming?.kind === 'node' && state.renaming.id === view.id);
-  const status = nodeStatus(view, runtime, current, upstreamTitle);
+  const status = nodeStatus(view, runtime, current, upstreamTitle, paused);
   const hasBody = view.inputs.length > 0 || view.outputs.length > 0 || view.thumbnail;
 
   // The line is cut where the node ends: the pointer shows the whole of it.

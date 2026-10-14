@@ -1,5 +1,5 @@
 import type { FieldStats } from '../eval/context.ts';
-import type { BuildResult } from '../export-decl.ts';
+import type { BuildPlan, BuildResult } from '../export-decl.ts';
 import type { GraphDoc, PortRef } from '../graph/doc.ts';
 import type { EngineEvent } from './events.ts';
 import type { BuildRequest, EnginePreferences, EngineSession } from './session.ts';
@@ -118,6 +118,7 @@ export function createSessionClient(port: SessionPort): EngineSession {
     inspect: (ref: PortRef) => ask<FieldStats | null>('inspect', [{ node: ref.node, port: ref.port }]),
     build: (request: BuildRequest) => ask<BuildResult>('build', [{ doc: request.doc, outDir: request.outDir }]),
     cancelBuild: () => tell('cancelBuild', []),
+    plan: (doc: GraphDoc) => ask<BuildPlan>('plan', [doc]),
     setPreferences: (prefs: EnginePreferences) => tell('setPreferences', [{ vramBytes: prefs.vramBytes, budgetFraction: prefs.budgetFraction }]),
     retryDevice: () => tell('retryDevice', []),
     subscribe(listener) {
@@ -165,6 +166,7 @@ const TELL: Readonly<Record<string, (session: EngineSession, args: Args) => void
 const ASK: Readonly<Record<string, (session: EngineSession, args: Args) => Promise<unknown>>> = {
   inspect: (s, a) => s.inspect(a[0] as PortRef),
   build: (s, a) => s.build(a[0] as BuildRequest),
+  plan: (s, a) => s.plan(a[0] as GraphDoc),
   'viewport.pick': (s, a) => s.viewport.pick(a[0] as number, a[1] as number),
   dispose: (s) => s.dispose(),
 };

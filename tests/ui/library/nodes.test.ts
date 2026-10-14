@@ -15,7 +15,7 @@ import { test } from 'node:test';
 
 import { nodes } from '../../../src/core/nodes/index.ts';
 import {
-  added, appears, capture, closeMenu, docOf, focus, height, install, key, openMenu, press, quote, rows, run, setLibraryWidth, settled, showLibrary, text, typeInto, vanishes, withApp,
+  added, appears, capture, closeMenu, docOf, focus, height, install, keeps, key, openMenu, press, pressTab, quote, rows, run, setLibraryWidth, settled, showLibrary, text, typeInto, vanishes, withApp,
 } from './rig.ts';
 import type { AppDriver } from '../../helpers/index.ts';
 
@@ -181,7 +181,7 @@ test('library: the keyboard moves through the list, folds a category, starts a s
     await key(app, 'ArrowLeft');
     let listed = await rows(app);
     assert.deepEqual([listed.length, listed[0]!.open, listed[1]!.section], [before - 16, 'false', 'adjust']);
-    assert.deepEqual(await app.eval(`libraryTest.state().collapsed`), ['generate']);
+    await keeps(app, 'collapsed', ['generate']);
     await key(app, 'Enter');
     assert.equal((await rows(app)).length, before, 'Enter on a category unfolds it');
     await key(app, 'Space');
@@ -210,7 +210,7 @@ test('library: the keyboard moves through the list, folds a category, starts a s
     await key(app, 'ArrowDown');
     assert.equal(await activeElement(app), 'search');
 
-    // Enter adds the selected node: the library asks, the graph adds at its center and selects (8.7).
+    // Enter adds the selected node: the library asks, the graph adds it and selects it (8.7 rule 8).
     const had = await nodesOfType(app, 'simulate/thermal-erosion');
     await key(app, 'Enter');
     assert.deepEqual(await added(app), [{ type: 'simulate/thermal-erosion' }]);
@@ -220,7 +220,7 @@ test('library: the keyboard moves through the list, folds a category, starts a s
       const id = now.find((candidate) => !had.includes(candidate))!;
       assert.deepEqual(await app.eval(`orogenTest.ctx.ui.getState().selection`), [id], 'and selected it');
       // The node that was added is the newest of the recently used, which the list shows when the search ends.
-      assert.deepEqual(await app.eval(`libraryTest.state().recent`), ['simulate/thermal-erosion']);
+      await keeps(app, 'recent', ['simulate/thermal-erosion']);
     }
 
     // Mod+F in the panel: the search field has the keyboard and its text is selected to be typed over.
@@ -295,13 +295,25 @@ test('library: the details keep their height whatever they show, the bar above t
     await showLibrary(app);
     await settled(app);
     const SPLITTER = '[data-library="splitter"]';
-    const kept = (): Promise<number | null> => app.eval<number | null>(`libraryTest.state()?.detailsHeight ?? null`);
+    /** The height the preferences file holds, once it holds `height`: the entry is written a moment after it changes. */
+    const kept = async (height: number | null): Promise<number | null> => {
+      await keeps(app, 'detailsHeight', height);
+      return height;
+    };
 
-    // The same height for the hint, a small node and the node with the most to say: the list does not jump.
-    const empty = await height(app, DETAILS);
-    assert.ok(empty >= 200 && empty <= 264, `the details of the default window: ${empty}`);
+    // Before the details have described a node they are the one line of their hint, and the list has the room:
+    // at first start the panel showed four nodes above an empty box.
+    const rest = await height(app, DETAILS);
+    const listAtRest = await height(app, LIST);
+    assert.ok(rest >= 20 && rest <= 48, `the hint alone: ${rest}`);
+    assert.ok(listAtRest >= 6 * 38, `the list has the room at first start: ${listAtRest}`);
+    t.diagnostic(`capture: ${await capture(app, 'nodes-07-first-start')}`);
+    // From the first node on: the same height for a small node, the node with the most to say and the hint, so
+    // that the list does not move as the pointer does.
     await press(app, '[data-node="generate/constant"]');
-    assert.equal(await height(app, DETAILS), empty);
+    const empty = await height(app, DETAILS);
+    assert.ok(empty >= 150 && empty <= 264, `the details of the default window: ${empty}`);
+    assert.equal(await height(app, LIST), listAtRest - (empty - rest), 'the details took their room from the list');
     await press(app, '[data-node="simulate/hydraulic-erosion"]');
     assert.equal(await height(app, DETAILS), empty);
     const list = await height(app, LIST);
@@ -310,7 +322,7 @@ test('library: the details keep their height whatever they show, the bar above t
     await app.eval(`void libraryTest.dragY(${quote(SPLITTER)}, -90)`);
     await app.waitFor(`shellTest.rect(${quote(DETAILS)}).height === ${empty + 90}`);
     assert.equal(await height(app, LIST), list - 90);
-    assert.equal(await kept(), empty + 90);
+    assert.equal(await kept(empty + 90), empty + 90);
     // With the room, the node with the most to say is shown whole.
     assert.equal(await app.eval<boolean>(`(() => { const details = document.querySelector(${quote(DETAILS)}); return details.scrollHeight <= details.clientHeight; })()`), true, 'nothing of Hydraulic Erosion is below the fold');
     t.diagnostic(`capture: ${await capture(app, 'nodes-08-details-resized')}`);
@@ -318,10 +330,10 @@ test('library: the details keep their height whatever they show, the bar above t
     // The arrow keys on the bar, a step each; a press without a move changes nothing.
     await focus(app, SPLITTER);
     await key(app, 'ArrowDown');
-    assert.deepEqual([await height(app, DETAILS), await kept()], [empty + 74, empty + 74]);
+    assert.deepEqual([await height(app, DETAILS), await kept(empty + 74)], [empty + 74, empty + 74]);
     await key(app, 'ArrowUp');
     await press(app, SPLITTER);
-    assert.equal(await kept(), empty + 90);
+    assert.equal(await kept(empty + 90), empty + 90);
 
     // Dragged as far as it goes either way: four rows of the list stay, and the details stay high enough to read.
     await app.eval(`void libraryTest.dragY(${quote(SPLITTER)}, -3000)`);
@@ -336,11 +348,11 @@ test('library: the details keep their height whatever they show, the bar above t
     // A double-click, or Home, gives the height back to the panel.
     await app.eval(`void libraryTest.doubleClick(${quote(SPLITTER)})`);
     await app.waitFor(`shellTest.rect(${quote(DETAILS)}).height === ${empty}`);
-    assert.equal(await kept(), null);
+    assert.equal(await kept(null), null);
     await app.eval(`void libraryTest.dragY(${quote(SPLITTER)}, -40)`);
     await focus(app, SPLITTER);
     await key(app, 'Home');
-    assert.deepEqual([await height(app, DETAILS), await kept()], [empty, null]);
+    assert.deepEqual([await height(app, DETAILS), await kept(null)], [empty, null]);
 
     // A narrow panel: the title of the node is whole, the ports are one below the other, nothing is wider than the panel.
     const width = await setLibraryWidth(app, 230);
@@ -409,7 +421,7 @@ test('library: a node is dragged out with its type as the data of the drag, and 
       // Undo takes the node out of the graph; what was used stays in the list.
       await app.eval(`void orogenTest.ctx.run('edit.undo')`);
       assert.deepEqual(await nodesOfType(app, 'filter/median'), []);
-      assert.deepEqual(await app.eval(`libraryTest.state().recent`), ['filter/median', 'filter/blur']);
+      await keeps(app, 'recent', ['filter/median', 'filter/blur']);
     }
     t.diagnostic(`capture: ${await capture(app, 'nodes-05-after-adding')}`);
   });
@@ -420,8 +432,9 @@ test('library: the recent nodes follow the document while another tab is in fron
     await install(app);
     await app.waitFor(`orogenTest.ctx.engineState.getState().device.state === 'ready' && document.querySelectorAll('.dv-tab').length === 5`, 60_000);
     await settled(app);
-    // The Library tab was never in front: the dock holds its component all the same.
-    assert.equal(await app.eval<boolean>(`document.querySelector('[data-panel="library"]') !== null`), false);
+    // The Build tab is in front of the Library's: the dock holds the library's component all the same.
+    await pressTab(app, 'Build');
+    await vanishes(app, '[data-panel="library"]');
     // A node added as the graph's own palette adds one: a transaction of the document, with a command of 4.6.
     await app.eval(`void orogenTest.ctx.doc.getState().transact('Add Terraces', (draft) => {
       draft.nodes.added = { id: 'added', type: 'surface/terraces', version: 1, position: { x: 400, y: 0 }, params: {} };
@@ -429,7 +442,8 @@ test('library: the recent nodes follow the document while another tab is in fron
     await app.eval(`void orogenTest.ctx.doc.getState().transact('Add a Reference Node', (draft) => {
       draft.nodes.reference = { id: 'reference', type: 'ref/blur', version: 1, position: { x: 400, y: 300 }, params: {} };
     })`);
-    assert.deepEqual(await app.eval(`libraryTest.state().recent`), ['surface/terraces'], 'a reference node is none of the library');
+    // A reference node is none of the library.
+    await keeps(app, 'recent', ['surface/terraces']);
 
     await showLibrary(app);
     const listed = await rows(app);
@@ -446,7 +460,13 @@ test('library: the recent nodes follow the document while another tab is in fron
 
     await run(app, 'library.clearRecent');
     await vanishes(app, '[data-section="recent"]');
-    assert.equal(await app.eval<boolean>(`orogenTest.ctx.run('library.clearRecent') === undefined && libraryTest.state().recent.length === 0`), true);
+    assert.equal(await app.eval<boolean>(`orogenTest.ctx.run('library.clearRecent') === undefined`), true, 'the command with nothing to clear does nothing');
+    await keeps(app, 'recent', []);
+    // What the panel keeps is its entry of the preferences file, whole, beside the entries of the other panels
+    // (runtime.md 8.6); nothing of it is in the page's own storage.
+    const entry = await app.eval<Record<string, unknown>>(`orogenTest.ctx.platform.getPreferences().then((preferences) => preferences.panels.library)`);
+    assert.deepEqual(Object.keys(entry).sort(), ['collapsed', 'detailsHeight', 'recent', 'tab']);
+    assert.deepEqual(await app.eval<string[]>(`Object.keys(localStorage).filter((key) => key.startsWith('orogen'))`), []);
   });
 });
 
@@ -485,7 +505,8 @@ test('library: the commands of the panel run from its key, its menus and the pal
     await focus(app, '[data-tab="nodes"]');
     await key(app, 'ArrowRight');
     await appears(app, '[data-library="examples"][data-place="panel"]');
-    assert.deepEqual(await app.eval(`[document.activeElement.getAttribute('data-tab'), document.activeElement.getAttribute('aria-selected'), libraryTest.state().tab]`), ['examples', 'true', 'examples']);
+    assert.deepEqual(await app.eval(`[document.activeElement.getAttribute('data-tab'), document.activeElement.getAttribute('aria-selected')]`), ['examples', 'true']);
+    await keeps(app, 'tab', 'examples');
     await key(app, 'ArrowLeft');
     await appears(app, LIST);
     await run(app, 'library.showExamples');

@@ -1,6 +1,6 @@
 // The shell's own commands, global keys and menu entries (runtime.md 8.8): the list the command registry gets
-// beside those of the panels. Their ids begin with `file`, `edit`, `view` or `engine`. No DOM and no React: what
-// needs a window is in the host.
+// beside those of the panels. Their ids begin with `file`, `edit`, `view`, `engine` or `help`. No DOM and no
+// React: what needs a window is in the host.
 
 import type { CommandDef, KeyBinding, MenuEntry, PanelId } from '../ui/types.ts';
 import { SHELL_OWNER, type CommandSource } from './commands.ts';
@@ -56,12 +56,21 @@ export interface ShellCommandHost {
   paused(): boolean;
   setPaused(paused: boolean): void;
   openPalette(mode: PaletteMode): void;
-  showDialog(kind: 'preferences' | 'errors' | 'gallery'): void;
+  showDialog(kind: 'preferences' | 'errors' | 'gallery' | 'about'): void;
   resetLayout(): void;
   closeWindow(): void;
   /** Ends the engine worker and starts another in its place. */
   restartEngine(): void;
+  /** Shows a page of the user documentation, by its name in docs/user, in the application's own reader (8.8 rule 7). */
+  openHelp(name: string): void | Promise<void>;
 }
+
+/** The pages of the Help menu: the command, its title, and the page's name in docs/user. */
+export const HELP_PAGES: readonly { readonly id: string; readonly title: string; readonly document: string }[] = [
+  { id: 'help.userGuide', title: 'User Guide', document: 'README.md' },
+  { id: 'help.unrealImport', title: 'Unreal Import Guide', document: 'unreal-import.md' },
+  { id: 'help.firstRun', title: 'First-Run Checklist', document: 'first-run-on-windows.md' },
+];
 
 const EDIT_TITLES: Readonly<Record<EditAction, string>> = { cut: 'Cut', copy: 'Copy', paste: 'Paste', delete: 'Delete', selectAll: 'Select All' };
 
@@ -117,6 +126,9 @@ export function shellCommands(host: ShellCommandHost): CommandDef[] {
       },
     },
     { id: 'engine.restart', title: 'Restart Engine', run: () => host.restartEngine() },
+
+    ...HELP_PAGES.map((page): CommandDef => ({ id: page.id, title: page.title, run: () => host.openHelp(page.document) })),
+    { id: 'help.about', title: 'About Orogen', run: () => host.showDialog('about') },
   ];
   // A page with one of every shared control: what tests/ui/shell/controls.test.ts drives. Not in the product's menus.
   if (host.testMode) commands.push({ id: 'view.controlGallery', title: 'Control Gallery', run: () => host.showDialog('gallery') });
@@ -161,6 +173,8 @@ export const SHELL_MENU: readonly MenuEntry[] = [
   { menu: 'Engine', command: 'engine.togglePause', group: 'engine' },
   { menu: 'Engine', command: 'engine.retryDevice', group: 'engine' },
   { menu: 'Engine', command: 'engine.restart', group: 'engine' },
+  ...HELP_PAGES.map((page): MenuEntry => ({ menu: 'Help', command: page.id, group: 'pages' })),
+  { menu: 'Help', command: 'help.about', group: 'about' },
 ];
 
 export function shellSource(host: ShellCommandHost): CommandSource {

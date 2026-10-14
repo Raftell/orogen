@@ -84,7 +84,7 @@ export function ColorSwatch(props: ColorSwatchProps) {
         />
       }
     >
-      <div className="og-color-popover" data-ui="color-picker" onPointerDownCapture={begin}>
+      <div className="og-color-popover" data-ui="color-picker" onPointerDownCapture={(event) => { if (event.button === 0) begin(); }}>
         <RgbColorPicker color={toDisplay(props.value, linear)} onChange={(shown) => props.onChange(fromDisplay(shown, linear))} />
         <TextField
           value={hex}

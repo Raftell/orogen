@@ -1,14 +1,18 @@
-// The shell's own dialogs: the question about unsaved changes, the problems of a project that was opened, a
-// file that could not be read or written, and the list of errors with their details.
+// The shell's own dialogs: the questions before a project is left (a build that runs, unsaved changes), before a
+// file is overwritten that another program changed, and about what a run before kept of an unsaved project; the
+// problems of a project that was opened, a file that could not be read or written, the list of errors with their
+// details, and what the application is. The pages of the Help menu are in Help.tsx.
 
 import { useStore } from 'zustand';
 
 import type { NodeError } from '../../core/runtime.ts';
 import { Button, Dialog, Icon, isFailure, nodeErrorText } from '../ui/index.ts';
-import { baseName, failedNodes } from './format.ts';
+import { adapterName, baseName, failedNodes, formatBytes } from './format.ts';
 import { Gallery } from './Gallery.tsx';
+import { HelpDialog } from './Help.tsx';
 import { PreferencesDialog } from './Preferences.tsx';
 import type { Shell, ShellDialog } from './shell.ts';
+import { APPLICATION } from './version.ts';
 
 function Unsaved(props: { readonly shell: Shell; readonly dialog: Extract<ShellDialog, { kind: 'unsaved' }> }) {
   const { shell } = props;
@@ -27,6 +31,115 @@ function Unsaved(props: { readonly shell: Shell; readonly dialog: Extract<ShellD
         </>
       }
     />
+  );
+}
+
+function Changed(props: { readonly shell: Shell; readonly dialog: Extract<ShellDialog, { kind: 'changed' }> }) {
+  const { shell } = props;
+  const name = baseName(props.dialog.file);
+  return (
+    <Dialog
+      open
+      name="changed"
+      width={480}
+      title={`${name} was changed outside this window`}
+      description={`Another program, or another Orogen, has saved ${name} since it was opened or last saved here. Saving now replaces what that program wrote with this project.`}
+      onClose={() => shell.answerChanged('cancel')}
+      actions={
+        <>
+          <Button className="og-dialog-actions-start" variant="danger" data-action="overwrite" onClick={() => shell.answerChanged('overwrite')}>Overwrite</Button>
+          <Button data-action="cancel" onClick={() => shell.answerChanged('cancel')}>Cancel</Button>
+          <Button variant="primary" data-action="save-as" autoFocus onClick={() => shell.answerChanged('saveAs')}>Save As…</Button>
+        </>
+      }
+    />
+  );
+}
+
+const KEPT_AT = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+
+function Recover(props: { readonly shell: Shell; readonly dialog: Extract<ShellDialog, { kind: 'recover' }> }) {
+  const { shell, dialog } = props;
+  const when = dialog.savedAt > 0 ? ` It was kept on ${KEPT_AT.format(dialog.savedAt)}.` : '';
+  return (
+    <Dialog
+      open
+      name="recover"
+      width={480}
+      dismissible={false}
+      title={`Restore the unsaved changes to ${dialog.project}?`}
+      description={`Orogen ended before this project was saved, and kept it as it was a few seconds earlier.${when} Restoring opens it with those changes, unsaved; the file of the project is not touched until you save.`}
+      onClose={() => shell.answerRecover(false)}
+      actions={
+        <>
+          <Button className="og-dialog-actions-start" variant="danger" data-action="discard" onClick={() => shell.answerRecover(false)}>Discard</Button>
+          <Button variant="primary" data-action="restore" autoFocus onClick={() => shell.answerRecover(true)}>Restore</Button>
+        </>
+      }
+    />
+  );
+}
+
+/** What the user was about to do when a build was found running: the title of the question, and the button that goes on. */
+const LEAVING = {
+  new: { title: 'A build is running. Stop it and start a new project?', go: 'Stop Build and Continue' },
+  open: { title: 'A build is running. Stop it and open another project?', go: 'Stop Build and Continue' },
+  close: { title: 'A build is running. Stop it and close Orogen?', go: 'Stop Build and Close' },
+} as const;
+
+function Building(props: { readonly shell: Shell; readonly dialog: Extract<ShellDialog, { kind: 'building' }> }) {
+  const { shell } = props;
+  const words = LEAVING[props.dialog.leaving];
+  return (
+    <Dialog
+      open
+      name="building"
+      title={words.title}
+      description="The build is of this project. A build that is stopped changes nothing in its output folder: what it has written so far stays beside it, in the folder ending in .partial."
+      onClose={() => shell.answerBuilding(false)}
+      actions={
+        <>
+          <Button variant="danger" data-action="stop" onClick={() => shell.answerBuilding(true)}>{words.go}</Button>
+          <Button variant="primary" data-action="stay" autoFocus onClick={() => shell.answerBuilding(false)}>Keep Building</Button>
+        </>
+      }
+    />
+  );
+}
+
+function About(props: { readonly shell: Shell }) {
+  const { shell } = props;
+  const device = useStore(shell.ctx.engineState, (state) => state.device);
+  const memory = useStore(shell.ctx.engineState, (state) => state.memory);
+  const caps = device.caps;
+  const adapter = caps ? adapterName(caps.adapter)
+    : device.state === 'starting' ? 'Starting' : device.state === 'failed' ? 'No graphics device could be opened' : 'Not known yet';
+  const facts: readonly (readonly [string, string, string])[] = [
+    ['version', 'Version', APPLICATION.version],
+    ['adapter', 'Graphics adapter', caps?.software ? `${adapter} (software adapter)` : adapter],
+    ...(caps?.adapter.backend ? [['backend', 'Graphics backend', caps.adapter.backend] as const] : []),
+    ['profile', 'Device profile', shell.ctx.platform.gpuProfile],
+    ...(caps ? [['texture', 'Largest texture', `${caps.limits.maxTextureDimension2D} × ${caps.limits.maxTextureDimension2D}`] as const] : []),
+    ...(memory ? [['budget', 'Memory budget', formatBytes(memory.budgetBytes)] as const] : []),
+  ];
+  return (
+    <Dialog
+      open
+      name="about"
+      title="Orogen"
+      description={APPLICATION.description || undefined}
+      onClose={() => shell.closeDialog()}
+      actions={<Button variant="primary" data-action="ok" autoFocus onClick={() => shell.closeDialog()}>Close</Button>}
+    >
+      <dl className="og-facts" data-ui="about">
+        {facts.map(([id, label, value]) => (
+          <div key={id} className="og-fact" data-about={id}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </Dialog>
   );
 }
 
@@ -132,7 +245,13 @@ function ErrorList(props: { readonly shell: Shell }) {
               <div className="og-list-main">
                 <div className="og-list-title">{titleOf(error)}: {nodeErrorText(error, registry)}</div>
                 <div className="og-list-note">{error.nodeType}, {error.kind}</div>
-                {detail ? <pre className="og-list-detail">{detail}</pre> : null}
+                {/* The sentence above is for the user. A stack, the WGSL and the GPU's own words are for whoever is asked about it: folded away. */}
+                {detail ? (
+                  <details className="og-list-more" data-error="details">
+                    <summary>Details</summary>
+                    <pre className="og-list-detail">{detail}</pre>
+                  </details>
+                ) : null}
               </div>
             </li>
           );
@@ -167,6 +286,11 @@ export function Dialogs(props: { readonly shell: Shell }) {
   if (dialog === null) return null;
   switch (dialog.kind) {
     case 'unsaved': return <Unsaved shell={shell} dialog={dialog} />;
+    case 'building': return <Building shell={shell} dialog={dialog} />;
+    case 'changed': return <Changed shell={shell} dialog={dialog} />;
+    case 'recover': return <Recover shell={shell} dialog={dialog} />;
+    case 'help': return <HelpDialog shell={shell} page={dialog.page} />;
+    case 'about': return <About shell={shell} />;
     case 'problems': return <Problems shell={shell} dialog={dialog} />;
     case 'failure': return <Failure shell={shell} dialog={dialog} />;
     case 'errors': return <ErrorList shell={shell} />;

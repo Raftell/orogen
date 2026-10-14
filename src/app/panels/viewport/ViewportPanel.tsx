@@ -12,9 +12,11 @@ import type { PickResult } from '../../../core/runtime.ts';
 import { EmptyState, useApp } from '../../ui/index.ts';
 import { frameTerrain, terrainOf } from './commands.ts';
 import {
-  centerOrbit, centerTop, dollyDrag, dolly, dragKind, dragSun, fly, flyKeys, flySpeed, isBlank, look, metres, orbit, outputTitle, pan, panTop, STATUS_TEXT,
-  viewStatus, wheelFactor, zoomTop, type DragKind, type NodeState, type ViewStatus,
+  centerOrbit, centerTop, dollyDrag, dolly, dragKind, dragScale, dragSun, fly, flyKeys, flySpeed, isBlank, look, metres, orbit, outputTitle, pan, panTop,
+  HINT_WHILE_BUILDING, pinchFactor, STATUS_HINT, STATUS_TEXT, viewStatus, wheelFactor, wheelKind, wheelStep, zoomTop,
+  type DragKind, type NodeState, type ViewStatus, type WheelStream,
 } from './model.ts';
+import { keepViewport } from './persist.ts';
 import { cameraOf, untouched, viewportStore } from './state.ts';
 import { Toolbar } from './Toolbar.tsx';
 import styles from './viewport.module.css';
@@ -32,11 +34,27 @@ interface Drag {
 
 export function ViewportPanel() {
   const app = useApp();
-  const { engine, engineState, doc, registry } = app.ctx;
+  const { engine, engineState, doc, registry, platform } = app.ctx;
   const root = useRef<HTMLDivElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const [readout, setReadout] = useState<PickResult | null>(null);
   const [dragging, setDragging] = useState<DragKind | null>(null);
+  // Whether the engine's last result for the view had anything in it (state.ts `pictured`).
+  useEffect(() => {
+    const say = (pictured: boolean): void => { if (viewportStore.getState().pictured !== pictured) viewportStore.setState({ pictured }); };
+    if (engineState.getState().view === null) say(false);
+    const stopEvents = engine.subscribe((event) => {
+      if (event.type === 'view-updated') say(event.height || event.overlay);
+    });
+    // Another engine worker has shown nothing yet (8.5).
+    const stopStore = engineState.subscribe((next, previous) => {
+      if (next.view === null && previous.view !== null) say(false);
+    });
+    return () => {
+      stopEvents();
+      stopStore();
+    };
+  }, [engine, engineState]);
 
   // ---- the canvas -----------------------------------------------------------------------------------------------------
   useEffect(() => {
@@ -118,6 +136,13 @@ export function ViewportPanel() {
     look();
     return doc.subscribe((next, previous) => { if (next.doc.settings !== previous.doc.settings) look(); });
   }, [doc, engine]);
+
+  // What is kept between runs (persist.ts): the project's cameras, sun, scale and sea come with the document and
+  // go back into it; the shading, the top view's style and the palette are the user's, in the preferences.
+  useEffect(() => {
+    const keeper = keepViewport({ doc, engine, platform }, viewportStore);
+    return () => keeper.stop();
+  }, [doc, engine, platform]);
 
   // The canvas got another shape: a camera that no hand has moved since it was framed follows it, with what is
   // known of the terrain's heights. The engine is not asked: a divider that is dragged passes through many shapes.
@@ -220,7 +245,10 @@ export function ViewportPanel() {
         return;
       }
       if (event.pointerId !== drag.pointerId) return;
-      const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+      // The camera follows the pointer and nothing else: every move is applied as it comes, and when the pointer
+      // rests the camera does. Ctrl makes the same drag a fine one.
+      const fine = dragScale({ ctrl: event.ctrlKey });
+      const dx = (event.clientX - drag.x) * fine, dy = (event.clientY - drag.y) * fine;
       drag.x = event.clientX;
       drag.y = event.clientY;
       mods = { shift: event.shiftKey, ctrl: event.ctrlKey };
@@ -278,16 +306,28 @@ export function ViewportPanel() {
       forget();
     }
 
+    /** The gesture the last wheel event belonged to (model.ts wheelKind). */
+    let stream: WheelStream | null = null;
+
     function onWheel(event: WheelEvent): void {
       event.preventDefault();
       const state = viewportStore.getState();
       if (drag?.kind === 'fly') {
         // While flying the wheel is the gear.
-        gear = Math.min(16, Math.max(1 / 16, gear * Math.exp(-event.deltaY * 0.002)));
+        gear = Math.min(16, Math.max(1 / 16, gear * Math.exp(-wheelStep(event) * 0.002)));
         return;
       }
-      const factor = wheelFactor(event.deltaY);
+      const now = performance.now();
+      const kind = wheelKind(event, stream, now);
+      stream = { kind, time: now };
       const at = place(event);
+      if (kind === 'pan') {
+        // Two fingers on a trackpad: the picture goes where they go, as a page does.
+        if (state.mode === 'top') viewportStore.setState({ top: panTop(state.top, -event.deltaX, -event.deltaY, state.width) });
+        else viewportStore.setState({ orbit: pan(state.orbit, -event.deltaX, -event.deltaY, state.height) });
+        return;
+      }
+      const factor = kind === 'pinch' ? pinchFactor(event.deltaY) : wheelFactor(wheelStep(event));
       if (state.mode === 'top') {
         viewportStore.setState({ top: zoomTop(state.top, factor, at.x, at.y, state.width, state.height) });
         return;
@@ -313,8 +353,15 @@ export function ViewportPanel() {
       }, () => undefined);
     }
 
+    /** Whether the keyboard is a text field's: what is typed there is text, whatever the pointer does meanwhile. */
+    const typing = (): boolean => {
+      const focused = document.activeElement;
+      return focused instanceof HTMLElement && (focused.isContentEditable || focused instanceof HTMLTextAreaElement || focused instanceof HTMLSelectElement
+        || (focused instanceof HTMLInputElement && !['button', 'checkbox', 'radio', 'range', 'color', 'file', 'submit', 'reset', 'image'].includes(focused.type)));
+    };
+
     function onKey(event: KeyboardEvent): void {
-      if (flying === null || !FLY_CODES.has(event.code)) return;
+      if (flying === null || !FLY_CODES.has(event.code) || typing()) return;
       // The keys of a flight are the camera's while the right button is held, whatever else they are bound to.
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -325,6 +372,9 @@ export function ViewportPanel() {
 
     /** The arrow keys turn the camera or move the top view; plus and minus dolly. */
     function onHostKey(event: KeyboardEvent): void {
+      // The keys of the picture are the picture's while it has the focus itself: a key that is typed into a field of
+      // the toolbar, or anywhere else, is sent to that field and is none of these.
+      if (event.target !== element) return;
       const state = viewportStore.getState();
       const step = event.shiftKey ? 15 : 5;
       const arrows: Readonly<Record<string, readonly [number, number]>> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
@@ -409,8 +459,13 @@ export function ViewportPanel() {
   };
   const terrainState = useStore(engineState, stateOf(heightNode ?? overlayNode));
   const overlayState = useStore(engineState, stateOf(heightNode === undefined ? undefined : overlayNode));
-  const status: ViewStatus = viewStatus({ device, bound: named, node: terrainState, overlay: overlayState, shown, sent, evaluating });
-  const blank = isBlank(status, shown !== null);
+  const pictured = useStore(viewportStore, (state) => state.pictured);
+  const paused = useStore(engineState, (state) => state.paused);
+  const building = useStore(engineState, (state) => state.build.running);
+  const nodeCount = useStore(doc, (state) => Object.keys(state.doc.nodes).length);
+  const status: ViewStatus = viewStatus({ device, bound: named, node: terrainState, overlay: overlayState, shown, pictured, sent, evaluating, paused, building, nodes: nodeCount });
+  const blank = isBlank(status, shown !== null && pictured);
+  const hint = building && (status === 'waiting' || status === 'stale') ? HINT_WHILE_BUILDING : STATUS_HINT[status];
 
   const cursor = dragging === 'fly' ? 'none' : dragging ? 'grabbing' : 'default';
 
@@ -429,7 +484,7 @@ export function ViewportPanel() {
       data-scale={display.verticalScale}
       data-sea={display.showSea ? '' : undefined}
     >
-      <Toolbar status={status} resolution={shown?.resolution ?? null} subject={subject} locked={locked} />
+      <Toolbar status={status} hint={hint} resolution={shown !== null && pictured ? shown.resolution : null} subject={subject} locked={locked} />
       <div className={styles.stage}>
         <div
           ref={host}
@@ -441,13 +496,8 @@ export function ViewportPanel() {
           style={{ cursor }}
         />
         {blank ? (
-          <div className={styles.cover} data-viewport="cover">
-            <EmptyState title={STATUS_TEXT[status]}>
-              {status === 'empty' ? 'Select a node in the graph to see its terrain'
-                : status === 'error' ? 'The list of errors in the status bar says why'
-                  : status === 'unwired' ? 'Connect its input in the graph to see its terrain'
-                    : null}
-            </EmptyState>
+          <div className={styles.cover} data-viewport="cover" data-state={status}>
+            <EmptyState title={STATUS_TEXT[status]}>{hint !== '' ? hint : null}</EmptyState>
           </div>
         ) : null}
         {!blank && readout ? (

@@ -4,9 +4,9 @@
 // plans the insertion of a node into a wire. Pure: no DOM, no React.
 
 import type { NodeDef, PortDef } from '../../../core/api.ts';
-import { connect, validateConnection, type DocDraft, type GraphDoc, type NodeRegistry, type PortRef } from '../../../core/runtime.ts';
+import { connect, inputsOf, validateConnection, type DocDraft, type GraphDoc, type NodeRegistry, type PortRef } from '../../../core/runtime.ts';
 import { parseFlowId, parseHandleId } from './flow.ts';
-import { declaredTone, inputsOf, nodeTitle, own, type PortTone } from './model.ts';
+import { declaredTone, nodeTitle, own, type PortTone } from './model.ts';
 
 /** One end of a wire: a port and the side of its node it is on. */
 export interface PortEnd { readonly node: string; readonly side: 'in' | 'out'; readonly port: string }

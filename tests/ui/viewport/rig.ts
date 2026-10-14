@@ -77,7 +77,8 @@ const PAGE = `(() => {
     /** The pointer comes to rest over the canvas. */
     hover(x, y) { send('pointermove', x, y, { button: -1, buttons: 0 }); },
     leave() { send('pointerleave', -10, -10, { bubbles: false }); },
-    wheel(x, y, deltaY) { send('wheel', x, y, { deltaY }); },
+    /** A turn of the wheel, or what a trackpad sends as one: init holds deltaX, deltaMode, ctrlKey (a pinch) and shiftKey. */
+    wheel(x, y, deltaY, init = {}) { send('wheel', x, y, { deltaY, ...init }); },
     doubleClick(x, y) { send('dblclick', x, y, { button: 0, buttons: 0, detail: 2 }); },
     /**
      * Where the toolbar's parts end, in pixels from its left edge; 'hidden' for one that takes no room or is cut
@@ -104,6 +105,19 @@ const PAGE = `(() => {
     },
     key(type, code, mods = {}) {
       window.dispatchEvent(new KeyboardEvent(type, { code, key: code.replace(/^Key/, '').toLowerCase(), bubbles: true, cancelable: true, ...mods }));
+    },
+    /** A key pressed while the canvas has the focus: the focus goes there first, as a click on the picture puts it. */
+    hostKey(code, mods = {}) {
+      host().focus();
+      const init = { code, key: code.replace(/^Key/, '').toLowerCase(), bubbles: true, cancelable: true, composed: true, ...mods };
+      host().dispatchEvent(new KeyboardEvent('keydown', init));
+      host().dispatchEvent(new KeyboardEvent('keyup', init));
+    },
+    cover() {
+      const element = document.querySelector('[data-viewport="cover"]');
+      if (!element) return null;
+      const lines = [...element.querySelectorAll('[data-ui="empty"] > *')].map((line) => line.textContent);
+      return { state: element.getAttribute('data-state'), title: lines[0] ?? '', hint: lines[1] ?? '' };
     },
     camera: () => JSON.parse(root().getAttribute('data-camera')),
     attr: (name) => root().getAttribute(name),
@@ -161,6 +175,11 @@ export async function resizeViewport(app: AppDriver, width: number, height: numb
 export async function show(app: AppDriver, doc: GraphDoc, timeoutMs: number = EVALUATION_BACKSTOP_MS): Promise<void> {
   await app.eval(`void orogenTest.ctx.doc.getState().load(${quote(doc)}, null)`);
   await settled(app, timeoutMs);
+  // The panel frames a newly opened terrain once more when the engine has answered where its heights lie
+  // (commands.ts, frameTerrain). A camera read before that is not the camera a gesture starts from: one test in
+  // three hundred runs read 5875 where 5962 was to come. The engine answers in the order asked, so when this
+  // question is answered the panel's has been, and its framing made.
+  await app.eval(`orogenTest.ctx.engine.inspect(orogenTest.ctx.doc.getState().doc.ui.view?.height ?? orogenTest.ctx.doc.getState().doc.ui.view?.overlay?.ref ?? { node: '', port: '' })`);
 }
 
 export async function settled(app: AppDriver, timeoutMs: number = EVALUATION_BACKSTOP_MS): Promise<void> {

@@ -16,7 +16,7 @@ output of one node to an input of another.
                         └──in── Normal Texture
 ```
 
-That is `examples/ridge.orogen`: a mountain range, a mask of its steep ground, and three export nodes.
+That is `docs/user/examples/ridge.orogen`: a mountain range, a mask of its steep ground, and three export nodes.
 
 Rules of the graph:
 
@@ -180,7 +180,7 @@ three of its nodes:
 | a node's `position` | where the node sits in the graph editor. It has no effect on the terrain |
 | a node's `title`, `bypass` | optional: your own label; `true` to bypass the node |
 | `edges` | the connections, each under its id, `from` an output `to` an input |
-| `groups`, `ui` | what the graph editor will store: coloured frames around nodes, and what the viewport shows. Leave them empty |
+| `groups`, `ui` | what the graph editor stores: the frames around nodes, the place of the graph, and what the viewport shows. Leave them empty in a file you write by hand |
 
 How Orogen reads a file:
 
@@ -190,12 +190,17 @@ How Orogen reads a file:
 - A node of a type this version of Orogen does not have is kept as it is, and reported.
 - A file written by a newer version of the format is refused.
 - The path of an image for an import node is stored in the node's `file` parameter. A path without a drive or
-  leading slash is taken from the folder of the project file.
+  leading slash is taken from the folder of the project file. The application stores a file that lies in the
+  project's folder, or below it, relative to the project file and with `/`, so that the folder can be moved or
+  copied to another machine whole; a file elsewhere, or on another drive, is stored with its full path.
+- The file is UTF-8; line ends of either kind are read, and so is a byte order mark at its start, which
+  Windows PowerShell 5 and some editors write. Orogen writes none.
 
 ## Same input, same output
 
 Two builds of the same project at the same resolution, on the same graphics card and with the same version
-of Orogen, write the same bytes: this was checked for `examples/ridge.orogen` on the development machine.
+of Orogen, write the same bytes: this was checked for `docs/user/examples/ridge.orogen` on the development
+machine.
 Another graphics card computes the same terrain with differences in the seventh digit. That is too small to
 see, and it does change the last digits of the numbers in a manifest. Always take the numbers from the
 manifest of the build you import.

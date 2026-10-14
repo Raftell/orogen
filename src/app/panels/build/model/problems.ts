@@ -13,7 +13,7 @@ export interface ProblemText {
 export const PROBLEM_TEXT: Readonly<Record<BuildProblemCode, ProblemText>> = {
   E_NOTHING_TO_EXPORT: {
     title: 'Nothing to export',
-    advice: 'A build writes only what export nodes declare. Add an export node from the I/O category, connect it and switch it on.',
+    advice: 'A build writes only what export nodes declare. Add an export node from the Import and Export category of the library, connect it and switch it on: Unreal Landscape exports the terrain.',
   },
   E_INPUT_MISSING: {
     title: 'An export node has no input',

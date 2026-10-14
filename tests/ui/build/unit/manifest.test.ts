@@ -232,6 +232,11 @@ test('a build that succeeded: what was written, and where', () => {
 
   const warned = describeOutcome({ ...ok, problems: [{ severity: 'warning', code: 'W_LAYER_EMPTY', message: 'x' }, { severity: 'warning', code: 'W_FLAT', message: 'y' }] }, OUT, PLAN);
   assert.deepEqual([warned.tone, warned.headline], ['warning', 'Build finished with 2 warnings']);
+  // A build of textures and images alone "finished" too, and has not exported the terrain: the outcome says so.
+  const textures = describeOutcome(ok, OUT, plan(docOf({ ...SOURCES, outpaint: { type: 'io/export-color', in: 'paint.out' } })));
+  assert.equal(textures.headline, 'Build finished');
+  assert.match(textures.written, /No Unreal Landscape node: this build writes no heightmap\./);
+  assert.ok(!outcome.written.includes('No Unreal Landscape'));
   // The build it replaced could not be deleted: said, and the build is still a success.
   const leftover = describeOutcome({ ...ok, problems: [{ severity: 'warning', code: 'E_COMMIT_FAILED', message: 'z' }] }, OUT, PLAN);
   assert.match(leftover.written, /The build it replaced could not be deleted and lies beside it\.$/);

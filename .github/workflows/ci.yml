@@ -20,6 +20,28 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run test:unit
+      # The verdicts of the launch check the jobs below run (testing.md 9.1).
+      - run: node --test .github/scripts/launch-check.test.mjs
+      # A pull request stays inside the folders its branch names the owner of (testing.md 7.1).
+      - if: github.event_name == 'pull_request'
+        run: node tests/tools/ownership.ts
+
+  # The type check and the unit layer once more, on Windows: path separators, drive letters and the temporary
+  # folder are Windows' own there. .gitattributes keeps the line ends of the checkout as the repository stores
+  # them; converted to CRLF, the tests that read the contract's Markdown fail. Not required to merge until it has
+  # passed here (testing.md 9.1).
+  unit-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 26, cache: npm }
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:unit
+      - run: node --test .github/scripts/launch-check.test.mjs
 
   gpu:
     strategy:
@@ -76,6 +98,15 @@ jobs:
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run build
+      # The first start of the Electron binary on a runner is not a test's (testing.md 9.3): npm no longer fetches
+      # the binary, so the first start downloads it, and on the one run on record the engine of that first start
+      # was given no WebGPU adapter while the three starts after it were. This step is that first start. It says
+      # what the engine found and whether a second start of the engine finds an adapter, with Chromium's own
+      # output, and fails only when the window does not load.
+      - name: First start of the application
+        run: xvfb-run -a node .github/scripts/launch-check.mjs --result test-output/launch-check/first-start.json
+        env:
+          OROGEN_LAUNCH_CHECK_OUTPUT: '1'
       - run: xvfb-run -a npm run test:electron
       - if: always()
         uses: actions/upload-artifact@v4
@@ -84,7 +115,8 @@ jobs:
           path: test-output
           if-no-files-found: ignore
 
-  # The Windows package, unsigned: a zip and a portable executable, kept as an artifact of the run.
+  # The Windows package, unsigned (testing.md 9.1): the application folder and the portable executable, each an
+  # artifact of the run under its own name, and one start of the packaged application on the runner.
   package-windows:
     runs-on: windows-latest
     timeout-minutes: 30
@@ -96,10 +128,46 @@ jobs:
         with: { node-version: 26, cache: npm }
       - run: npm ci
       - run: npm run dist:win
+      - name: What the package holds
+        shell: bash
+        run: |
+          ls -l release release/win-unpacked
+          for file in Orogen.exe resources/app.asar; do
+            test -f "release/win-unpacked/$file" || { echo "::error::release/win-unpacked/$file is missing from the package"; exit 1; }
+          done
+          # runtime.md 1.6 names these of the Electron distribution; one that is absent is said, and does not fail the job.
+          for file in d3dcompiler_47.dll dxcompiler.dll dxil.dll; do
+            test -f "release/win-unpacked/$file" || echo "::warning::release/win-unpacked/$file is not in the package (runtime.md 1.6 expects it of the Electron distribution)"
+          done
+      # The application folder, which GitHub hands out as one zip: unpack it and start Orogen.exe. It is what the
+      # zip of `npm run dist:win` holds, without a zip inside a zip.
       - uses: actions/upload-artifact@v4
         with:
-          name: orogen-windows
-          path: |
-            release/*.zip
-            release/*.exe
+          name: Orogen-windows-x64
+          path: release/win-unpacked
           if-no-files-found: error
+      # One file: Orogen-<version>-win-x64-portable.exe.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Orogen-windows-x64-portable
+          path: release/*-portable.exe
+          if-no-files-found: error
+      # Test mode from the command line (testing.md 2.9): hidden, no dialog. The job fails when the packaged
+      # application does not load its window.
+      - name: Start the packaged application
+        run: node .github/scripts/launch-check.mjs --app release/win-unpacked/Orogen.exe --result test-output/launch-check/packaged.json
+      # Whether Electron offers a WebGPU adapter on a runner without a GPU is not yet known: said, not required.
+      - name: Its engine opens a GPU device
+        continue-on-error: true
+        run: node .github/scripts/launch-check.mjs --read test-output/launch-check/packaged.json --require-device
+      # The portable executable unpacks itself and starts the same application. Not required until it has passed here.
+      - name: Start the portable executable
+        continue-on-error: true
+        shell: bash
+        run: node .github/scripts/launch-check.mjs --app "$(ls release/*-portable.exe | head -n 1)" --result test-output/launch-check/portable.json --settle 120
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launch-check-windows
+          path: test-output/launch-check
+          if-no-files-found: ignore

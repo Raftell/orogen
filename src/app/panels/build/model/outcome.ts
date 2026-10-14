@@ -5,6 +5,7 @@
 import type { BuildPlan, BuildResult } from '../../../../core/runtime.ts';
 import { formatBytes, plural } from './format.ts';
 import { joinPath } from './paths.ts';
+import { hasLandscape, NO_LANDSCAPE } from './plan.ts';
 
 export interface Outcome {
   readonly tone: 'ok' | 'warning' | 'error' | 'neutral';
@@ -45,7 +46,9 @@ export function describeOutcome(result: BuildResult, requested: string | null, p
       tone: warnings > 0 ? 'warning' : 'ok',
       headline: warnings > 0 ? `Build finished with ${plural(warnings, 'warning')}` : 'Build finished',
       written: `${plural(result.files.length, 'file')}, ${formatBytes(bytes)}. The output folder holds this build and nothing else.`
-        + (leftover ? ' The build it replaced could not be deleted and lies beside it.' : ''),
+        + (leftover ? ' The build it replaced could not be deleted and lies beside it.' : '')
+        // A build that "finished" with textures alone has not exported the terrain, and nothing else would say so.
+        + (plan !== null && !hasLandscape(plan) ? ` ${NO_LANDSCAPE}` : ''),
       kept: null,
       places: result.outDir !== null ? [{ label: 'Output folder', path: result.outDir }] : asked,
       folder: result.outDir,

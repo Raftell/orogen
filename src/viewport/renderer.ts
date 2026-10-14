@@ -5,21 +5,22 @@
 // the latest, from a timer (7.8 rule 6). The first frame is confirmed before the window is trusted to present
 // (rule 9). Everything derived from the content lives in textures of the renderer's own (rule 4): the light maps
 // of lighting.ts, the grids of minima and maxima, the lit picture before tone mapping. How much of that there is
-// follows the adapter (lightCapFor, multisampleLimitFor). A content the session steps back to is not drawn at
-// once (rule 2, setContent below).
+// follows the adapter (lightCapFor, multisampleLimitFor, pixelLimitFor; rule 13). A content the session steps
+// back to is not drawn at once (rule 2, setContent below). From near, the picture is of a smooth surface through
+// the field, which the pointer does not read (rule 12).
 
 import type {
   CameraState, GpuCaps, GpuContext, PickResult, TextureRef, ViewportContent, ViewportDisplay, ViewportRenderer, ViewportSize,
 } from '../core/runtime.ts';
-import { exposureFor, skyLight, type SkyLight } from './atmosphere.ts';
+import { exposureFor, skyLight, whiteBalance, type SkyLight } from './atmosphere.ts';
 import { DEG, frustumPlanes, pixelRay, viewOf, type View } from './camera.ts';
 import { DEFAULT_DISPLAY, PALETTE_SIZE, paletteTexels, resolveDisplay, type ResolvedDisplay } from './display.ts';
 import { BAKE_LOADS_PER_FRAME, createBakePipelines, createLighting, lightSize, type BakePipelines, type Lighting } from './lighting.ts';
 import {
-  buildBounds, createSelection, gridRange, INSTANCE_FLOATS, levelZeroRange, lodSetup, MAX_INSTANCES, patchMesh, selectPatches, slabDistance,
+  buildBounds, createSelection, gridRange, INSTANCE_FLOATS, levelZeroRange, lodSetup, MAX_INSTANCES, patchMesh, selectPatches, slabDistance, SUB_LEVELS,
   UNKNOWN_BOUNDS, type HeightBounds, type LodSetup, type MinMaxGrid,
 } from './lod.ts';
-import { BACKGROUND, FRAME, FRAME_FLOATS, PICK_WGSL, POST_WGSL, REDUCE_WGSL, SCENE_WGSL, SKY_MAP_WGSL, TOP_WGSL } from './shaders.ts';
+import { BACKGROUND, FRAME, FRAME_FLOATS, PICK_WGSL, POST_WGSL, REDUCE_WGSL, SCENE_WGSL, SKY_FLOATS, SKY_MAP_WGSL, TOP_WGSL } from './shaders.ts';
 
 export interface RendererOptions {
   /** The format of the canvas; default what the platform prefers. */
@@ -28,29 +29,65 @@ export interface RendererOptions {
   readonly quadPixels?: number;
   /** The widest grid of the light maps, a power of two. Default: by the adapter's memory (`lightCapFor`). */
   readonly lightSize?: number;
+  /** The most pixels the canvas is given. Default: by the adapter's memory (`pixelLimitFor`). */
+  readonly pixelLimit?: number;
   /** How long the picture is kept when the session steps back to an earlier content (`setContent`), in milliseconds. Default 400. */
   readonly holdMs?: number;
   /** Whether the passes that bake the light maps are timed, and their share of a frame set by that. Default: where the device has timestamp-query. */
   readonly timeBakes?: boolean;
+  /**
+   * False: the picture is of the field's bilinear patches at every distance, with no vertex between the texels.
+   * Default true: from near, a smooth surface through the same field (shaders.ts, `shownHeight`).
+   */
+  readonly smooth?: boolean;
 }
 
 /** A card with this much memory is a large one: 8 GB and more, as its largest heap reports it. */
 const LARGE_VRAM = 7.5 * 2 ** 30;
+/** And one that reports less than this a tiny one: 3 GB and less. */
+const TINY_VRAM = 3.5 * 2 ** 30;
+
+/** What the renderer holds of an adapter's memory, in three sizes; an adapter that does not say how much it has is a small one. */
+function cardOf(caps: Pick<GpuCaps, 'vramBytes' | 'software'>): 'software' | 'tiny' | 'small' | 'large' {
+  if (caps.software) return 'software';
+  const bytes = caps.vramBytes;
+  if (bytes === null || !(bytes > 0)) return 'small';
+  return bytes >= LARGE_VRAM ? 'large' : bytes < TINY_VRAM ? 'tiny' : 'small';
+}
 
 /**
  * The widest grid of the light maps for an adapter, a power of two. At 4096 the maps and the state of their march
- * hold 384 MiB, a 16th of what a 10 GB card's budget is; at 2048, 96 MiB. An adapter that does not say how much
- * memory it has is taken for a small one, and a CPU rasteriser bakes a grid it can bake in a frame.
+ * hold 384 MiB, a 16th of what a 10 GB card's budget is; at 2048, 96 MiB; at 1024, 24 MiB. An adapter that does
+ * not say how much memory it has is taken for a small one, and a CPU rasteriser bakes a grid it can bake in a frame.
  */
 export function lightCapFor(caps: Pick<GpuCaps, 'vramBytes' | 'software'>): number {
-  if (caps.software) return 512;
-  return (caps.vramBytes ?? 0) >= LARGE_VRAM ? 4096 : 2048;
+  return { software: 512, tiny: 1024, small: 2048, large: 4096 }[cardOf(caps)];
 }
 
 /** Above this many pixels the lit picture is drawn without multisampling: its samples alone are 48 bytes a pixel. */
 export function multisampleLimitFor(caps: Pick<GpuCaps, 'vramBytes' | 'software'>): number {
-  if (caps.software) return 0;
-  return (caps.vramBytes ?? 0) >= LARGE_VRAM ? 9_000_000 : 4_500_000;
+  return { software: 0, tiny: 2_400_000, small: 4_500_000, large: 9_000_000 }[cardOf(caps)];
+}
+
+/**
+ * The most pixels the picture is drawn with: a panel that asks for more (a screen of 8K, a device pixel ratio of
+ * 3) gets a canvas of this many, of its own shape, which the page stretches. Everything the renderer holds by
+ * the pixel is so bounded by the adapter: 240 MiB on a small card (4.5 million pixels with their samples, 56
+ * bytes each, or these 8.3 million at 12), 481 MiB on a large one, 24 MiB on a CPU rasteriser.
+ */
+export function pixelLimitFor(caps: Pick<GpuCaps, 'vramBytes' | 'software'>): number {
+  return { software: 1920 * 1080, tiny: 2560 * 1440, small: 3840 * 2160, large: 5120 * 2880 }[cardOf(caps)];
+}
+
+/** The canvas for a panel of `width` × `height` CSS pixels at a device pixel ratio: its backing size, each side within `side` and the whole within `pixels`. */
+export function backingSize(width: number, height: number, dpr: number, side: number, pixels: number): readonly [number, number] {
+  const css = (length: number): number => (Number.isFinite(length) && length > 1 ? length : 1);
+  const ratio = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  let w = css(width) * ratio, h = css(height) * ratio;
+  const shrink = Math.min(1, side / w, side / h, Math.sqrt(pixels / (w * h)));
+  w *= shrink;
+  h *= shrink;
+  return [Math.min(side, Math.max(1, Math.round(w))), Math.min(side, Math.max(1, Math.round(h)))];
 }
 
 /** What a test or a measurement reads of a renderer. */
@@ -70,6 +107,8 @@ export interface RendererState {
   readonly blocked: boolean;
   /** Texture loads a frame may spend on refining the light maps of what is shown; 0 before a frame has drawn it. */
   readonly bakeLoads: number;
+  /** The canvas's backing size, in pixels; [0, 0] without a canvas. */
+  readonly canvas: readonly [number, number];
 }
 
 export interface Viewport extends ViewportRenderer {
@@ -91,8 +130,6 @@ const SKY_WIDTH = 256, SKY_HEIGHT = 128;
 /** The slab the terrain stands on, below its lowest point, as a share of its width. */
 const SLAB = 0.035;
 const PICK_STEPS = 200_000;
-/** The width of the terrain whose air the picture has, in metres: the haze between near and far ground is that of such a terrain at any scale. */
-const AIR_WIDTH = 2000;
 
 /**
  * What the renderer uses of a canvas and of its surroundings, named here so that this file reads the same under
@@ -195,6 +232,9 @@ function defaultCamera(content: ViewportContent, display: ResolvedDisplay): Came
 
 export function createViewportRenderer(options: RendererOptions = {}): Viewport {
   const quadPixels = options.quadPixels ?? 2.5;
+  const smooth = options.smooth !== false;
+  /** The mesh of a field: with vertices between the texels where the picture is smooth. */
+  const meshOf = (resolution: number): LodSetup => lodSetup(resolution, smooth ? SUB_LEVELS : 0);
   const holdMs = options.holdMs ?? HOLD_MS;
   const lightCapOf = (gpu: GpuContext): number => options.lightSize ?? lightCapFor(gpu.caps);
   const canvasFormat = (): GPUTextureFormat => options.canvasFormat ?? globals.navigator?.gpu?.getPreferredCanvasFormat() ?? 'bgra8unorm';
@@ -213,7 +253,7 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
   let overlayChanged = false;
   /** Counts the contents; what comes back from the GPU for an earlier one is dropped. */
   let generation = 0;
-  let setup: LodSetup = lodSetup(2);
+  let setup: LodSetup = lodSetup(2, 0);
   let bounds: HeightBounds | null = null;
   /** Whether `bounds` is of the field as it is now. One of its last state says where the heights lie, and not node by node. */
   let boundsExact = false;
@@ -222,7 +262,7 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
   let overlayRange: readonly [number, number] = [0, 1];
   const selection = createSelection();
   const frameData = new Float32Array(FRAME_FLOATS);
-  let light: { readonly elevation: number; readonly value: SkyLight; readonly exposure: number } | null = null;
+  let light: { readonly elevation: number; readonly value: SkyLight; readonly exposure: number; readonly gain: Float32Array<ArrayBuffer> } | null = null;
   let frames = 0;
   let triangles = 0;
   let pending = false;
@@ -321,7 +361,7 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
     const halfInstances = buffer('quarter instances', instanceBytes, GPUBufferUsage.VERTEX);
     const frameUniforms = buffer('frame uniforms', FRAME_FLOATS * 4, GPUBufferUsage.UNIFORM);
     const postUniforms = buffer('post uniforms', 16, GPUBufferUsage.UNIFORM);
-    const skyUniforms = buffer('sky uniforms', 16, GPUBufferUsage.UNIFORM);
+    const skyUniforms = buffer('sky uniforms', SKY_FLOATS * 4, GPUBufferUsage.UNIFORM);
     const pickUniforms = buffer('pick uniforms', 64, GPUBufferUsage.UNIFORM);
     const pickResult = buffer('pick result', 32, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC);
 
@@ -504,7 +544,7 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
         const heights = content?.height;
         if (!heights || `${heights.width}x${heights.height}` !== reducerSizes.height) return;
         // Of the field as it was a moment ago, when it has changed since: its own grid is asked for already.
-        bounds = buildBounds(lodSetup(Math.max(heights.width, heights.height)), heights.width, heights.height, grid);
+        bounds = buildBounds(meshOf(Math.max(heights.width, heights.height)), heights.width, heights.height, grid);
         boundsExact = from === generation;
         schedule();
       })
@@ -584,9 +624,9 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
   function setSize(next: ViewportSize): void {
     size = { width: Math.max(1, next.width), height: Math.max(1, next.height), dpr: next.dpr > 0 ? next.dpr : 1 };
     if (!canvas) return;
-    const limit = dev?.gpu.caps.limits.maxTextureDimension2D ?? 8192;
-    const pixels = (css: number): number => Math.min(limit, Math.max(1, Math.round(css * size.dpr)));
-    const width = pixels(size.width), height = pixels(size.height);
+    // Before there is a device, as for the smallest: a canvas grows when it is known what it may be.
+    const [width, height] = backingSize(size.width, size.height, size.dpr, dev?.gpu.caps.limits.maxTextureDimension2D ?? 8192,
+      options.pixelLimit ?? (dev ? pixelLimitFor(dev.gpu.caps) : pixelLimitFor({ vramBytes: null, software: true })));
     if (canvas.width !== width) canvas.width = width;
     if (canvas.height !== height) canvas.height = height;
   }
@@ -633,9 +673,30 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
       // A device that is lost in mid-frame is the session's to report (7.8); anything else is this file's fault.
       if (!dev?.gpu.lost) console.error('[orogen] viewport: the frame failed', thrown);
     }
-    if (pending) schedule();
+    if (pending) afterTheGpu(schedule);
     for (const wake of waiting) wake();
     settle();
+  }
+
+  /** When the GPU has done the frame last submitted; null before any. */
+  let lastSubmitted: Promise<unknown> | null = null;
+  /**
+   * Runs `next` when the GPU has done what the last frame gave it, and after FRAME_BACKSTOP_MS at the latest, for
+   * a device that is lost and answers nothing. The frames that only refine the light maps follow one another this
+   * way: one that was drawn while the one before it was still in the queue would be no sooner on screen, and
+   * where frames are not paced by a display (Node) they would pile up without end.
+   */
+  function afterTheGpu(next: () => void): void {
+    let ran = false;
+    const once = (): void => {
+      if (ran) return;
+      ran = true;
+      clearTimeout(backstop);
+      next();
+    };
+    const backstop = setTimeout(once, FRAME_BACKSTOP_MS);
+    if (lastSubmitted) lastSubmitted.then(once, once);
+    else once();
   }
 
   const cameraNow = (shown: ViewportContent): CameraState => camera ?? defaultCamera(shown, display);
@@ -651,7 +712,9 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
   function lightFor(elevation: number): NonNullable<typeof light> {
     if (!light || light.elevation !== elevation) {
       const value = skyLight(elevation);
-      light = { elevation, value, exposure: exposureFor(value, elevation) };
+      const exposure = exposureFor(value, elevation);
+      const balance = whiteBalance(value, elevation);
+      light = { elevation, value, exposure, gain: new Float32Array([exposure * balance[0], exposure * balance[1], exposure * balance[2], 0]) };
     }
     return light;
   }
@@ -686,7 +749,7 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
       // What follows the height field: the mesh's levels, the range of its heights, the light maps.
       let lighting: Lighting | null = null;
       if (heights) {
-        setup = lodSetup(Math.max(heights.width, heights.height));
+        setup = meshOf(Math.max(heights.width, heights.height));
         const reducer = reducerFor(d, 'heightReducer', heights, reducerSizes);
         lighting = lightingFor(d, heights);
         if (heightChanged) {
@@ -700,7 +763,7 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
           seaLevel: display.showSea ? shown.seaLevel : null,
         }, BAKE_LOADS_PER_FRAME);
       } else {
-        setup = lodSetup(2);
+        setup = lodSetup(2, 0);
       }
       heightChanged = false;
       const overlay = shown.overlay;
@@ -715,7 +778,10 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
       const sun = lightFor(display.sunElevation);
       if (d.skyElevation !== display.sunElevation) {
         d.skyElevation = display.sunElevation;
-        device.queue.writeBuffer(d.skyUniforms, 0, new Float32Array([display.sunElevation * DEG, 0, SKY_WIDTH, SKY_HEIGHT]));
+        const sky = new Float32Array(SKY_FLOATS);
+        sky.set([display.sunElevation * DEG, 0, SKY_WIDTH, SKY_HEIGHT, ...sun.value.up, 0]);
+        sky.set(sun.value.table, 8);
+        device.queue.writeBuffer(d.skyUniforms, 0, sky);
         const group = scopedOn(device, 'the sky bind group', () => device.createBindGroup({ layout: pipelines.skyMap.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: d.skyUniforms } }] }));
         const pass = encoder.beginRenderPass({ colorAttachments: [{ view: d.skyView, loadOp: 'clear', storeOp: 'store' }] });
         pass.setPipeline(pipelines.skyMap);
@@ -759,12 +825,9 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
       f.set([...sun.value.sun, sun.exposure], FRAME.sunColor);
       f.set(sun.value.up, FRAME.skyUp);
       f.set(sun.value.side, FRAME.skySide);
-      // The distance from the eye to the box the terrain fills: the air before it is not counted (shaders.ts, aerial).
-      const outside = Math.hypot(
-        Math.max(-eye[0], 0, eye[0] - shown.terrainSize), Math.max(-eye[1], 0, eye[1] - shown.terrainSize),
-        Math.max(low * zScale - eye[2], 0, eye[2] - high * zScale),
-      );
-      f.set([lighting ? 1 : 0, outside, AIR_WIDTH / shown.terrainSize], FRAME.misc);
+      // How many texels of the height field a pixel covers at a metre's distance: what the smooth surface is shown by (shaders.ts).
+      const texelsPerPixel = smooth && view.kind === 'orbit' && heights ? (2 * (Math.max(heights.width, heights.height) - 1)) / (shown.terrainSize * view.focal * height) : 0;
+      f.set([lighting ? 1 : 0, 0, texelsPerPixel, smooth && heights ? 1 : 0], FRAME.misc);
       f.set([width, height, 1 / width, 1 / height], FRAME.canvas);
       f.set([shown.terrainSize, zScale, shown.heightRange, shown.seaLevel], FRAME.terrain);
       f.set(heights ? [heights.width - 1, heights.height - 1, 1] : [0, 0, 0], FRAME.heightTex);
@@ -806,7 +869,7 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
         const scene = pipelines.scene[targets.samples];
         device.queue.writeBuffer(d.fullInstances, 0, selection.full, 0, selection.fullCount * INSTANCE_FLOATS);
         device.queue.writeBuffer(d.halfInstances, 0, selection.half, 0, selection.halfCount * INSTANCE_FLOATS);
-        device.queue.writeBuffer(d.postUniforms, 0, new Float32Array([sun.exposure, 0, 0, 0]));
+        device.queue.writeBuffer(d.postUniforms, 0, sun.gain);
         triangles = (selection.fullCount * d.fullIndexCount + selection.halfCount * d.halfIndexCount) / 3;
         const pass = encoder.beginRenderPass({
           colorAttachments: [{
@@ -845,6 +908,9 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
       }
       device.queue.submit([encoder.finish()]);
     });
+    // Handled here: when the GPU process goes, this rejects, and the frame after it, which alone would look at
+    // it (afterTheGpu), may never be asked for.
+    lastSubmitted = device.queue.onSubmittedWorkDone().catch(() => undefined);
     d.heightReducer?.collect();
     d.overlayReducer?.collect();
     baked.lighting?.collect();
@@ -976,6 +1042,7 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
       reducerSizes.height = reducerSizes.overlay = '';
       const made = createDeviceState(next, ledger);
       dev = made;
+      setSize(size);
       createPipelines(made).then((pipelines) => {
         if (dev !== made || disposed) return;
         made.pipelines = pipelines;
@@ -1077,7 +1144,7 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
       return {
         frames, triangles, patches: selection.fullCount + selection.halfCount, reservedBytes: reservedBytes(),
         lightSize: content?.height && dev ? lightSize(Math.max(content.height.width, content.height.height), lightCapOf(dev.gpu)) : 0,
-        heightRange: bounds ? [bounds.min, bounds.max] : null, overlayRange, blocked,
+        heightRange: bounds ? [bounds.min, bounds.max] : null, overlayRange, blocked, canvas: canvas ? [canvas.width, canvas.height] : [0, 0],
         bakeLoads: content?.height && dev ? dev.lightings.get(lightSize(Math.max(content.height.width, content.height.height), lightCapOf(dev.gpu)))?.loadsPerFrame ?? 0 : 0,
       };
     },

@@ -15,6 +15,7 @@ export interface NodeRuntime {
   readonly etaMs: number | null;
   readonly wallMs: number | null;
   readonly peakBytes: number | null;
+  readonly resolution: number | null;              // vertices per side of the evaluation `wallMs` and `peakBytes` were measured in
   readonly error: NodeError | null;                // for 'error'
   readonly upstream: string | null;                // for 'skipped' because of a failed node: that node's id
 }
@@ -41,6 +42,8 @@ export interface EngineState {
     readonly lastStatus: 'ok' | 'errors' | 'aborted' | 'device-lost' | null;   // build-end
   };
   readonly memory: MemoryReport | null;
+  readonly paused: boolean;                                    // previews are paused (7.1 setPaused): set by the engine client, by no event
+  readonly silent: boolean;                                    // the engine has answered nothing for some seconds: set by the engine client, by no event
 }
 
 const NO_BUILD: EngineState['build'] = {
@@ -58,11 +61,13 @@ export const INITIAL_ENGINE_STATE: EngineState = {
   evaluation: null,
   build: NO_BUILD,
   memory: null,
+  paused: false,
+  silent: false,
 };
 
 const own = <T>(record: Readonly<Record<string, T>>, key: string): T | undefined => (Object.hasOwn(record, key) ? record[key] : undefined);
 
-const PENDING = { cached: false, fraction: 0, label: null, etaMs: null, wallMs: null, peakBytes: null, error: null, upstream: null } as const;
+const PENDING = { cached: false, fraction: 0, label: null, etaMs: null, wallMs: null, peakBytes: null, resolution: null, error: null, upstream: null } as const;
 
 /**
  * Whether an event of this request says anything of the node, given what is known of it.
@@ -143,9 +148,11 @@ export function reduceEngineEvent(state: EngineState, event: EngineEvent): Engin
     case 'node-done':
       return onNode(state, event.requestId, event.nodeId, (known) => ({
         requestId: event.requestId, state: 'done', ...PENDING, cached: event.cached, fraction: 1,
-        // A node that did not run now reports no time of its own: what its last run took stays.
+        // A node that did not run now reports no time of its own: what its last run took stays, with the
+        // resolution it ran at.
         wallMs: event.cached ? (known?.state === 'done' ? known.wallMs : null) : event.wallMs,
         peakBytes: event.cached ? (known?.state === 'done' ? known.peakBytes : null) : event.peakBytes,
+        resolution: event.cached ? (known?.state === 'done' ? known.resolution : null) : (Number.isFinite(event.resolution) ? event.resolution : null),
       }));
     case 'node-error':
       return onNode(state, event.requestId, event.error.nodeId, () => ({ requestId: event.requestId, state: 'error', ...PENDING, error: event.error }));
@@ -208,7 +215,47 @@ export function createEngineStore(): StoreApi<EngineState> {
   return createStore<EngineState>()(() => INITIAL_ENGINE_STATE);
 }
 
-/** The one way the store changes. */
+/**
+ * The pause is the one member no event sets: the session is told to pause and says nothing back (7.1), so the
+ * engine client, which tells it, writes what it told. Every other member is the reduction's.
+ */
+export function setEnginePaused(store: StoreApi<EngineState>, paused: boolean): void {
+  if (store.getState().paused !== paused) store.setState({ ...store.getState(), paused }, true);
+}
+
+/**
+ * Like the pause, no event says that the engine has stopped answering: an engine that is silent sends none.
+ * The engine client asks it and writes what it found (8.5).
+ */
+export function setEngineSilent(store: StoreApi<EngineState>, silent: boolean): void {
+  if (store.getState().silent !== silent) store.setState({ ...store.getState(), silent }, true);
+}
+
+/**
+ * Another project was opened (`docStore.load`): what the engine reported of nodes, their keys and thumbnails,
+ * and of the view was of the project before, whose node ids the new one may share. The device, the memory, the
+ * pause and the build are the application's and stay; the build panel tells a build of another project apart
+ * itself. The picture of the project before is no picture of this one: `view` is null until this project has one.
+ */
+export function forgetProject(store: StoreApi<EngineState>): void {
+  const state = store.getState();
+  if (state.view === null && Object.keys(state.nodes).length === 0 && Object.keys(state.keys).length === 0 && Object.keys(state.thumbnailKeys).length === 0) return;
+  store.setState({ ...state, nodes: {}, keys: {}, thumbnailKeys: {}, view: null }, true);
+}
+
+/**
+ * The thumbnails the page still holds of nodes of the project that was opened: the same nodes with the same
+ * content as when their thumbnails were made (a project opened again, an example opened twice). The engine sends
+ * a thumbnail once per node and content key (5.12), so it sends none of these again, and the store must know
+ * that they are current. The engine client says which they are when the keys of the new project have arrived.
+ */
+export function adoptThumbnails(store: StoreApi<EngineState>, keys: Readonly<Record<string, string>>): void {
+  if (Object.keys(keys).length === 0) return;
+  const state = store.getState();
+  store.setState({ ...state, thumbnailKeys: { ...state.thumbnailKeys, ...keys } }, true);
+}
+
+/** The one way the store changes by an event. */
 export function applyEngineEvent(store: StoreApi<EngineState>, event: EngineEvent): void {
   const state = store.getState();
   const next = reduceEngineEvent(state, event);

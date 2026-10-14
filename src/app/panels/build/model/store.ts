@@ -4,14 +4,18 @@
 // component is mounted or not. Nothing here copies a store: the build's state is engineStore's. No DOM and no
 // React.
 //
-// A plan before a build. The session has no method that plans without building, and the interface may not plan
-// (export-unreal.md 3.1). The model asks for one where it can: `planner` is `EngineSession.plan(doc)` when the
-// session has such a member, which today it has not, so `draft` stays null and the panel lists the export nodes
-// instead (plan.ts). The day the session plans, the plan of the project as it stands is shown without a build.
+// A plan before a build. The interface may not plan (export-unreal.md 3.1): the session does, without building
+// (`EngineSession.plan`, runtime.md 7.6). The model asks it for the plan of the document as it stands, a moment
+// after the document last changed, and keeps the answer as `draft` with the state of the document it is of. Until
+// the first answer, and where a session cannot plan (it rejects), the panel lists the export nodes (plan.ts).
 
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
-import { setSettings, type BuildPlan, type BuildResult, type EngineEvent, type EngineSession, type GraphDoc } from '../../../../core/runtime.ts';
+import {
+  setSettings, withBuildResolution, type BuildPlan, type BuildResult, type EngineEvent, type EngineSession, type GraphDoc,
+} from '../../../../core/runtime.ts';
+import { EngineReplacedError } from '../../../engine/client.ts';
+import { panelKeep, type PanelKeep } from '../../../platform.ts';
 import type { DocState } from '../../../state/doc-store.ts';
 import type { EngineState } from '../../../state/engine-store.ts';
 import { selectNodes } from '../../../state/ui-store.ts';
@@ -50,15 +54,14 @@ export interface PanelState {
   /** The plan of the project in the state `signature` names, made without a build; null where nothing plans (see above). */
   readonly draft: { readonly signature: string; readonly plan: BuildPlan } | null;
   readonly guideOpen: boolean;
+  /**
+   * The build whose folder was refused and has been answered with another folder since: what it said is of a
+   * folder nobody builds into any more, and is not shown as how the project's build stands.
+   */
+  readonly withdrawn: number | null;
 }
 
 export type ModelContext = Pick<CommandContext, 'doc' | 'engineState' | 'ui' | 'engine' | 'platform' | 'registry'>;
-
-/** Where the panel keeps what outlives the application: the page's storage, or a stand-in. */
-export interface PanelStorage {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
 
 /** A plan of a document, made without building it. */
 export type Planner = (doc: GraphDoc) => Promise<BuildPlan> | BuildPlan;
@@ -66,8 +69,8 @@ export type Planner = (doc: GraphDoc) => Promise<BuildPlan> | BuildPlan;
 export interface ModelOptions {
   /** Milliseconds of a clock that only goes forward. Default `performance.now()`. */
   readonly clock?: () => number;
-  /** Default: nothing is kept. The application passes the page's storage. */
-  readonly storage?: PanelStorage | null;
+  /** Where the panel keeps what outlives the application: its entry of the preferences (8.6). Default: nothing is kept. */
+  readonly keep?: PanelKeep | null;
   /** Default: the session's own `plan`, when it has one. */
   readonly planner?: Planner | null;
   /** Runs `run` after `ms` and returns what cancels it. Default: a timer. */
@@ -164,16 +167,25 @@ export function builtOf(build: EngineState['build'], held: Pick<PanelState, 'bui
  * Pure: how the build of engineStore stands for the project that is open. `differs` says whether the document
  * of the moment builds to something else than the state the build was started with.
  */
-export function scopeOf(build: EngineState['build'], held: Pick<PanelState, 'built' | 'project' | 'log'>, differs: boolean): BuildScope {
+export function scopeOf(build: EngineState['build'], held: Pick<PanelState, 'built' | 'project' | 'log'> & Partial<Pick<PanelState, 'withdrawn'>>, differs: boolean): BuildScope {
   const known = builtOf(build, held);
   // A build nobody recorded the start of is taken for this project's: there is nothing to tell it apart by.
-  const mine = build.requestId !== null && (known === null || known.project === held.project);
+  const mine = build.requestId !== null && (known === null || known.project === held.project) && held.withdrawn !== build.requestId;
   return {
     build,
     mine,
     changed: mine && !build.running && known !== null && differs,
     log: held.log !== null && held.log.requestId === build.requestId ? held.log : null,
   };
+}
+
+/**
+ * Whether the project's build ended with the engine worker that ran it: the client leaves such a build as not
+ * running, cancelled, without a result (8.5), which no build that ended by itself is. Said until the project
+ * changes or builds again.
+ */
+export function interruptedBuild(build: EngineState['build'], mine: boolean, changed: boolean): boolean {
+  return mine && !changed && !build.running && build.requestId !== null && build.result === null && build.lastStatus === 'aborted';
 }
 
 /**
@@ -189,7 +201,6 @@ function isLoad(now: DocState, before: DocState): boolean {
 
 // ---- what outlives the application -------------------------------------------------------------------------------------
 
-const STORAGE_KEY = 'orogen.build/1';
 /** The projects whose folder is remembered: the last that were given one. */
 const FOLDERS_KEPT = 64;
 const SECTIONS_KEPT = 16;
@@ -199,24 +210,19 @@ interface Kept {
   readonly folded: readonly string[];
 }
 
-/** What the storage holds, as far as it is of the kind expected; a storage that cannot be read holds nothing. */
-function readKept(storage: PanelStorage | null): Kept {
+/** The panel's entry of the preferences, as far as it is of the kind expected; anything else holds nothing. */
+export function cleanKept(held: unknown): Kept {
   const none: Kept = { folders: {}, folded: [] };
-  if (!storage) return none;
-  try {
-    const held = JSON.parse(storage.getItem(STORAGE_KEY) ?? 'null') as { readonly folders?: unknown; readonly folded?: unknown } | null;
-    if (typeof held !== 'object' || held === null) return none;
-    const folders: Record<string, string> = {};
-    if (typeof held.folders === 'object' && held.folders !== null && !Array.isArray(held.folders)) {
-      for (const [project, folder] of Object.entries(held.folders).slice(-FOLDERS_KEPT)) {
-        if (project !== '' && typeof folder === 'string' && folder !== '') folders[project] = folder;
-      }
+  if (typeof held !== 'object' || held === null || Array.isArray(held)) return none;
+  const entry = held as { readonly folders?: unknown; readonly folded?: unknown };
+  const folders: Record<string, string> = {};
+  if (typeof entry.folders === 'object' && entry.folders !== null && !Array.isArray(entry.folders)) {
+    for (const [project, folder] of Object.entries(entry.folders).slice(-FOLDERS_KEPT)) {
+      if (project !== '' && typeof folder === 'string' && folder !== '') folders[project] = folder;
     }
-    const folded = Array.isArray(held.folded) ? held.folded.filter((id): id is string => typeof id === 'string').slice(0, SECTIONS_KEPT) : [];
-    return { folders, folded };
-  } catch {
-    return none;
   }
+  const folded = Array.isArray(entry.folded) ? entry.folded.filter((id): id is string => typeof id === 'string').slice(0, SECTIONS_KEPT) : [];
+  return { folders, folded };
 }
 
 /** The folder of a project without a file is that of one session: the next project without a file chooses its own. */
@@ -225,7 +231,7 @@ function keptOf(state: Pick<PanelState, 'folders' | 'folded'>): Kept {
   return { folders, folded: state.folded.slice(0, SECTIONS_KEPT) };
 }
 
-/** The session's own `plan`, when it has one (see the note at the head of this file). */
+/** The session's own `plan` (see the note at the head of this file); null for a stand-in of a session that has none. */
 function plannerOf(engine: EngineSession): Planner | null {
   const plan = (engine as { readonly plan?: unknown }).plan;
   return typeof plan === 'function' ? (doc) => (plan as Planner).call(engine, doc) : null;
@@ -241,12 +247,11 @@ const timer = (run: () => void, ms: number): (() => void) => {
 
 export function createBuildModel(ctx: ModelContext, options: ModelOptions = {}): BuildModel {
   const clock = options.clock ?? (() => performance.now());
-  const storage = options.storage ?? null;
+  const keep = options.keep ?? null;
   const defer = options.defer ?? timer;
-  const kept = readKept(storage);
   const state = createStore<PanelState>()(() => ({
-    folders: kept.folders, folded: kept.folded, project: 0, log: null, built: null,
-    measurements: seedMeasurements(ctx.engineState.getState()), files: null, draft: null, guideOpen: false,
+    folders: {}, folded: [], project: 0, log: null, built: null,
+    measurements: seedMeasurements(ctx.engineState.getState()), files: null, draft: null, guideOpen: false, withdrawn: null,
   }));
   /** Set by `start` until the build's first event: what the build was started with. */
   let pending: { readonly project: number; readonly signature: string } | null = null;
@@ -264,7 +269,16 @@ export function createBuildModel(ctx: ModelContext, options: ModelOptions = {}):
     const key = projectKey(ctx.doc.getState().path);
     // Taken out and put in again: the project whose folder was set last is the last of the table.
     const { [key]: _before, ...others } = state.getState().folders;
-    state.setState({ folders: next !== null && next !== '' ? { ...others, [key]: next } : others });
+    // A build that was refused at its folder is answered by another folder: its refusal is of the folder before.
+    const { build } = ctx.engineState.getState();
+    const refusedAt = !build.running && build.result?.status === 'errors' && build.result.problems.some((problem) => problem.code === 'E_OUT_DIR')
+      ? state.getState().log?.requestId === build.requestId ? state.getState().log!.outDir : _before ?? null
+      : null;
+    const answered = refusedAt !== null && next !== null && next !== '' && next !== refusedAt;
+    state.setState({
+      folders: next !== null && next !== '' ? { ...others, [key]: next } : others,
+      ...(answered ? { withdrawn: build.requestId } : {}),
+    });
   }
 
   const scope = (): BuildScope => {
@@ -310,7 +324,7 @@ export function createBuildModel(ctx: ModelContext, options: ModelOptions = {}):
         // The document may have changed meanwhile: its own plan is on the way.
         if (!disposed && buildSignature(ctx.doc.getState().doc) === signature) state.setState({ draft: { signature, plan } });
       }, () => {
-        // A session that cannot plan now says so by rejecting: the export nodes are listed instead.
+        // A session that cannot plan now says so by rejecting: the export nodes are listed until one can.
       });
     }, PLAN_DELAY_MS);
   }
@@ -332,6 +346,10 @@ export function createBuildModel(ctx: ModelContext, options: ModelOptions = {}):
 
   const stops = [
     ctx.engine.subscribe(onEvent),
+    // A session that could not plan yet (its engine was starting, or it was replaced) can when its device is ready.
+    ctx.engineState.subscribe((now, before) => {
+      if (now.device.state === 'ready' && before.device.state !== 'ready') schedulePlan();
+    }),
     ctx.doc.subscribe((now, before) => {
       const held = state.getState();
       if (now.doc.nodes !== before.doc.nodes || now.doc.edges !== before.doc.edges || now.doc.settings !== before.doc.settings) schedulePlan();
@@ -349,15 +367,26 @@ export function createBuildModel(ctx: ModelContext, options: ModelOptions = {}):
       state.setState({ folders: { ...(from === '' ? rest : held.folders), [to]: moved! } });
     }),
   ];
-  if (storage) {
+  if (keep) {
+    const first = state.getState();
+    /** Until the entry is read nothing is written: a write would replace what the last run kept. */
+    let adopted = false;
     stops.push(state.subscribe((now, before) => {
-      if (now.folders === before.folders && now.folded === before.folded) return;
-      try {
-        storage.setItem(STORAGE_KEY, JSON.stringify(keptOf(now)));
-      } catch {
-        // A full or forbidden storage: the panel works without remembering.
-      }
+      if (adopted && (now.folders !== before.folders || now.folded !== before.folded)) keep.write(keptOf(now));
     }));
+    void keep.read().then((held) => {
+      if (disposed) return;
+      const kept = cleanKept(held);
+      const now = state.getState();
+      // What was chosen before the entry arrived is the newer word: a folder chosen in this run stands, and the
+      // other projects have the folders they were given in the runs before.
+      const { '': unsaved, ...chosen } = now.folders;
+      const folders = { ...kept.folders, ...chosen, ...(unsaved === undefined ? {} : { '': unsaved }) };
+      const touched = now.folders !== first.folders || now.folded !== first.folded;
+      state.setState({ folders, folded: now.folded === first.folded ? kept.folded : now.folded });
+      adopted = true;
+      if (touched) keep.write(keptOf(state.getState()));
+    });
   }
 
   // A build that ended before anybody listened: what it wrote is on disk all the same.
@@ -389,8 +418,12 @@ export function createBuildModel(ctx: ModelContext, options: ModelOptions = {}):
         }
         const doc = ctx.doc.getState();
         pending = { project: state.getState().project, signature: buildSignature(doc.doc) };
-        // A build that fails resolves as well (7.6): its result arrives with the events. What rejects is a defect.
+        // A build that fails resolves as well (7.6): its result arrives with the events. What rejects is a defect,
+        // but for the one rejection that says the engine was restarted while the build ran: that is how this
+        // build ended, the store says so (8.5), and it is no failure of the command that started it.
         await ctx.engine.build({ doc: doc.doc, outDir });
+      } catch (thrown) {
+        if (!(thrown instanceof EngineReplacedError)) throw thrown;
       } finally {
         starting = false;
         pending = null;
@@ -401,8 +434,9 @@ export function createBuildModel(ctx: ModelContext, options: ModelOptions = {}):
 
     setResolution(resolution) {
       if (!Number.isInteger(resolution) || resolution === ctx.doc.getState().doc.settings.buildResolution) return;
-      // 8.5 rule 5: the build resolution is no undo step.
-      ctx.doc.getState().transact('Build resolution', (draft) => setSettings(draft, { buildResolution: resolution }), { undoable: false });
+      // 8.5 rule 5: the build resolution is no undo step. The previews keep the resolution nearest to what they
+      // had (4.2): a smaller build does not blur them, and a larger one does not make them four times as heavy.
+      ctx.doc.getState().transact('Build resolution', (draft) => setSettings(draft, withBuildResolution(draft.settings, resolution)), { undoable: false });
     },
 
     selectNode(nodeId) {
@@ -460,24 +494,15 @@ export function createBuildModel(ctx: ModelContext, options: ModelOptions = {}):
   return model;
 }
 
-/**
- * The storage of the page; null where there is no page (a test without a window, where Node has a storage of
- * its own that is no user's) or the storage may not be used.
- */
-function pageStorage(): PanelStorage | null {
-  try {
-    const page = globalThis as { readonly document?: unknown; readonly localStorage?: PanelStorage };
-    return page.document === undefined ? null : page.localStorage ?? null;
-  } catch {
-    return null;
-  }
-}
-
 const models = new WeakMap<object, BuildModel>();
 
 /** The model of an application: made when the panel is first shown or one of its commands first asked for. */
 export function buildModel(ctx: ModelContext): BuildModel {
   let model = models.get(ctx);
-  if (!model) models.set(ctx, model = createBuildModel(ctx, { storage: pageStorage() }));
+  if (!model) {
+    // A stand-in for the bridge that keeps no preferences (a test without a window) keeps nothing.
+    const kept = typeof ctx.platform?.getPreferences === 'function' && typeof ctx.platform.setPreferences === 'function';
+    models.set(ctx, model = createBuildModel(ctx, { keep: kept ? panelKeep('build', ctx.platform) : null }));
+  }
   return model;
 }

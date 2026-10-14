@@ -254,6 +254,9 @@ test('the report says what the build did: its status, its targets with their tim
   assert.ok(report.commitMs !== null && report.commitMs >= 0 && phases <= report.durationMs, `the phases take ${phases} ms of ${report.durationMs} ms, the commit ${report.commitMs} ms`);
   assert.ok(Date.parse(report.endedUtc) >= Date.parse(report.startedUtc));
   assert.ok(text(file(built.sink, 'TestLand.report.json')).endsWith('}\n'));
+  // The GPU memory of the build as one figure, the same in the result: more than the one colour field it exports.
+  assert.equal(report.peakPoolBytes, built.result.peakPoolBytes);
+  assert.ok(report.peakPoolBytes !== null && report.peakPoolBytes > N * N * 8, `${report.peakPoolBytes} bytes`);
 });
 
 test('the events of a build: the plan first, a target for every stage, progress that rises to 1 at the commit, the result last', () => {
@@ -396,7 +399,7 @@ test('a flat terrain is widened to 1 m, an empty layer is warned about, and a fi
 
 test('a plan with an error ends the build before anything is evaluated or written, without a report', async () => {
   const none = await buildGraph({ settings: SETTINGS, nodes: { land: { type: 'ref/fbm' } } });
-  assert.deepEqual([none.result.status, none.result.files, none.result.manifest, none.result.report], ['errors', [], null, null]);
+  assert.deepEqual([none.result.status, none.result.files, none.result.manifest, none.result.report, none.result.peakPoolBytes], ['errors', [], null, null, null]);
   assert.deepEqual(none.result.problems.map((p) => p.code), ['E_NOTHING_TO_EXPORT']);
   assert.deepEqual(none.events.map((e) => e.type), ['build-plan', 'build-result'], 'the plan is followed by the result only');
   assert.deepEqual([[...none.sink.files.keys()], none.sink.open], [[], []]);

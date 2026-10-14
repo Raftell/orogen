@@ -7,7 +7,7 @@ export default defineNode({
   title: 'Normal Texture',
   category: 'io',
   description: 'Exports the surface normals of a terrain as a texture that covers the landscape, for use in its material.',
-  keywords: ['unreal', 'texture', 'normal map', 'macro normal', 'png'],
+  keywords: ['unreal', 'texture', 'normal map', 'macro normal', 'png', 'export', 'output'],
   inputs: [{ name: 'in', type: 'field' }],
   outputs: [],
   params: [

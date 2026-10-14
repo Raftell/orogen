@@ -7,7 +7,7 @@ import { test } from 'node:test';
 
 import { frustumPlanes, viewOf, type OrbitView } from '../../../../src/viewport/camera.ts';
 import {
-  buildBounds, createSelection, gridRange, INSTANCE_FLOATS, levelZeroRange, lodSetup, MAX_INSTANCES, morphVertex, patchMesh, PATCH, selectPatches,
+  buildBounds, createSelection, gridRange, INSTANCE_FLOATS, levelZeroRange, lodSetup, MAX_INSTANCES, morphVertex, patchMesh, PATCH, selectPatches, SUB_LEVELS,
   UNKNOWN_BOUNDS, type HeightBounds, type LodSetup, type LodView, type Selection,
 } from '../../../../src/viewport/lod.ts';
 
@@ -40,15 +40,32 @@ function patches(selection: Selection): Patch[] {
   return out;
 }
 
-test('the quadtree of a field: its finest quads are at most a texel wide, for every resolution of the ladder', () => {
-  const levels = (resolution: number): number => lodSetup(resolution).levels;
+test('the quadtree of a field: the quads of its texel level are at most a texel wide, for every resolution of the ladder', () => {
+  const levels = (resolution: number): number => lodSetup(resolution, 0).levels;
   assert.deepEqual([8129, 4033, 2017, 1009, 505, 253, 127, 64, 33, 2].map(levels), [8, 7, 6, 5, 4, 3, 2, 1, 1, 1]);
   for (const resolution of [8129, 4065, 4033, 2017, 1009, 505, 253, 127, 65, 33, 2]) {
-    const setup = lodSetup(resolution);
+    const setup = lodSetup(resolution, 0);
     assert.equal(setup.leaves, 2 ** (setup.levels - 1));
     assert.equal(setup.fine, setup.leaves * PATCH);
     assert.ok(setup.fine >= resolution - 1, `${resolution}: ${setup.fine} quads for ${resolution - 1} cells`);
     assert.ok(setup.fine < 2 * Math.max(PATCH, resolution - 1), `${resolution}: no finer than half a texel`);
+  }
+});
+
+test('below the texel level the mesh has two more: a quarter of a texel a quad, for the smooth surface a near camera is shown', () => {
+  assert.equal(SUB_LEVELS, 2);
+  for (const resolution of [8129, 4033, 1009, 253, 33]) {
+    const plain = lodSetup(resolution, 0), setup = lodSetup(resolution);
+    assert.deepEqual([setup.sub, setup.levels, setup.fine], [SUB_LEVELS, plain.levels + SUB_LEVELS, plain.fine * 2 ** SUB_LEVELS]);
+    assert.ok(setup.fine >= 4 * (resolution - 1), `${resolution}: four quads a texel at the least`);
+    // Far from the terrain none of them is drawn, where a field has more texels than the picture has pixels for.
+    const eye = [2016, 2016, 6000] as const;
+    const far = selectPatches(setup, FLAT, lodView(setup, eye, 4032), createSelection());
+    const finest = Math.min(...patches(far).map((patch) => patch.instance[3]!));
+    if (resolution >= 1009) assert.ok(finest >= SUB_LEVELS, `${resolution}: the finest level drawn from afar is ${finest}`);
+    // On the ground they are.
+    const near = selectPatches(setup, FLAT, lodView(setup, [2016, 2016, 2], 4032), createSelection());
+    assert.equal(Math.min(...patches(near).map((patch) => patch.instance[3]!)), 0, `${resolution}: the quarter-texel level is drawn under the camera`);
   }
 });
 
@@ -172,14 +189,23 @@ test('the bounds of the nodes hold every height below them, and a block without 
   assert.deepEqual(gridRange(grid), [0, 1]);
   const bounds = buildBounds(setup, 1009, 1009, grid);
   assert.deepEqual([bounds.min, bounds.max], [0, 1]);
-  assert.equal(bounds.nodes!.length, setup.levels);
-  const top = bounds.nodes![setup.levels - 1]!;
+  // From the texel's level up: a node below it has the bounds of the node of that level it lies in.
+  assert.equal(bounds.nodes!.length, setup.levels - setup.sub);
+  const top = bounds.nodes![setup.levels - setup.sub - 1]!;
   assert.deepEqual([top.min.length, top.min[0], top.max[0]], [1, 0, 1]);
-  // A leaf holds the heights of the blocks it touches: at least its own stretch of the ramp.
+  // A node of the texel's level holds the heights of the blocks it touches: at least its own stretch of the ramp.
   const leaves = bounds.nodes![0]!;
-  for (let x = 0; x < setup.leaves; x++) {
-    assert.ok(leaves.min[x]! <= x / setup.leaves + 1e-6 && leaves.max[x]! >= (x + 1) / setup.leaves - 1e-6, `leaf ${x}: ${leaves.min[x]} .. ${leaves.max[x]}`);
+  const across = setup.leaves >> setup.sub;
+  assert.equal(leaves.min.length, across * across);
+  for (let x = 0; x < across; x++) {
+    assert.ok(leaves.min[x]! <= x / across + 1e-6 && leaves.max[x]! >= (x + 1) / across - 1e-6, `leaf ${x}: ${leaves.min[x]} .. ${leaves.max[x]}`);
   }
+  // A camera on the ground looks at nodes below the texel's level: they are culled by the bounds of the node above them.
+  const size = 4032;
+  const view = { ...lodView(setup, [size * 0.2, size / 2, size / 4 * 0.2 + 3], size, true), eye: [size * 0.2, size / 2, size / 4 * 0.2 + 3] as const };
+  const seen = patches(selectPatches(setup, bounds, view, createSelection()));
+  const everything = patches(selectPatches(setup, bounds, { ...view, planes: null }, createSelection()));
+  assert.ok(seen.length > 0 && seen.length < everything.length && seen.some((patch) => patch.instance[3]! < setup.sub), `${seen.length} of ${everything.length} patches are in the picture`);
   assert.deepEqual(gridRange({ cellsX: 1, cellsY: 1, cellTexels: 64, data: new Float32Array([1e30, -1e30]) }), [0, 0]);
   assert.ok(UNKNOWN_BOUNDS.min < 0 && UNKNOWN_BOUNDS.max > 1);
 });

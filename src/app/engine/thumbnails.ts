@@ -30,6 +30,11 @@ export interface ThumbnailCache {
   get(nodeId: string): ThumbnailEntry | null;
   /** Called after every `put` for this node. Returns the function that ends the subscription. */
   subscribe(nodeId: string, listener: () => void): () => void;
+  /**
+   * Forgets the image of one node and tells the node's subscribers, which then draw nothing: the image of a node
+   * of the project before that bears this id is no picture of this project's node (8.5, "Another project").
+   */
+  drop(nodeId: string): void;
   clear(): void;
   readonly size: number;
 }
@@ -85,6 +90,17 @@ export function createThumbnailCache(options: { readonly createImage?: ImageFact
         set.delete(listener);
         if (set.size === 0 && listeners.get(nodeId) === set) listeners.delete(nodeId);
       };
+    },
+
+    drop(nodeId) {
+      if (!entries.delete(nodeId)) return;
+      for (const listener of [...(listeners.get(nodeId) ?? [])]) {
+        try {
+          listener();
+        } catch (thrown) {
+          console.error('[orogen] a thumbnail listener threw', thrown);
+        }
+      }
     },
 
     clear: () => entries.clear(),

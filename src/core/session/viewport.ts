@@ -9,7 +9,7 @@ export type CameraState =
   | { readonly kind: 'orbit';
       readonly target: readonly [number, number, number];   // metres, in the frame of engine.md 1.8
       readonly yaw: number;                                  // degrees; the viewing direction, by the direction convention of engine.md 1.8
-      readonly pitch: number;                                // degrees the camera looks down, 0 .. 89.9
+      readonly pitch: number;                                // degrees the camera looks down, −89.9 .. 89.9; below 0 it looks up, as a camera that flies does
       readonly distance: number;                             // metres from the target
       readonly fovY: number }                                // degrees
   | { readonly kind: 'top';
@@ -91,6 +91,15 @@ export interface ViewBinder {
    * texture of the port the view names, when its kind is the kind the view asks for.
    */
   lend(view: LoanView, nodeId: string, loans: Readonly<Record<string, TextureRef>> | null): void;
+  /**
+   * A view target of the evaluation under way was delivered: the result of the node the view names. Where a loan
+   * of that evaluation stood in for this part of the view, the result takes the loan's place at once and stays
+   * until `show` or `revert` (7.5 rule 2): the nodes that still run after a simulation do not bring the earlier
+   * terrain back. The binder takes a handle of its own; `handle` stays the caller's.
+   */
+  deliver(view: LoanView, part: 'height' | 'overlay', handle: AnyFieldHandle): void;
+  /** The evaluation under way has ended without a result to show: what `show` was last given is drawn again (5.11 rule 5). */
+  revert(): void;
   /** The device is lost: the renderer draws nothing and the handles are dropped without being released (7.8 rule 1). */
   lost(): void;
   /** Releases the handles and disposes the renderer. */
@@ -123,9 +132,40 @@ export function createViewBinder(renderer: ViewportRenderer | null): ViewBinder 
   let shown: ShownResult | null = null;
   /** What the renderer was last given for `shown`; null when it draws nothing. */
   let content: ViewportContent | null = null;
+  /**
+   * What the renderer draws while no loan stands: `content`, or `content` with the parts `deliver` replaced.
+   * One object per state: a renderer keeps its picture when it is given an object it was given before (7.5 rule 2).
+   */
+  let base: ViewportContent | null = null;
   /** A loan is in the content the renderer has. */
   let lending = false;
+  /** The parts of the view a loan has stood in for since the last `show` or `revert`. */
+  const lent = { height: false, overlay: false };
+  /** The binder's own handles on what `deliver` put in a loan's place. */
+  const interim: { height: AnyFieldHandle | null; overlay: AnyFieldHandle | null } = { height: null, overlay: null };
   let disposed = false;
+
+  /** Forgets the loans and what was delivered in their place. Returns the handles to release once the renderer has switched. */
+  function settle(): (AnyFieldHandle | null)[] {
+    const held = [interim.height, interim.overlay];
+    interim.height = null;
+    interim.overlay = null;
+    lent.height = false;
+    lent.overlay = false;
+    lending = false;
+    base = content;
+    return held;
+  }
+
+  function releaseHandles(handles: readonly (AnyFieldHandle | null)[]): void {
+    for (const handle of handles) {
+      try {
+        handle?.release();
+      } catch (thrown) {
+        console.error('[orogen] a view handle could not be released', thrown);
+      }
+    }
+  }
 
   const host: ViewportHost = {
     attach: (canvas, size) => { if (!disposed) renderer?.attach(canvas, size); },
@@ -156,10 +196,11 @@ export function createViewBinder(renderer: ViewportRenderer | null): ViewBinder 
       const previous = shown;
       shown = result;
       content = next;
-      lending = false;
+      const stood = settle();
       // 7.5 rule 2: when setContent returns, the renderer uses no view of the previous content.
       renderer?.setContent(next);
       release(previous);
+      releaseHandles(stood);
       return true;
     },
 
@@ -172,24 +213,62 @@ export function createViewBinder(renderer: ViewportRenderer | null): ViewBinder 
       if (!lentHeight && !lentOverlay) {
         if (lending) {
           lending = false;
-          renderer?.setContent(content);
+          renderer?.setContent(base);
         }
         return;
       }
       lending = true;
+      if (lentHeight) lent.height = true;
+      if (lentOverlay) lent.overlay = true;
       renderer?.setContent({
-        height: lentHeight ?? content?.height ?? null,
-        overlay: lentOverlay ? { texture: lentOverlay, as: view.overlay!.as, opacity: view.overlay!.opacity } : content?.overlay ?? null,
+        height: lentHeight ?? base?.height ?? null,
+        overlay: lentOverlay ? { texture: lentOverlay, as: view.overlay!.as, opacity: view.overlay!.opacity } : base?.overlay ?? null,
         terrainSize: view.settings.terrainSize,
         heightRange: view.settings.heightRange,
         seaLevel: view.settings.seaLevel,
       });
     },
 
+    deliver(view, part, handle) {
+      if (disposed || !lent[part] || (part === 'overlay' && !view.overlay)) return;
+      let own: AnyFieldHandle;
+      let texture: TextureRef;
+      try {
+        own = handle.retain();
+        texture = refOf(own);
+      } catch (thrown) {
+        // The device went: lost() is on its way, and there is nothing to draw.
+        if (!(thrown instanceof DeviceLostError)) throw thrown;
+        return;
+      }
+      const previous = interim[part];
+      interim[part] = own;
+      base = {
+        height: part === 'height' ? texture : base?.height ?? null,
+        overlay: part === 'overlay' ? { texture, as: view.overlay!.as, opacity: view.overlay!.opacity } : base?.overlay ?? null,
+        terrainSize: view.settings.terrainSize,
+        heightRange: view.settings.heightRange,
+        seaLevel: view.settings.seaLevel,
+      };
+      // While another loan stands the renderer keeps it; this content is what it steps back to.
+      if (!lending) renderer?.setContent(base);
+      releaseHandles([previous]);
+    },
+
+    revert() {
+      if (disposed) return;
+      const changed = lending || base !== content;
+      const stood = settle();
+      if (changed) renderer?.setContent(content);
+      releaseHandles(stood);
+    },
+
     lost() {
       shown = null;
       content = null;
-      lending = false;
+      // Handles of the lost device are dropped, not released.
+      settle();
+      base = null;
       if (!disposed) renderer?.setContent(null);
     },
 
@@ -198,12 +277,14 @@ export function createViewBinder(renderer: ViewportRenderer | null): ViewBinder 
       const previous = shown;
       shown = null;
       content = null;
-      lending = false;
+      const stood = settle();
+      base = null;
       try {
         renderer?.setContent(null);
       } finally {
         disposed = true;
         release(previous);
+        releaseHandles(stood);
         renderer?.dispose();
       }
     },

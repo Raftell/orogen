@@ -1,17 +1,45 @@
 # Getting started on Windows 11
 
-Orogen runs from its repository. There is no installer yet: you check the repository out, install its packages
-with npm, and start the desktop application or the command-line program from there. Node runs the TypeScript
-sources of the command-line program directly; the application is built with one command.
+There are two ways to run Orogen on Windows. The **Windows build** is the desktop application, packed by the
+project's automated checks: download, unpack, start. The **repository** has everything: the application built
+from source, the command-line program, the example projects and the tests. There is no installer.
 
 **What has and has not been run on Windows.** Orogen is developed on Linux with an NVIDIA GTX 1660 Ti. On
-Windows, the engine's tests run in the project's automated checks on Windows' software graphics adapter (WARP,
+Windows, the project's automated checks run the engine's tests on Windows' software graphics adapter (WARP,
 "Microsoft Basic Render Driver"), which proves that the shaders compile and compute correctly through Direct3D
-12. The build pipeline (`orogen build`) has been run on Linux only. Nothing has been run on a Windows machine
-with a graphics card. The steps below are the ones the automated checks use; expect to be the first to try
-them on your hardware.
+12, and they pack the application and start it once, hidden, on a machine without a graphics card. **Nothing has
+been run on a Windows machine with a graphics card, and nobody has seen the application's window on Windows.**
+Expect to be the first; [First run on Windows](first-run-on-windows.md) is the list of what to try, in order, and
+what to send back.
 
-## 1. What you need
+## 1. The Windows build, without installing anything
+
+1. On GitHub, open the repository, then **Actions**, the workflow **ci**, and the latest run on `main` whose job
+   `package-windows` is green. You must be signed in with access to the repository.
+2. At the foot of the run's page, under **Artifacts**, download **`Orogen-windows-x64`**. It arrives as
+   `Orogen-windows-x64.zip`. GitHub keeps the artifacts of a run for 90 days unless the repository says otherwise.
+3. Right-click the zip, **Properties**, tick **Unblock** if the box is there, then unpack it into a folder of its
+   own, for example `D:\Orogen`.
+4. Start `Orogen.exe` in that folder. The build is unsigned, so Windows says that it protected your PC: **More
+   info**, then **Run anyway**.
+
+| Artifact | Holds | Use it when |
+| --- | --- | --- |
+| `Orogen-windows-x64` | the application's folder: `Orogen.exe` and what it needs beside it | always, unless you want one file |
+| `Orogen-windows-x64-portable` | one file, `Orogen-<version>-win-x64-portable.exe` | you want one file to carry around. It unpacks itself into the temporary folder at every start, with nothing on the screen meanwhile |
+| `launch-check-windows` | what the automated check saw when it started the build: a small JSON file | you report a problem |
+
+What the automated check proves of a build before you download it: it was packed; `Orogen.exe` started on a
+Windows machine without a graphics card and loaded its window, hidden. Whether its engine found a graphics
+device there is in the run's step *Its engine opens a GPU device* and is not required: a machine without a card
+says little about yours. (These steps are new. Look at the run to see how they came out.)
+
+The Windows build is the application only. The command-line program, and with it the acceptance pattern for
+Unreal Engine, needs the repository.
+
+## 2. From the repository
+
+### What you need
 
 | | |
 | --- | --- |
@@ -21,9 +49,9 @@ them on your hardware.
 | Git | to check the repository out |
 | About 1 GB of disk | The installed packages take about 650 MB (measured on Linux). A build at 8129 × 8129 writes a few hundred megabytes more |
 
-## 2. Install
+### Install
 
-In a terminal (PowerShell or Command Prompt), in the folder where you want Orogen:
+In a terminal, in the folder where you want Orogen:
 
 ```
 git clone <address of the repository> orogen
@@ -31,11 +59,17 @@ cd orogen
 npm ci
 ```
 
-`npm ci` installs exactly the versions the repository's lock file names, into the folder `node_modules`;
-among them is Electron, which the desktop application runs on. `npm install` gives the same result and may
-rewrite the lock file.
+- The repository says of itself (`.gitattributes`) that its text files keep their line ends on every system,
+  so Git for Windows needs no setting. A copy whose line ends were converted fails 17 of the unit tests, the
+  ones that read the project's documents (measured on Linux with a converted copy); the application and the
+  command-line program do not depend on line ends.
+- `npm ci` installs exactly the versions the repository's lock file names, into the folder `node_modules`.
+  Electron, which the desktop application runs on, downloads its program the first time it is started.
+- **PowerShell may refuse `npm`** with *running scripts is disabled on this system*: Windows' default policy
+  blocks the script `npm.ps1`. Type `npm.cmd` in place of `npm`, or use Command Prompt, or allow scripts for
+  your account once with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
 
-## 3. First run
+### First run
 
 ```
 node src/cli/main.ts probe
@@ -79,9 +113,9 @@ node's output as grey values, as a shaded map and as a lit 3D view, side by side
 for Unreal into `D:\Build\Ridge` and prints the path of the manifest. Choose any folder that is new or empty;
 [Building and exporting](building.md) says why it must be.
 
-## 4. The command-line program
+### The command-line program
 
-Everything Orogen does can be done without a window, through one program:
+Everything Orogen computes can be computed without a window, through one program:
 
 ```
 node src/cli/main.ts <subcommand> [options]
@@ -101,9 +135,9 @@ used in this guide because it does not depend on how your shell hands `--` to np
 
 On Linux, the project's own development rule is to start the program through its guard,
 `tools/guard node src/cli/main.ts ...`, which caps the memory of the process. On Windows the guard only adds a
-time limit of 30 minutes, which a long build can exceed: do not use it there.
+time limit of 30 minutes, which a long build can exceed, and it cannot start `npm` there: do not use it.
 
-## 5. Starting the application
+### Starting the application
 
 ```
 npm start
@@ -113,32 +147,59 @@ run in the repository's folder, builds the application into the folder `dist` an
 followed by `npx electron .` does the same in two steps. `npx electron . D:\Terrains\ridge.orogen` starts it
 with that project.
 
-What opens is one window: the terrain of a first project in a 3D viewport, the graph of its nodes below it,
-and at the right the inspector, the node library and the build panel as three tabs. In ten minutes:
+`npm run dist:win` packs what the automated checks pack, into the folder `release`: the application's folder
+`win-unpacked`, the same as a zip, and the portable executable, all unsigned. Run on Windows; it has been run
+there by the automated checks only.
 
-1. **Open an example.** The **Library** tab, **Examples**, **Open** on *First Terrain* (three nodes) or *Alpine
-   Range* (twenty-one).
-2. **Look.** Drag in the viewport to turn the camera, turn the wheel to come nearer, `F6` for the view from
+### The tests
+
+```
+npm run check
+npm run test:unit
+npm run test:gpu
+npm run build
+npm run test:electron
+npm run test:ui
+```
+
+The first two need no graphics device. The third runs the engine and every node on your card and takes a
+while. The last two start the built application many times, in windows that are never shown. Of these, only
+`test:gpu` has run on Windows, in the automated checks, on the software adapter.
+
+## 3. The first ten minutes in the application
+
+What opens is one window: the terrain of a first project in a 3D viewport, the graph of its nodes below it,
+and at the right the inspector, with the node library and the build panel as two tabs below it.
+
+![The application with the Alpine Range example: the viewport, the graph, and the library's examples](images/application.png)
+
+(The development machine, in the tests' never-shown window.)
+
+1. **Read the status bar** at the foot of the window: `Ready` and the name of your graphics card. `Software
+   adapter: everything is slow` means Orogen is not on the card. `Graphics device failed` has a **Retry** button.
+2. **Open an example.** In the **Library** panel, at the lower right: **Examples**, **Open** on *First Terrain*
+   (three nodes) or *Alpine Range* (twenty-one).
+3. **Look.** Drag in the viewport to turn the camera, turn the wheel to come nearer, `F6` for the view from
    above. Turn the wheel over the graph until you can read the nodes, and press one: the viewport shows its
-   output and the **Inspector** tab its parameters.
-3. **Change something.** Drag across a number in the inspector and let go; `Ctrl+Z` takes it back. Press `Tab`
-   in the graph, type `terr`, `Enter`, and drag a wire from an output to the new node's input.
-4. **Build.** The **Build** tab: a resolution, an output folder that is new or empty, **Build**. The panel then
-   lists the files and the values Unreal's import panel asks for.
-5. **Save** with `Ctrl+S`.
+   output and the **Inspector**, above the Library, its parameters.
+4. **Change something.** Drag across a number in the inspector and let go; `Ctrl+Z` takes it back. With a node
+   selected, type `terr` in the Library and press `Enter`: Terraces is added to the right of the selected node,
+   connected to it. Or press `Tab` in the graph, type `terr`, `Enter`, and drag a wire from an output to the
+   new node's input.
+5. **Build.** The **Build** tab, beside the Library's, lists what a build would write. Choose a resolution and
+   an output folder that is new or empty, and press **Build**. The panel then lists the files and the values
+   Unreal's import panel asks for.
+6. **Save** with `Ctrl+S`.
 
 [The desktop application](application.md) describes every panel, gesture and key.
 
-- It has been tested on Linux only, and only in a window that is never shown, with input sent by tests.
-  **Nobody has started it on Windows**, and you will be the first to use it with a real mouse. If the window
-  stays empty or says that it could not start, the same `probe` as above tells you whether Orogen sees your
-  graphics card; the status bar of the application names the adapter it runs on, and says so when that is a
-  software adapter.
-- `npm run dist:win` packs it for Windows into the folder `release`, as a zip and a portable executable, both
-  unsigned. That package **has never been started**.
+It has been tested on Linux only, and only in a window that is never shown, with input sent by tests. If the
+window stays empty or says that it could not start, [First run on Windows](first-run-on-windows.md#if-nothing-opens)
+says what to look at and what to send.
 
-## 6. Where to go next
+## 4. Where to go next
 
+- [First run on Windows](first-run-on-windows.md): the checklist for the first session on your machine.
 - [The desktop application](application.md), for everything the window does.
 - [Concepts](concepts.md), to understand the graph, the units and what a project file says.
 - [Building and exporting](building.md), then [Importing into Unreal Engine 5.8](unreal-import.md).

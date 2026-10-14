@@ -8,7 +8,6 @@ import {
   type GraphDoc, type NodeError, type NodeErrorKind, type NodeInstance, type NodeRegistry, type PortRef, type ProjectSettings, type WgslDiagnostic,
 } from '../../../core/runtime.ts';
 import type { NodeRuntime } from '../../state/engine-store.ts';
-import { portLabel } from '../../ui/node-text.ts';
 import { formatMetres, metricUnits, type NumberRange, type NumberUnits } from '../../ui/number.ts';
 
 // ---- what is being inspected -------------------------------------------------------------------------------------
@@ -67,33 +66,6 @@ export function targetOf(nodes: GraphDoc['nodes'], registry: NodeRegistry, selec
     return { type, title: known?.title ?? type, category: known?.category ?? null, count };
   });
   return { kind: 'summary', nodes: held, ids, types };
-}
-
-/** engine.md 4.14: a node can be bypassed when inputs[0] and outputs[0] exist with the same type. */
-export function canBypass(def: Pick<NodeDef, 'inputs' | 'outputs'>): boolean {
-  const input = def.inputs[0];
-  const output = def.outputs[0];
-  if (!input || !output) return false;
-  if (typeof output.type === 'object') return input.type === 'any' && output.type.sameAs === input.name;
-  return (output.type === 'field' || output.type === 'color') && input.type === output.type;
-}
-
-/**
- * The labels of the required inputs of a node that nothing is connected to, read off the document: the graph
- * says the same of the same node from the same wires. An edge counts when the output it comes from exists
- * (runtime.md 4.3 rule 1); a bypassed node reads nothing but what it passes on (5.6).
- */
-export function missingInputs(
-  node: Pick<NodeInstance, 'id' | 'bypass'>, def: Pick<NodeDef, 'inputs' | 'outputs'>, edges: GraphDoc['edges'], nodes: GraphDoc['nodes'], registry: Pick<NodeRegistry, 'get'>,
-): string[] {
-  if (node.bypass === true && canBypass(def)) return [];
-  const connected = new Set<string>();
-  for (const edge of Object.values(edges)) {
-    if (edge.to.node !== node.id || edge.from.node === node.id) continue;
-    const source = own(nodes, edge.from.node);
-    if (source && registry.get(source.type)?.outputs.some((port) => port.name === edge.from.port)) connected.add(edge.to.port);
-  }
-  return def.inputs.filter((port) => !port.optional && !connected.has(port.name)).map(portLabel);
 }
 
 /** No chain of nodes that pass their input's kind on is followed further than this. */
@@ -463,9 +435,15 @@ export interface EngineSituation {
   readonly building: boolean;
   /** The node is an export node: it runs when the project is built, and in no preview. */
   readonly exports: boolean;
+  /** Previews are paused (`EngineState.paused`): nothing is computed until they are resumed. */
+  readonly paused: boolean;
+  /** The resolution the viewport shows the project at: its preview resolution (runtime.md 4.2), which no draft changes. Null: not known. */
+  readonly viewResolution: number | null;
 }
 
-export const SETTLED: EngineSituation = { device: 'ready', evaluating: false, building: false, exports: false };
+export const SETTLED: EngineSituation = { device: 'ready', evaluating: false, building: false, exports: false, paused: false, viewResolution: null };
+
+export const PAUSED_TEXT = 'Paused';
 
 /** Why a node without a result has none, from what the engine is doing. */
 function pendingText(situation: EngineSituation, waiting: boolean): string {
@@ -473,8 +451,23 @@ function pendingText(situation: EngineSituation, waiting: boolean): string {
   if (situation.device === 'failed') return 'No GPU device';
   if (situation.device === 'starting') return 'Waiting for the engine';
   if (situation.building) return 'Waiting for the build';
+  if (waiting && situation.evaluating) return 'Waiting';
+  // The user paused the previews: that, and no fault of the node, is why it has no result.
+  if (situation.paused) return PAUSED_TEXT;
   // Nothing runs and nothing will: the evaluation that would have reached the node was stopped, or shows another node.
-  return waiting && situation.evaluating ? 'Waiting' : 'Not computed';
+  return 'Not computed';
+}
+
+/**
+ * At which resolution a record's time and memory were measured, when that is not the preview resolution, at
+ * which the viewport shows the project: a node outside the view is computed for its thumbnail, on a much coarser
+ * grid, and its milliseconds say nothing of what it costs in the view; a node a build ran was measured at the
+ * build resolution. Null when the record is of the view's resolution, or holds none.
+ */
+export function measuredAt(runtime: Pick<NodeRuntime, 'resolution'>, viewResolution: number | null): string | null {
+  const { resolution } = runtime;
+  if (resolution === null || !Number.isFinite(resolution) || resolution === viewResolution) return null;
+  return `at ${resolution} × ${resolution}`;
 }
 
 /** The state of a node as one line. `upstream` is the title of the failed node a skipped one waits for. */
@@ -497,6 +490,9 @@ export function statusLine(runtime: NodeRuntime | undefined, upstream: string | 
       const facts: string[] = [];
       if (runtime.wallMs !== null) facts.push(formatRunTime(runtime.wallMs));
       if (runtime.peakBytes !== null) facts.push(formatMemory(runtime.peakBytes));
+      // Said only beside the figures it qualifies.
+      const at = runtime.wallMs !== null || runtime.peakBytes !== null ? measuredAt(runtime, situation.viewResolution) : null;
+      if (at !== null) facts.push(at);
       if (runtime.cached) facts.push('from cache');
       return { tone: 'ok', text: 'Computed', facts };
     }
@@ -521,9 +517,9 @@ export function isSteady(runtime: NodeRuntime | undefined, drafting: boolean): b
   return runtime.state === 'done' && !drafting;
 }
 
-/** The states of several nodes as one line: '3 computed, 1 failed'. */
-export function statusSummary(runtimes: readonly (NodeRuntime | undefined)[]): string {
-  const names: Readonly<Record<StatusLine['tone'], string>> = { ok: 'computed', running: 'computing', error: 'failed', skipped: 'skipped', idle: 'not computed' };
+/** The states of several nodes as one line: '3 computed, 1 failed'. With the previews paused, a node without a result is 'paused'. */
+export function statusSummary(runtimes: readonly (NodeRuntime | undefined)[], paused: boolean = false): string {
+  const names: Readonly<Record<StatusLine['tone'], string>> = { ok: 'computed', running: 'computing', error: 'failed', skipped: 'skipped', idle: paused ? 'paused' : 'not computed' };
   const counts = new Map<string, number>();
   for (const runtime of runtimes) {
     const name = names[statusLine(runtime).tone];

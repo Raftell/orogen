@@ -50,3 +50,16 @@ export function readLaunch(
     software: oneOf(env, 'OROGEN_ELECTRON_GPU', ['hardware', 'software'] as const, 'hardware') === 'software',
   };
 }
+
+/**
+ * The project file a second start of the application was given (8.2 rule 8), as an absolute path; null when it
+ * was given none, or nothing that can be read as one. `argv` and `cwd` are the second start's own. The
+ * environment of that start is not this one's and is not looked at: test mode has no second start.
+ */
+export function secondStartProject(argv: readonly string[], opts: { readonly packaged: boolean; readonly cwd: string }): string | null {
+  try {
+    return readLaunch({}, argv, opts).project;
+  } catch {
+    return null;
+  }
+}

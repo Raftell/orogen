@@ -11,7 +11,15 @@ import { boxInFrustum, type Vec3 } from './camera.ts';
 
 /** Quads along one side of a patch. A quarter of a node is drawn with half of it, so it is a multiple of 4. */
 export const PATCH = 64;
+/** Levels whose quads are a texel wide or wider: enough for a field of 16 385 vertices a side. */
 export const MAX_LEVELS = 9;
+/**
+ * Levels below the texel: the finest quads are a quarter of a texel wide. From near, the picture is of a smooth
+ * surface through the field (shaders.ts, `shownHeight`), and a mesh whose vertices are the texels would draw
+ * the notches that surface is there to take away. They are selected by distance like any level, so a terrain
+ * seen whole has none of them.
+ */
+export const SUB_LEVELS = 2;
 /** Where in a level's range its vertices begin to move onto the grid of the next level, as a share of the range. */
 export const MORPH_START = 0.85;
 /** Instances one draw may hold; a selection that would exceed it stops refining. */
@@ -25,21 +33,30 @@ export interface LodSetup {
   readonly leaves: number;
   /** Fine quads along one side: leaves × PATCH. A vertex is addressed by its whole number on this grid. */
   readonly fine: number;
+  /** How many of the levels, the finest, have quads narrower than a texel. */
+  readonly sub: number;
 }
 
-/** The quadtree for a field of `resolution` vertices a side: its finest quads are at most one texel wide. */
-export function lodSetup(resolution: number): LodSetup {
+/**
+ * The quadtree for a field of `resolution` vertices a side: the quads of level `sub` are at most one texel wide,
+ * and those of the `sub` levels below it halve them.
+ */
+export function lodSetup(resolution: number, sub: number = SUB_LEVELS): LodSetup {
   const quads = Math.max(1, Math.floor(resolution) - 1);
-  const levels = Math.max(1, Math.min(MAX_LEVELS, Math.ceil(Math.log2(quads / PATCH)) + 1));
+  const levels = Math.max(1, Math.min(MAX_LEVELS, Math.ceil(Math.log2(quads / PATCH)) + 1)) + sub;
   const leaves = 2 ** (levels - 1);
-  return { levels, leaves, fine: leaves * PATCH };
+  return { levels, leaves, fine: leaves * PATCH, sub };
 }
 
 export interface HeightBounds {
   /** The lowest and highest normalised height of the field. */
   readonly min: number;
   readonly max: number;
-  /** For each level, finest first, the lowest and highest height in each node, row by row; null while only the whole is known. */
+  /**
+   * For each level from the texel's level up (`LodSetup.sub`), the lowest and highest height in each node, row by
+   * row; null while only the whole is known. A node below the texel's level lies in one of that level's, which
+   * holds no more texels than the grid these are made from has in a cell.
+   */
   readonly nodes: readonly { readonly min: Float32Array; readonly max: Float32Array }[] | null;
 }
 
@@ -67,18 +84,22 @@ export function gridRange(grid: MinMaxGrid): readonly [number, number] {
   return min <= max ? [min, max] : [0, 0];
 }
 
-/** The bounds of every node of a field `width` × `height` texels, from the grid of its minima and maxima. */
+/**
+ * The bounds of every node of a field `width` × `height` texels, from the grid of its minima and maxima. A node's
+ * bounds take in the texels two beyond its edges: the smooth surface the picture has up close is made from them
+ * too, and lies between the lowest and the highest of the texels it is made from.
+ */
 export function buildBounds(setup: LodSetup, width: number, height: number, grid: MinMaxGrid): HeightBounds {
   const { cellsX, cellsY, cellTexels, data } = grid;
   const lastX = Math.max(1, width - 1), lastY = Math.max(1, height - 1);
-  const n = setup.leaves;
+  const n = setup.leaves >> setup.sub;
   let lo = new Float32Array(n * n), hi = new Float32Array(n * n);
   let min = Infinity, max = -Infinity;
   const cellOf = (texel: number, cells: number): number => Math.max(0, Math.min(cells - 1, Math.floor(texel / cellTexels)));
   for (let y = 0; y < n; y++) {
-    const cy0 = cellOf(Math.floor((y / n) * lastY), cellsY), cy1 = cellOf(Math.ceil(((y + 1) / n) * lastY), cellsY);
+    const cy0 = cellOf(Math.floor((y / n) * lastY) - 2, cellsY), cy1 = cellOf(Math.ceil(((y + 1) / n) * lastY) + 2, cellsY);
     for (let x = 0; x < n; x++) {
-      const cx0 = cellOf(Math.floor((x / n) * lastX), cellsX), cx1 = cellOf(Math.ceil(((x + 1) / n) * lastX), cellsX);
+      const cx0 = cellOf(Math.floor((x / n) * lastX) - 2, cellsX), cx1 = cellOf(Math.ceil(((x + 1) / n) * lastX) + 2, cellsX);
       let a = Infinity, b = -Infinity;
       for (let cy = cy0; cy <= cy1; cy++) {
         for (let cx = cx0; cx <= cx1; cx++) {
@@ -100,7 +121,7 @@ export function buildBounds(setup: LodSetup, width: number, height: number, grid
   }
   if (min > max) { min = 0; max = 0; }
   const nodes = [{ min: lo, max: hi }];
-  for (let level = 1, size = n >> 1; level < setup.levels; level++, size >>= 1) {
+  for (let level = 1, size = n >> 1; level < setup.levels - setup.sub; level++, size >>= 1) {
     const nextLo = new Float32Array(size * size), nextHi = new Float32Array(size * size);
     const from = size * 2;
     for (let y = 0; y < size; y++) {
@@ -178,9 +199,11 @@ export function selectPatches(setup: LodSetup, bounds: HeightBounds, view: LodVi
   const visible = (ix: number, iy: number, level: number, x0: number, y0: number, size: number): boolean => {
     if (!view.planes) return true;
     let lo = bounds.min, hi = bounds.max;
-    const nodes = bounds.nodes?.[level];
+    // A node below the texel's level has the bounds of the node of that level it lies in.
+    const kept = Math.max(level, setup.sub);
+    const nodes = bounds.nodes?.[kept - setup.sub];
     if (nodes) {
-      const at = iy * (setup.leaves >> level) + ix;
+      const at = (iy >> (kept - level)) * (setup.leaves >> kept) + (ix >> (kept - level));
       lo = nodes.min[at]!;
       hi = nodes.max[at]!;
     }

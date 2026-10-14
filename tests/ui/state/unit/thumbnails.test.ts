@@ -139,3 +139,18 @@ test('without a factory the image is the page\'s ImageData, and its absence is s
     delete root.ImageData;
   }
 });
+
+test('drop forgets the image of one node and tells who draws it; a node without one is told nothing', () => {
+  const cache = createThumbnailCache({ createImage: plain });
+  const told: string[] = [];
+  cache.subscribe('a', () => told.push('a'));
+  cache.subscribe('b', () => told.push('b'));
+  cache.put({ nodeId: 'a', contentKey: 'k1', resolution: 253, rgba: new Uint8ClampedArray(THUMBNAIL_SIZE * THUMBNAIL_SIZE * 4) });
+  cache.put({ nodeId: 'b', contentKey: 'k2', resolution: 253, rgba: new Uint8ClampedArray(THUMBNAIL_SIZE * THUMBNAIL_SIZE * 4) });
+  told.length = 0;
+  cache.drop('a');
+  assert.deepEqual([cache.get('a'), cache.get('b')?.contentKey, cache.size, told], [null, 'k2', 1, ['a']]);
+  cache.drop('a');
+  cache.drop('nobody');
+  assert.deepEqual(told, ['a']);
+});

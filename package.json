@@ -1,7 +1,8 @@
 {
   "name": "orogen",
   "version": "0.1.0",
-  "description": "Node-based GPU terrain generator for Unreal Engine landscapes",
+  "description": "Node-based GPU terrain generator that exports Unreal Engine 5.8 landscapes",
+  "author": "Raftell",
   "private": true,
   "type": "module",
   "license": "UNLICENSED",

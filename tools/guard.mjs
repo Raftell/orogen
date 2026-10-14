@@ -10,6 +10,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { guardCommand, killedMessage } from './guard-command.ts';
+
 const args = process.argv.slice(2);
 if (args.length === 0) {
   console.error('usage: node tools/guard.mjs <command> [args...]');
@@ -28,28 +30,27 @@ if (args.length === 0) {
 const mem = process.env.OROGEN_GUARD_MEM ?? flags.mem ?? '2G';
 const limit = Number(process.env.OROGEN_GUARD_TIMEOUT ?? flags.timeout ?? 1800);
 const nested = process.env.OROGEN_GUARD_ACTIVE === '1';
-const scoped = !nested && process.platform === 'linux'
-  && spawnSync('systemctl', ['--user', 'show-environment'], { stdio: 'ignore' }).status === 0;
+const linux = process.platform === 'linux';
+const has = (command, ...probe) => spawnSync(command, probe, { stdio: 'ignore' }).status === 0;
 
-let command = args[0] === 'node' ? process.execPath : args[0];
-let rest = args.slice(1);
 // --lock: one such run at a time on this machine. Several people (or agents) share one GPU and its
-// memory; whole suites and large renders queue here instead of failing each other.
-if (flags.lock && !nested && process.platform === 'linux' && spawnSync('flock', ['--version'], { stdio: 'ignore' }).status === 0) {
-  rest = [join(tmpdir(), 'orogen-gpu.lock'), command, ...rest];
-  command = 'flock';
-}
-if (scoped) {
-  rest = ['--user', '--scope', '-q', '--collect',
-    '-p', `MemoryMax=${mem}`, '-p', 'MemorySwapMax=0',
-    '-p', `RuntimeMaxSec=${limit}`, '--', command, ...rest];
-  command = 'systemd-run';
-}
-const child = spawn(command, rest, { stdio: 'inherit', env: { ...process.env, OROGEN_GUARD_ACTIVE: '1' } });
-const timer = scoped || nested ? null : setTimeout(() => child.kill('SIGKILL'), limit * 1000);
+// memory; whole suites and large renders queue here instead of failing each other. The lock is taken
+// outside the scope: the wait for it is no part of the run's own time limit.
+const lock = Boolean(flags.lock);
+const plan = guardCommand({
+  args, lock, mem, limit, nested,
+  platform: process.platform,
+  systemd: linux && !nested && has('systemctl', '--user', 'show-environment'),
+  flock: linux && !nested && lock && has('flock', '--version'),
+  node: process.execPath,
+  lockFile: join(tmpdir(), 'orogen-gpu.lock'),
+});
+const child = spawn(plan.command, plan.args, { stdio: 'inherit', shell: plan.shell, env: { ...process.env, OROGEN_GUARD_ACTIVE: '1' } });
+const timer = plan.timer ? setTimeout(() => child.kill('SIGKILL'), limit * 1000) : null;
 child.on('error', (e) => { console.error(`guard: cannot start ${args[0]}: ${e.message}`); process.exit(127); });
 child.on('exit', (code, signal) => {
   if (timer) clearTimeout(timer);
-  if (signal || code === 137) console.error(`guard: command killed (${signal ?? 'SIGKILL'}): over the ${mem} memory cap or the ${limit}s time limit`);
+  const said = killedMessage(code, signal, mem, limit, plan.command === 'flock' && plan.scoped);
+  if (said !== null) console.error(said);
   process.exit(code ?? 137);
 });

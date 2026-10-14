@@ -1,7 +1,7 @@
 // The WGSL of the viewport. Fields of the engine are read with textureLoad and interpolated by hand (runtime.md
 // 7.5 rule 3); only the renderer's own textures (light maps, the sky map, the palette) go through a sampler.
 
-import { ATMOSPHERE_WGSL, SUN_DISC } from './atmosphere.ts';
+import { ATMOSPHERE, ATMOSPHERE_WGSL, MS_SAMPLES, SUN_DISC } from './atmosphere.ts';
 import { MORPH_START } from './lod.ts';
 
 /** Floats of the Frame uniform. */
@@ -11,6 +11,11 @@ export const FRAME = {
   viewProj: 0, eye: 16, right: 20, up: 24, forward: 28, sunDir: 32, sunColor: 36, skyUp: 40, skySide: 44, misc: 48, canvas: 52,
   terrain: 56, heightTex: 60, overlayTex: 64, overlayRange: 68, lod: 72, lod2: 76, light: 80, flags: 84, top: 88, bounds: 92,
 } as const;
+
+/** Where the tone curve leaves the straight line: a colour whose brightest channel is below this is shown as it is. */
+export const TONE_SHOULDER = 0.7;
+/** Floats of the sky map's uniform: the sun, the sky's light on the ground, and the table of the multiple scattering. */
+export const SKY_FLOATS = 8 + 4 * MS_SAMPLES;
 
 /** Behind the terrain: --og-bg-canvas of src/app/shell/theme.css (#161616), the colour of the panel around the canvas. */
 export const BACKGROUND = 22 / 255;
@@ -26,7 +31,7 @@ struct Frame {
   sunColor: vec4f,     // rgb: irradiance on a surface facing the sun; w: exposure
   skyUp: vec4f,        // rgb: the sky's irradiance over pi on level ground
   skySide: vec4f,      // rgb: the same on a wall
-  misc: vec4f,         // x: 1 when there are light maps to read; y: metres from the eye to the terrain's box; z: the scale of the air
+  misc: vec4f,         // x: 1 when there are light maps to read; z: texels of the height field a pixel covers, per metre of distance; w: 1 when the picture is smooth from near
   canvas: vec4f,       // width, height in pixels, and their inverses
   terrain: vec4f,      // terrainSize; metres of display height per unit; heightRange; seaLevel (normalised)
   heightTex: vec4f,    // the last texel (x, y) of the height field; z: 1 when a height is bound
@@ -51,8 +56,10 @@ struct Frame {
 @group(0) @binding(9) var skySampler: sampler;
 
 const PI = 3.14159265358979;
-const BETA_R = vec3f(0.000005802, 0.000013558, 0.0000331);
-const BETA_ME = 0.000008396;
+const BETA_R = vec3f(${ATMOSPHERE.rayleigh.join(', ')});
+const BETA_ME = ${ATMOSPHERE.mieExtinction};
+const H_R = ${ATMOSPHERE.rayleighHeight}.0;
+const H_M = ${ATMOSPHERE.mieHeight}.0;
 
 fn loadHeight(p: vec2i) -> f32 {
   return textureLoad(heightTex, clamp(p, vec2i(0), vec2i(F.heightTex.xy)), 0).r;
@@ -73,6 +80,61 @@ fn heightTexel(t: vec2f) -> f32 {
 }
 fn heightUv(uv: vec2f) -> f32 {
   return heightTexel(uv * F.heightTex.xy);
+}
+
+// ---- the surface up close ----
+// Between four texels the field is a bilinear patch, and a ridge one texel wide that runs across the grid is a
+// row of such patches, each with a notch: seen from near it has a sawtooth for a crest and facets for slopes.
+// Where a texel covers several pixels the picture is therefore of a smooth surface through the same field, a
+// cubic B-spline over four by four texels, and the mesh has vertices between the texels to draw it with
+// (lod.ts). It is the picture alone: what the pointer reads is the field (PICK_WGSL).
+fn splineWeights(f: f32) -> vec4f {
+  let g = 1.0 - f;
+  return vec4f(g * g * g, 3.0 * f * f * f - 6.0 * f * f + 4.0, -3.0 * f * f * f + 3.0 * f * f + 3.0 * f + 1.0, f * f * f) / 6.0;
+}
+fn splineSlopes(f: f32) -> vec4f {
+  let g = 1.0 - f;
+  return vec4f(-g * g, 3.0 * f * f - 4.0 * f, -3.0 * f * f + 2.0 * f + 1.0, f * f) * 0.5;
+}
+// x: the height at texel coordinates; y, z: how it changes per texel along x and y.
+fn smoothTexel(t: vec2f) -> vec3f {
+  let c = clamp(t, vec2f(0.0), F.heightTex.xy);
+  let base = floor(c);
+  let f = c - base;
+  let p = vec2i(base);
+  let wx = splineWeights(f.x);
+  let wy = splineWeights(f.y);
+  let sx = splineSlopes(f.x);
+  let sy = splineSlopes(f.y);
+  var out = vec3f(0.0);
+  for (var j = 0; j < 4; j++) {
+    var row = 0.0;
+    var rowSlope = 0.0;
+    for (var i = 0; i < 4; i++) {
+      let h = loadHeight(p + vec2i(i - 1, j - 1));
+      row += wx[i] * h;
+      rowSlope += sx[i] * h;
+    }
+    out += vec3f(wy[j] * row, wy[j] * rowSlope, sy[j] * row);
+  }
+  return out;
+}
+// How much of the smooth surface a point shows, by its distance from the eye: none where a texel covers little
+// more than a pixel, all of it from three pixels a texel. Between the two a crest's teeth are two or three pixels
+// high, which is when they are seen as a comb.
+fn smoothShare(footprint: f32) -> f32 {
+  return 1.0 - smoothstep(0.35, 0.85, footprint);
+}
+fn smoothness(world: vec3f) -> f32 {
+  if (F.heightTex.z < 0.5 || F.misc.z <= 0.0) { return 0.0; }
+  return smoothShare(distance(world, F.eye.xyz) * F.misc.z);
+}
+// The height the picture has at a uv, normalised.
+fn shownHeight(uv: vec2f, smoothing: f32) -> f32 {
+  let t = uv * F.heightTex.xy;
+  let plain = heightTexel(t);
+  if (smoothing <= 0.0) { return plain; }
+  return mix(plain, smoothTexel(t).x, smoothing);
 }
 
 // The slope of the displayed surface in metres per metre, from heights 'stride' texels to either side.
@@ -114,23 +176,30 @@ fn slopePyramid(uv: vec2f, level: i32) -> vec2f {
 }
 
 // The slope a pixel shows. 'footprint' is how many texels of the height field one pixel covers. Up close it is
-// the field's own slope, texel by texel; where a pixel covers several texels it is the slope of the terrain
-// averaged over as many, from the pyramid, so that distant ground neither sparkles nor loses its form.
-fn surfaceSlope(uv: vec2f, footprint: f32) -> vec2f {
+// the slope of the smooth surface ('smoothing', above); then the field's own, texel by texel; where a pixel covers
+// several texels it is the slope of the terrain averaged over as many, from the pyramid, so that distant ground
+// neither sparkles nor loses its form.
+fn surfaceSlope(uv: vec2f, footprint: f32, smoothing: f32) -> vec2f {
   let t = uv * F.heightTex.xy;
   let stride = max(footprint, 1.0);
-  if (F.misc.x < 0.5) { return slopeFine(t, stride); }
+  var fine = slopeFine(t, stride);
+  let near = smoothing * (1.0 - saturate(2.0 * (stride - 1.0)));
+  if (near > 0.0) {
+    let cell = vec2f(F.terrain.x) / max(F.heightTex.xy, vec2f(1.0));
+    fine = mix(fine, smoothTexel(t).yz / cell * F.terrain.y, near);
+  }
+  if (F.misc.x < 0.5) { return fine; }
   let ratio = max(F.heightTex.x, 1.0) / F.light.z;
   let lodSource = log2(stride);
   let lodPyramid = lodSource - log2(max(ratio, 0.001));
   let w = saturate(min(lodSource, lodPyramid + 1.0));
-  if (w <= 0.0) { return slopeFine(t, stride); }
+  if (w <= 0.0) { return fine; }
   let level = clamp(lodPyramid, 0.0, F.light.w - 1.0);
   let l0 = i32(floor(level));
   let l1 = min(l0 + 1, i32(F.light.w) - 1);
   let coarse = mix(slopePyramid(uv, l0), slopePyramid(uv, l1), fract(level));
   if (w >= 1.0) { return coarse; }
-  return mix(slopeFine(t, stride), coarse, w);
+  return mix(fine, coarse, w);
 }
 
 fn loadOverlay(p: vec2i) -> vec4f {
@@ -176,25 +245,61 @@ fn skyColor(dir: vec3f) -> vec3f {
   return textureSampleLevel(skyTex, skySampler, skyUv(dir), 0.0).rgb;
 }
 
-// Aerial perspective: the air between the eye and a point takes its light away and adds the sky's. The air is
-// that of a terrain a few kilometres wide (AIR_WIDTH of renderer.ts), whatever the terrain's own size, and only
-// the air beyond the terrain's near edge counts: far ground is paler than near ground at every scale, and a
-// terrain seen whole from afar is not lost in haze. F.misc.y is the distance to that edge and F.misc.z the scale.
-// What the air adds is the horizon's light with half its hue: a shadow five kilometres away is hazy, not violet.
+// Aerial perspective: the air between the eye and a point takes its light away and adds its own. The air is the
+// sky's (atmosphere.ts), metre for metre, and what counts of it is what lies within the terrain's own box, from
+// its lowest ground to its highest: the picture is of the terrain and of the air over it, and an eye that backs
+// away to see the whole does not put more air before it. Seen from above, a valley lies under a little more air
+// than the peaks beside it; seen from the ground, the far side of a terrain four kilometres wide is paler than
+// the near side, and that of one forty wide is lost in haze. What a path through the air adds is the sky at the
+// horizon in that direction, which is such a path made long.
 fn aerial(color: vec3f, world: vec3f, coverage: f32) -> vec3f {
   let v = world - F.eye.xyz;
   let dist = length(v);
   let dir = v / max(dist, 1e-3);
-  let altitude = max(0.5 * (world.z + F.eye.z), 0.0) * F.misc.z;
-  let beta = BETA_R * exp(-altitude / 8000.0) + vec3f(BETA_ME * exp(-altitude / 1200.0));
-  let through = exp(-beta * max(dist - F.misc.y, 0.0) * F.misc.z);
+  // Where the ray enters the box, by its three pairs of planes.
+  let low = vec3f(0.0, 0.0, F.bounds.x * F.terrain.y);
+  let high = vec3f(F.terrain.x, F.terrain.x, max(F.bounds.y, F.terrain.w * F.flags.y) * F.terrain.y);
+  let safe = select(vec3f(1e-9), dir, abs(dir) > vec3f(1e-9));
+  let a = (low - F.eye.xyz) / safe;
+  let b = (high - F.eye.xyz) / safe;
+  let near = min(a, b);
+  let path = dist - clamp(max(near.x, max(near.y, near.z)), 0.0, dist);
+  let altitude = max(0.5 * (world.z + clamp(F.eye.z, low.z, high.z)), 0.0);
+  let beta = BETA_R * exp(-altitude / H_R) + vec3f(BETA_ME * exp(-altitude / H_M));
+  let through = exp(-beta * path);
   let sky = skyColor(normalize(vec3f(dir.xy, max(dir.z, 0.0) + 0.04)));
-  let haze = mix(vec3f(dot(sky, vec3f(0.2126, 0.7152, 0.0722))), sky, 0.5);
-  return color * through + haze * (vec3f(1.0) - through) * coverage;
+  return color * through + sky * (vec3f(1.0) - through) * coverage;
 }
 
-const SEA_DEEP = vec3f(0.004, 0.028, 0.055);
-const SEA_SHALLOW = vec3f(0.02, 0.15, 0.15);
+// ---- noise for the default material: values on a lattice, from whole numbers alone, so that every adapter makes the same ----
+fn lattice(p: vec2i) -> f32 {
+  var h = (u32(p.x) * 0x9E3779B1u) ^ (u32(p.y) * 0x85EBCA77u + 0x7F4A7C15u);
+  h ^= h >> 15u;
+  h *= 0x2C1B3C6Du;
+  h ^= h >> 12u;
+  h *= 0x297A2D39u;
+  h ^= h >> 15u;
+  return f32(h >> 8u) * (1.0 / 16777216.0);
+}
+fn valueNoise(p: vec2f) -> f32 {
+  let base = floor(p);
+  let f = p - base;
+  let u = f * f * (vec2f(3.0) - 2.0 * f);
+  let i = vec2i(base);
+  let top = mix(lattice(i), lattice(i + vec2i(1, 0)), u.x);
+  let bottom = mix(lattice(i + vec2i(0, 1)), lattice(i + vec2i(1, 1)), u.x);
+  return mix(top, bottom, u.y);
+}
+// Noise of one wavelength, in metres, at a place in metres; it fades to its mean where a pixel is as wide as it.
+fn patches(at: vec2f, wavelength: f32, pixel: f32) -> f32 {
+  let shown = 1.0 - smoothstep(0.25, 0.7, pixel / wavelength);
+  if (shown <= 0.0) { return 0.5; }
+  return mix(0.5, valueNoise(at / wavelength), shown);
+}
+
+// What clear sea water takes from light per metre of its way, and the colour of deep water under white light.
+const WATER_ABSORB = vec3f(0.36, 0.066, 0.042);
+const WATER_DEEP = vec3f(0.009, 0.05, 0.088);
 
 struct Surface {
   albedo: vec3f,
@@ -203,33 +308,57 @@ struct Surface {
   occlusion: f32,
 }
 
-// The terrain's own colours where no colour map is draped: rock on steep ground; on gentle ground grass, dry
-// grass and scree from low to high, bare soil where it tilts; darker in hollows; sand along a shown sea.
-fn materialColor(height: f32, steepness: f32, occlusion: f32) -> vec3f {
+// The terrain's own colours where no colour map is draped. Gentle ground is turf, greener low down and in
+// hollows, drier and paler higher up, in patches of three sizes so that level ground is not one colour; where
+// it tilts the soil shows, and steep ground is rock, greyer with height. Along a shown sea lies sand. 'pixel' is
+// the width of a pixel on the ground, in metres.
+fn materialColor(uv: vec2f, height: f32, steepness: f32, occlusion: f32, pixel: f32) -> vec3f {
   let span = max(F.bounds.y - F.bounds.x, 1e-5);
   let t = saturate((height - F.bounds.x) / span);
-  var ground = mix(vec3f(0.066, 0.09, 0.04), vec3f(0.15, 0.142, 0.072), smoothstep(0.1, 0.5, t));
-  ground = mix(ground, vec3f(0.2, 0.186, 0.156), smoothstep(0.5, 0.92, t));
-  // 6 to 24 degrees: the turf thins out and the soil shows.
-  ground = mix(ground, vec3f(0.135, 0.105, 0.07), 0.6 * smoothstep(0.105, 0.445, steepness));
-  ground *= mix(vec3f(0.7, 0.8, 0.68), vec3f(1.0), smoothstep(0.45, 0.95, occlusion));
-  var rock = mix(vec3f(0.128, 0.108, 0.09), vec3f(0.2, 0.19, 0.18), smoothstep(0.3, 1.0, t));
-  rock *= mix(0.78, 1.0, smoothstep(0.3, 0.9, occlusion));
-  rock *= mix(1.0, 0.8, smoothstep(1.4, 2.7, steepness));
+  let size = F.terrain.x;
+  let at = uv * size;
+  let broad = patches(at + vec2f(0.37 * size), size / 7.0, pixel);
+  let middle = patches(at + vec2f(0.11 * size, 0.73 * size), size / 29.0, pixel);
+  let small = patches(at, size / 113.0, pixel);
+  let grain = patches(at, size / 900.0, pixel);
+  let mottle = 0.5 * broad + 0.3 * middle + 0.2 * small;
+  // Where the ground lies in its climb from the lowest to the highest, moved a little by the patches.
+  let climb = t + 0.22 * (mottle - 0.5);
+  // Turf of a dry country: olive where it is greenest, never the green of a lawn. A terrain may be a desert.
+  var turf = mix(vec3f(0.105, 0.128, 0.062), vec3f(0.165, 0.162, 0.085), smoothstep(0.3, 0.7, mottle));
+  turf = mix(turf, vec3f(0.225, 0.2, 0.125), smoothstep(0.22, 0.62, climb));
+  turf = mix(turf, vec3f(0.245, 0.232, 0.195), smoothstep(0.6, 0.95, climb));
+  // Hollows keep their water: darker and greener.
+  turf *= mix(vec3f(0.72, 0.84, 0.7), vec3f(1.0), smoothstep(0.45, 0.95, occlusion));
+  // 8 to 27 degrees: the turf thins out and the soil shows.
+  let soil = mix(vec3f(0.19, 0.152, 0.11), vec3f(0.228, 0.2, 0.162), smoothstep(0.3, 0.9, climb));
+  var ground = mix(turf, soil, 0.62 * smoothstep(0.14, 0.51, steepness + 0.1 * (small - 0.5)));
+  ground *= 0.94 + 0.12 * grain;
+  // Rock without a hue: under the blue of the sky a warm rock has violet shadows.
+  var rock = mix(vec3f(0.158, 0.154, 0.142), vec3f(0.262, 0.262, 0.252), smoothstep(0.2, 1.0, climb));
+  rock *= (0.86 + 0.28 * middle) * (0.93 + 0.14 * grain);
+  rock *= mix(0.8, 1.0, smoothstep(0.3, 0.9, occlusion));
+  rock *= mix(1.0, 0.82, smoothstep(1.4, 2.7, steepness));
   // 30 to 44 degrees: talus lies below, rock stands above.
-  var albedo = mix(ground, rock, smoothstep(0.577, 0.966, steepness));
+  var albedo = mix(ground, rock, smoothstep(0.577, 0.966, steepness + 0.14 * (small - 0.5)));
   if (F.flags.y > 0.5) {
+    // Metres above the sea. Sand lies along it on gentle ground, darker where the last wave wetted it, and under it.
     let above = (height - F.terrain.w) * F.terrain.z;
-    let beach = (1.0 - smoothstep(0.0, 0.012 * F.terrain.z, above)) * (1.0 - smoothstep(0.25, 0.6, steepness));
-    albedo = mix(albedo, vec3f(0.36, 0.31, 0.21), beach * step(0.0, above));
-    albedo = mix(albedo, vec3f(0.2, 0.19, 0.14), (1.0 - step(0.0, above)) * 0.7);
+    let reach = max(0.004 * size, 2.5 * pixel * max(steepness, 0.02));
+    let gentle = 1.0 - smoothstep(0.3, 0.7, steepness);
+    let sand = vec3f(0.46, 0.4, 0.29) * (0.93 + 0.14 * small);
+    let beach = (1.0 - smoothstep(0.35 * reach, reach, above)) * gentle;
+    albedo = mix(albedo, sand, beach);
+    albedo *= mix(0.72, 1.0, smoothstep(0.0, 0.12 * reach, above));
+    let bed = mix(sand * 0.8, vec3f(0.16, 0.15, 0.12), smoothstep(0.0, 12.0, -above));
+    albedo = mix(albedo, bed, step(above, 0.0) * mix(0.45, 0.85, gentle));
   }
   return albedo;
 }
 
-fn surfaceAt(uv: vec2f, footprint: f32, lightLod: f32) -> Surface {
+fn surfaceAt(uv: vec2f, footprint: f32, lightLod: f32, smoothing: f32, pixel: f32) -> Surface {
   var s: Surface;
-  let slope = surfaceSlope(uv, footprint);
+  let slope = surfaceSlope(uv, footprint, smoothing);
   s.normal = normalize(vec3f(-slope, 1.0));
   s.shadow = 1.0;
   s.occlusion = 1.0;
@@ -241,22 +370,53 @@ fn surfaceAt(uv: vec2f, footprint: f32, lightLod: f32) -> Surface {
   }
   // The steepness of the ground itself: the display's vertical scale is not the terrain's.
   let steepness = length(slope) * F.terrain.z / max(F.terrain.y, 1e-6);
-  var base = vec3f(0.21, 0.2, 0.185);
-  if (F.flags.x < 0.5) { base = materialColor(heightUv(uv), steepness, s.occlusion); }
+  var base = vec3f(0.26, 0.252, 0.238);
+  if (F.flags.x < 0.5) { base = materialColor(uv, heightUv(uv), steepness, s.occlusion, pixel); }
   let over = overlayColor(uv);
   s.albedo = mix(base, over.rgb, over.a);
   return s;
 }
 
+// The sun's light on a surface, and the light of everything else: the sky, and what the lit ground around
+// throws back. Ground reflects three tenths of the sun; a wall has that ground before it, and level ground has
+// a quarter of it, from whatever of the terrain stands higher. A hollow is never without light: what its own
+// walls throw back keeps a quarter.
+fn sunLight(s: Surface) -> vec3f {
+  return F.sunColor.rgb * (max(dot(s.normal, F.sunDir.xyz), 0.0) * s.shadow / PI);
+}
+fn skyLight(s: Surface) -> vec3f {
+  let up = saturate(s.normal.z);
+  let sky = mix(F.skySide.rgb, F.skyUp.rgb, up * up);
+  let bounce = F.sunColor.rgb * (max(F.sunDir.z, 0.0) * 0.3 / PI) * mix(1.0, 0.25, up);
+  return (sky + bounce) * mix(0.25, 1.0, s.occlusion);
+}
 fn litColor(s: Surface) -> vec3f {
+  return s.albedo * (sunLight(s) + skyLight(s));
+}
+
+// The sea over a bed 'depth' metres down: what the eye gets from the direction 'view' (towards the eye) of a
+// surface with the normal 'normal'. The bed is seen through the water, which takes the red of its light first on
+// the way down and on the way up; deep water has a colour of its own; and the surface mirrors the sky, little
+// seen from above and nearly all of it at a glance.
+fn seaColor(bed: Surface, depth: f32, view: vec3f, normal: vec3f, shadow: f32) -> vec3f {
   let sun = F.sunDir.xyz;
-  let direct = F.sunColor.rgb * (max(dot(s.normal, sun), 0.0) * s.shadow / PI);
-  let up = s.normal.z;
-  let sky = mix(F.skySide.rgb, F.skyUp.rgb, saturate(up * up));
-  // What the lit ground around throws back onto a slope.
-  let bounce = F.sunColor.rgb * (max(sun.z, 0.0) * 0.36 / PI) * (1.0 - 0.6 * up);
-  // A hollow is never without light: what its own walls throw back keeps a third of it.
-  return s.albedo * (direct + (sky + bounce) * mix(0.3, 1.0, s.occlusion));
+  // The cosines of the sun's and the eye's rays under the water, which bends them (n = 1.33).
+  let down = sqrt(1.0 - (1.0 - sun.z * sun.z) / 1.77);
+  let up = sqrt(1.0 - (1.0 - view.z * view.z) / 1.77);
+  let d = max(depth, 0.0);
+  let rise = exp(-WATER_ABSORB * d / max(up, 0.2));
+  let direct = sunLight(bed) * exp(-WATER_ABSORB * d / max(down, 0.2));
+  let ambient = skyLight(bed) * exp(-WATER_ABSORB * d * 1.2);
+  let seen = bed.albedo * (direct + ambient) * rise;
+  let light = F.sunColor.rgb * (max(sun.z, 0.0) * shadow / PI) + F.skyUp.rgb;
+  let body = WATER_DEEP * light * (vec3f(1.0) - exp(-WATER_ABSORB * d * (1.0 / max(down, 0.2) + 1.0 / max(up, 0.2))));
+  var mirrored = reflect(-view, normal);
+  mirrored.z = abs(mirrored.z);
+  let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(normal, view), 0.0), 5.0);
+  let glint = F.sunColor.rgb * shadow * pow(max(dot(mirrored, sun), 0.0), 700.0) * 6.0;
+  // In a hand's depth of water the mirror is broken by what washes over the sand.
+  let calm = smoothstep(0.0, 0.4, d);
+  return (1.0 - fresnel * calm) * (seen + body) + calm * (fresnel * skyColor(mirrored) + glint);
 }
 `;
 
@@ -284,7 +444,9 @@ struct TerrainOut {
   let odd = fract(grid * 0.5) * 2.0;
   let uv = (fine - odd * stride * k) * F.lod2.y;
   var out: TerrainOut;
-  out.world = vec3f(uv * F.terrain.x, heightUv(uv) * F.terrain.y);
+  // The smooth surface is shown by the distance of the field's own: a vertex and the fragments around it agree on it.
+  let plain = vec3f(uv * F.terrain.x, heightUv(uv) * F.terrain.y);
+  out.world = vec3f(plain.xy, shownHeight(uv, smoothness(plain)) * F.terrain.y);
   out.uv = uv;
   out.position = F.viewProj * vec4f(out.world, 1.0);
   return out;
@@ -295,11 +457,11 @@ struct TerrainOut {
   let du = max(length(dpdx(in.uv)), length(dpdy(in.uv)));
   let footprint = du * max(F.heightTex.x, 1.0);
   let lightLod = log2(max(du * F.light.z, 1e-6));
-  let s = surfaceAt(uv, footprint, lightLod);
+  let s = surfaceAt(uv, footprint, lightLod, smoothness(in.world), du * F.terrain.x);
   return vec4f(aerial(litColor(s), in.world, 1.0), 1.0);
 }
 
-// ---- the sky ----
+// ---- the sky, and the table the terrain stands on ----
 struct SkyOut {
   @builtin(position) position: vec4f,
   @location(0) ndc: vec2f,
@@ -311,6 +473,10 @@ struct SkyOut {
   out.position = vec4f(corners[i], 0.0, 1.0);
   return out;
 }
+// How far a point of the table lies outside the slab's square, in metres.
+fn outsideSlab(p: vec2f) -> f32 {
+  return length(max(max(-p, p - vec2f(F.terrain.x)), vec2f(0.0)));
+}
 @fragment fn fsSky(in: SkyOut) -> @location(0) vec4f {
   let dir = normalize(F.forward.xyz + in.ndc.x * F.right.xyz + in.ndc.y * F.up.xyz);
   var color = skyColor(dir);
@@ -319,6 +485,30 @@ struct SkyOut {
   let radius = ${(SUN_DISC * Math.PI / 180).toFixed(6)};
   let disc = 1.0 - smoothstep(radius * 0.82, radius, angle);
   color += F.sunColor.rgb * disc * step(0.0, dir.z) * min(1.0 / (PI * radius * radius), 60.0 / max(F.sunColor.w, 1e-3));
+  // Below the horizon lies the ground beyond the terrain, and the slab stands on it at the level of its base.
+  // It keeps the sun off the ground behind it and the sky off the ground around it: without either the terrain
+  // floats before a picture of a horizon.
+  let base = F.bounds.z;
+  if (dir.z < -1e-4 && F.eye.z > base) {
+    let p = F.eye.xy + dir.xy * ((base - F.eye.z) / dir.z);
+    let size = F.terrain.x;
+    let sun = F.sunDir.xyz;
+    // The slab is solid up to the lowest ground: the shadow of that box, which reaches as far as the box is tall
+    // over the tangent of the sun's elevation, with an edge a hundredth of the terrain wide.
+    let tall = max(F.bounds.x * F.terrain.y - base, 0.0);
+    let reach = tall * length(sun.xy) / max(sun.z, 0.08);
+    let towards = sun.xy / max(length(sun.xy), 1e-6);
+    var behind = 1e30;
+    for (var i = 0; i < 9; i++) {
+      behind = min(behind, outsideSlab(p + towards * reach * f32(i) * 0.125));
+    }
+    let sunny = smoothstep(0.0, 0.012 * size, behind);
+    let skyShare = dot(F.skyUp.rgb, vec3f(0.2126, 0.7152, 0.0722)) / max(dot(F.sunColor.rgb, vec3f(0.2126, 0.7152, 0.0722)) * max(sun.z, 0.0) / PI + dot(F.skyUp.rgb, vec3f(0.2126, 0.7152, 0.0722)), 1e-6);
+    // And the sky it hides from the ground beside it: half of it at its foot, none a tenth of its width away.
+    let open = 1.0 - 0.5 * exp(-outsideSlab(p) / max(0.035 * size + 0.5 * tall, 1e-3));
+    // Never black: the sides of the slab throw some of their own light down.
+    color *= max(mix(skyShare, 1.0, sunny) * open, 0.18);
+  }
   return vec4f(color, 1.0);
 }
 
@@ -341,41 +531,35 @@ fn ripple(p: vec2f, direction: vec2f, wavelength: f32) -> vec2f {
   return direction * cos(phase);
 }
 @fragment fn fsSea(in: PlaneOut) -> @location(0) vec4f {
-  let depth = (F.terrain.w - heightUv(in.uv)) * F.terrain.z;
-  let line = fwidth(depth);
+  let smoothing = smoothness(in.world);
+  // Metres of water over the ground as the picture has it.
+  let depth = (F.terrain.w - shownHeight(in.uv, smoothing)) * F.terrain.z;
+  let edge = max(fwidth(depth), 1e-6);
   let du = max(length(dpdx(in.uv)), length(dpdy(in.uv)));
-  if (depth <= 0.0) { discard; }
+  // The water ends within a pixel of where the ground rises through it.
+  let cover = saturate(depth / edge + 0.5);
+  if (cover <= 0.0) { discard; }
   let toEye = F.eye.xyz - in.world;
-  let dist = length(toEye);
-  let view = toEye / max(dist, 1e-3);
+  let view = toEye / max(length(toEye), 1e-3);
   // Small waves, faded out where a pixel is wider than they are.
   let pixel = du * F.terrain.x;
   let wave = F.terrain.x / 260.0;
-  let calm = 1.0 - smoothstep(0.06, 0.3, pixel / wave);
+  let rough = 1.0 - smoothstep(0.06, 0.3, pixel / wave);
   var tilt = ripple(in.world.xy, vec2f(0.8, 0.6), wave) + ripple(in.world.xy, vec2f(-0.35, 0.94), wave * 0.61)
     + ripple(in.world.xy, vec2f(0.97, -0.26), wave * 1.7) + ripple(in.world.xy, vec2f(-0.71, -0.7), wave * 0.37);
-  tilt *= 0.012 * calm;
+  tilt *= 0.012 * rough;
   let normal = normalize(vec3f(tilt, 1.0));
-  var mirrored = reflect(-view, normal);
-  mirrored.z = abs(mirrored.z);
-  let sky = skyColor(mirrored);
-  let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(normal, view), 0.0), 5.0);
-  // The tint develops over a depth that is a share of the height range, so that a coast reads at any scale.
-  let through = exp(-depth / (0.025 * F.terrain.z) * vec3f(1.7, 0.6, 0.4));
-  let clear = (through.r + through.g + through.b) / 3.0;
-  var shadow = 1.0;
-  if (F.misc.x > 0.5) { shadow = textureSampleLevel(shadowTex, lightSampler, in.uv, max(log2(max(du * F.light.z, 1e-6)), F.light.x)).r; }
-  let sun = F.sunDir.xyz;
-  let light = F.sunColor.rgb * (max(sun.z, 0.0) * shadow / PI) + F.skyUp.rgb;
-  let body = mix(SEA_DEEP, SEA_SHALLOW, clear) * light;
-  let glint = F.sunColor.rgb * shadow * pow(max(dot(mirrored, sun), 0.0), 700.0) * 6.0;
-  var color = (1.0 - fresnel) * (1.0 - clear) * body + fresnel * sky + glint;
-  var alpha = 1.0 - (1.0 - fresnel) * clear;
-  // The shoreline: a pale line where the water is thinnest, at least two pixels wide.
-  let shore = (1.0 - smoothstep(0.0, max(2.0 * line, 0.0035 * F.terrain.z), depth)) * 0.55;
-  color = mix(color, vec3f(0.7, 0.74, 0.72) * light, shore);
-  alpha = max(alpha, shore);
-  return vec4f(aerial(color, in.world, alpha), alpha);
+  let lightLod = log2(max(du * F.light.z, 1e-6));
+  // The bed, as the terrain's own fragment draws it.
+  let bed = surfaceAt(in.uv, du * max(F.heightTex.x, 1.0), lightLod, smoothing, pixel);
+  // The light maps were made with the sea for ground (lighting.ts): where it is shown, they hold what falls on its surface.
+  var color = seaColor(bed, depth, view, normal, bed.shadow);
+  // Where the water is thinnest it washes over the ground: a pale fringe that fades into the open water, at
+  // least a pixel and a half wide and never a line.
+  let wash = 1.0 - smoothstep(0.0, max(1.5 * edge, 0.35), max(depth, 0.0));
+  let light = F.sunColor.rgb * (max(F.sunDir.z, 0.0) * bed.shadow / PI) + F.skyUp.rgb;
+  color = mix(color, vec3f(0.62, 0.66, 0.64) * light, 0.3 * wash * wash);
+  return vec4f(aerial(color, in.world, 1.0) * cover, cover);
 }
 
 // ---- the sides of the slab ----
@@ -394,6 +578,7 @@ struct WallOut {
   if (side == 1u) { uv = vec2f(1.0, corner.x); normal = vec3f(1.0, 0.0, 0.0); }
   if (side == 2u) { uv = vec2f(corner.x, 1.0); normal = vec3f(0.0, 1.0, 0.0); }
   if (side == 3u) { uv = vec2f(0.0, corner.x); normal = vec3f(-1.0, 0.0, 0.0); }
+  // Above the highest ground by what the smooth surface can never exceed: the fragment cuts the wall where the ground is.
   let high = max(F.bounds.y, F.terrain.w) * F.terrain.y;
   var out: WallOut;
   out.uv = uv;
@@ -402,21 +587,35 @@ struct WallOut {
   out.position = F.viewProj * vec4f(out.world, 1.0);
   return out;
 }
-// The colour of the wall at a fragment, and how much of the pixel it covers where it ends at the ground.
+// The ground and the sea at a fragment of the wall, in metres of the picture's heights.
+fn wallGround(in: WallOut) -> f32 {
+  return shownHeight(in.uv, smoothness(in.world)) * F.terrain.y;
+}
+// The colour of the wall at a fragment: the cut through the ground, and above the ground the sea seen from the side.
 fn wallColor(in: WallOut, ground: f32, sea: f32) -> vec3f {
-  // The cut through the ground: dark and without a hue of its own, lit just enough to be read as a side.
   let sun = F.sunDir.xyz;
-  let key = dot(F.sunColor.rgb, vec3f(0.2126, 0.7152, 0.0722)) / PI;
-  let fill = dot(F.skySide.rgb, vec3f(0.2126, 0.7152, 0.0722));
-  var color = vec3f(0.04, 0.039, 0.037) * (key * (0.12 + 0.3 * max(dot(in.normal, sun), 0.0)) + fill);
+  var s: Surface;
+  s.normal = in.normal;
+  s.shadow = 1.0;
+  s.occlusion = 1.0;
+  let size = F.terrain.x;
+  // The cut: earth without a hue of its own, a little lighter under the surface, where the ground's own colour
+  // would be, and darker down to the base, in faint layers. It is lit as any surface is, so that the slab has
+  // a lit side and a side in its own shade.
+  let below = max(ground - in.world.z, 0.0) / size;
+  let layers = valueNoise(vec2f((in.world.x + in.world.y) / (0.7 * size), in.world.z / (0.004 * size)));
+  s.albedo = mix(vec3f(0.062, 0.055, 0.048), vec3f(0.03, 0.029, 0.028), smoothstep(0.0, 0.035, below)) * (0.88 + 0.24 * layers);
+  // The ground beside the slab shades its foot.
+  s.occlusion = mix(0.45, 1.0, smoothstep(0.0, 0.03 * size, in.world.z - F.bounds.z));
+  var color = litColor(s);
   // The topmost fragments of a wall have their middle above the ground and some of their samples below it. Only
   // under a sea that is shown and stands above the ground is that the sea's side: elsewhere it is still the cut,
   // and a depth below zero would let the water glow (the dotted bright line along a rim above the sea).
   if (F.flags.y > 0.5 && sea > ground && in.world.z > ground) {
-    // The sea, seen from the side.
-    let depth = max(sea - in.world.z, 0.0) / max(F.terrain.y, 1e-6) * F.terrain.z;
-    let through = exp(-depth / (0.025 * F.terrain.z) * vec3f(1.7, 0.6, 0.4));
-    color = mix(SEA_DEEP, SEA_SHALLOW, 0.35 * (through.r + through.g + through.b) / 3.0) * (F.sunColor.rgb * max(sun.z, 0.0) / PI + F.skyUp.rgb) * 0.7;
+    // The sea, seen from the side: its own colour, darker with every metre under the surface.
+    let under = max(sea - in.world.z, 0.0) / max(F.terrain.y, 1e-6) * F.terrain.z;
+    let light = F.sunColor.rgb * (max(sun.z, 0.0) / PI) + F.skyUp.rgb;
+    color = (WATER_DEEP * 1.6 + vec3f(0.0, 0.03, 0.03) * exp(-under / 6.0)) * light * exp(-WATER_ABSORB * under * 0.12);
   }
   return aerial(color, in.world, 1.0);
 }
@@ -425,7 +624,7 @@ fn wallCover(in: WallOut, top: f32) -> f32 {
   return saturate((top - in.world.z) / max(fwidth(in.world.z), 1e-5) + 0.5);
 }
 @fragment fn fsWall(in: WallOut) -> @location(0) vec4f {
-  let ground = heightUv(in.uv) * F.terrain.y;
+  let ground = wallGround(in);
   let sea = F.terrain.w * F.terrain.y;
   var top = ground;
   if (F.flags.y > 0.5) { top = max(ground, sea); }
@@ -441,7 +640,7 @@ struct WallSamples {
   @builtin(sample_mask) mask: u32,
 }
 @fragment fn fsWallSamples(in: WallOut) -> WallSamples {
-  let ground = heightUv(in.uv) * F.terrain.y;
+  let ground = wallGround(in);
   let sea = F.terrain.w * F.terrain.y;
   var top = ground;
   if (F.flags.y > 0.5) { top = max(ground, sea); }
@@ -493,19 +692,20 @@ fn encode(c: vec3f) -> vec3f {
     color = mix(vec3f(saturate(height)), encode(over.rgb), over.a);
   } else {
     let footprint = perPixel * max(F.heightTex.x, 1.0);
-    let slope = surfaceSlope(at, footprint);
+    // A texel that covers several pixels is shaded as the smooth surface of the 3D view.
+    let slope = surfaceSlope(at, footprint, F.misc.w * smoothShare(footprint));
     let normal = normalize(vec3f(-slope, 1.0));
     var occlusion = 1.0;
     if (F.misc.x > 0.5) { occlusion = textureSampleLevel(aoTex, lightSampler, at, max(log2(max(perPixel * F.light.z, 1e-6)), F.light.y)).r; }
     var albedo = mix(vec3f(0.4), over.rgb, over.a);
     let depth = (F.terrain.w - height) * F.terrain.z;
     if (F.flags.y > 0.5 && depth > 0.0) {
-      let through = exp(-depth / (0.025 * F.terrain.z) * vec3f(1.7, 0.6, 0.4));
-      let water = mix(vec3f(0.03, 0.12, 0.2), vec3f(0.12, 0.42, 0.44), (through.r + through.g + through.b) / 3.0);
-      // How much the depth changes from one pixel to the next: the line is at least two pixels wide.
+      // The sea as a map has it: the ground through the water down to a few metres, then the water's own blue,
+      // and a paler fringe where it is thinnest, at least two pixels wide.
+      let through = exp(-WATER_ABSORB * depth * 2.0);
       let perStep = length(slope) * F.terrain.z / max(F.terrain.y, 1e-6) * perPixel * F.terrain.x;
-      let shore = 1.0 - smoothstep(0.0, max(2.0 * perStep, 0.0035 * F.terrain.z), depth);
-      albedo = mix(mix(albedo, water, 0.82), vec3f(0.62), shore * 0.5);
+      let shore = 1.0 - smoothstep(0.0, max(2.0 * perStep, 0.35), depth);
+      albedo = mix(albedo * through + vec3f(0.03, 0.115, 0.19) * (vec3f(1.0) - through), vec3f(0.6), shore * 0.3);
     }
     color = encode(albedo * (0.22 + 1.05 * max(dot(normal, F.sunDir.xyz), 0.0)) * mix(0.72, 1.0, occlusion));
   }
@@ -516,7 +716,7 @@ fn encode(c: vec3f) -> vec3f {
 // ---- from the lit picture to the canvas ------------------------------------------------------------------------------
 
 export const POST_WGSL = /* wgsl */ `
-struct Post { exposure: f32, pad0: f32, pad1: f32, pad2: f32 }
+struct Post { gain: vec4f }      // rgb: the exposure times the white balance (atmosphere.ts)
 @group(0) @binding(0) var<uniform> P: Post;
 @group(0) @binding(1) var lit: texture_2d<f32>;
 
@@ -524,26 +724,25 @@ struct Post { exposure: f32, pad0: f32, pad1: f32, pad2: f32 }
   let corners = array(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
   return vec4f(corners[i], 0.0, 1.0);
 }
-// The Khronos PBR Neutral tone mapper: a colour below 0.76 is shown as it is, so that a draped colour map and the
-// palettes are judged as they were made, and what is brighter is brought into range towards white without a
-// change of hue.
+// From light to the display's range. Below ${TONE_SHOULDER} a colour is shown as it is, so that a draped colour map and the
+// palettes are judged as they were made; what is brighter is brought into range by its brightest channel, which
+// keeps its hue, and gives way to white as it gets there, as film does. It is the curve of the Khronos PBR
+// Neutral tone mapper with a longer shoulder and without its offset, which is for the gloss of a product on a
+// white ground and takes the lowest channel out of every dark colour.
 fn tonemap(color: vec3f) -> vec3f {
-  let low = min(color.r, min(color.g, color.b));
-  let offset = select(0.04, low - 6.25 * low * low, low < 0.08);
-  var c = color - vec3f(offset);
-  let peak = max(c.r, max(c.g, c.b));
-  if (peak < 0.76) { return c; }
-  let d = 0.24;
-  let newPeak = 1.0 - d * d / (peak + d - 0.76);
-  c *= newPeak / peak;
-  let g = 1.0 - 1.0 / (0.15 * (peak - newPeak) + 1.0);
+  let peak = max(color.r, max(color.g, color.b));
+  if (peak < ${TONE_SHOULDER}) { return color; }
+  let d = ${(1 - TONE_SHOULDER).toFixed(4)};
+  let newPeak = 1.0 - d * d / (peak + d - ${TONE_SHOULDER});
+  let c = color * (newPeak / peak);
+  let g = 1.0 - 1.0 / (0.25 * (peak - newPeak) + 1.0);
   return mix(c, vec3f(newPeak), g);
 }
 fn encode(x: vec3f) -> vec3f {
   return select(1.055 * pow(x, vec3f(1.0 / 2.4)) - vec3f(0.055), x * 12.92, x <= vec3f(0.0031308));
 }
 @fragment fn fsPost(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  let color = max(textureLoad(lit, vec2i(position.xy), 0).rgb, vec3f(0.0)) * P.exposure;
+  let color = max(textureLoad(lit, vec2i(position.xy), 0).rgb, vec3f(0.0)) * P.gain.rgb;
   // Half a step of noise takes the bands out of the sky's gradients.
   let noise = fract(52.9829189 * fract(dot(position.xy, vec2f(0.06711056, 0.00583715)))) - 0.5;
   return vec4f(encode(clamp(tonemap(color), vec3f(0.0), vec3f(1.0))) + vec3f(noise / 255.0), 1.0);
@@ -554,7 +753,11 @@ fn encode(x: vec3f) -> vec3f {
 // x: the azimuth from the sun, all the way round. y: the elevation, with most texels at the horizon.
 
 export const SKY_MAP_WGSL = /* wgsl */ `
-struct Sky { sun: vec4f }
+struct Sky {
+  sun: vec4f,                              // x: the sun's elevation in radians; z, w: the size of the map
+  up: vec4f,                               // rgb: the sky's irradiance over pi on level ground
+  table: array<vec4f, ${MS_SAMPLES}>,     // multipleScattering of atmosphere.ts
+}
 @group(0) @binding(0) var<uniform> S: Sky;
 ${ATMOSPHERE_WGSL}
 @vertex fn vsMap(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
@@ -573,7 +776,7 @@ ${ATMOSPHERE_WGSL}
     // Just below the horizon the far ground is lost in the same haze as the sky just above it: the two meet
     // without an edge, and the dark ground begins a few degrees further down.
     let above = vec3f(cos(0.004) * cos(azimuth), cos(0.004) * sin(azimuth), sin(0.004));
-    radiance = mix(radiance, skyMarch(above, sun), exp(elevation / 0.035));
+    radiance = mix(radiance, skyMarch(above, sun), exp(elevation / 0.05));
   }
   return vec4f(radiance, 1.0);
 }

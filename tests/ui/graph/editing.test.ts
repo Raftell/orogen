@@ -383,14 +383,21 @@ test('editing: groups, navigation, the library, a node dropped on a wire, and th
     assert.equal((await history(app)).at(-1), 'Add Island');
     await undo(app);
 
+    // "Add this node now" with nothing selected: not wired, in view, at the place nearest the middle of what the
+    // graph shows where it covers no other node (8.7 rule 8).
+    await app.eval(`void orogenTest.ctx.ui.setState({ selection: [] })`);
     await app.eval(`void window.dispatchEvent(new CustomEvent('orogen:add-node', { detail: { type: 'ref/blur' } }))`);
     const [blur] = await added(app, start);
     assert.ok(blur);
     assert.deepEqual(await selection(app), [blur]);
+    assert.deepEqual(await wires(app), ALL_WIRES, 'nothing was selected to continue from: no wire was made');
     const placed = await nodeBox(app, blur);
     const pane = await graphBox(app);
-    near(placed.x + placed.width / 2, pane.x + pane.width / 2, 2, 'at the centre of what the graph shows, x');
-    near(placed.y + placed.height / 2, pane.y + pane.height / 2, 2, 'at the centre of what the graph shows, y');
+    assert.ok(placed.x >= pane.x && placed.x + placed.width <= pane.x + pane.width && placed.y >= pane.y && placed.y + placed.height <= pane.y + pane.height, `in view: ${JSON.stringify(placed)}`);
+    for (const other of Object.keys((await docOf(app)).nodes).filter((id) => id !== blur)) {
+      const box = await nodeBox(app, other);
+      assert.ok(placed.x >= box.x + box.width || box.x >= placed.x + placed.width || placed.y >= box.y + box.height || box.y >= placed.y + placed.height, `the new node does not cover ${other}`);
+    }
 
     // ---- that node dragged onto a wire goes into it: the wire is marked, and the drop is one step ----
     const wire = await wireAt(app, 'steep-out-dist-in');

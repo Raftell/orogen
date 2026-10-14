@@ -17,6 +17,9 @@ export function isCurrent(state: EngineState, id: string): boolean {
   return state.evaluation !== null && own(state.nodes, id)?.requestId === state.evaluation.requestId;
 }
 
+/** Whether previews are paused (8.5): the same for every node, and told to each through the feed, which listens once. */
+export const isPaused = (state: EngineState): boolean => state.paused;
+
 /** 8.5: a thumbnail is stale while its key is not the key of the node as the engine was last sent it. */
 export function isStale(state: EngineState, id: string): boolean {
   const key = own(state.keys, id);
@@ -24,7 +27,7 @@ export function isStale(state: EngineState, id: string): boolean {
 }
 
 export interface NodeFeed {
-  /** `listener` is called when the record of the node, whether it is current, or whether its thumbnail is stale may have changed. */
+  /** `listener` is called when the record of the node, whether it is current, whether its thumbnail is stale, or the pause may have changed. */
   subscribe(id: string, listener: () => void): () => void;
 }
 
@@ -36,9 +39,10 @@ export function createNodeFeed(store: StoreApi<EngineState>): NodeFeed {
     const records = state.nodes !== previous.nodes;
     const evaluation = state.evaluation?.requestId !== previous.evaluation?.requestId;
     const keys = state.keys !== previous.keys || state.thumbnailKeys !== previous.thumbnailKeys;
-    if (!records && !evaluation && !keys) return;
+    const paused = state.paused !== previous.paused;
+    if (!records && !evaluation && !keys && !paused) return;
     for (const [id, told] of [...listeners]) {
-      const concerned = (records && own(state.nodes, id) !== own(previous.nodes, id))
+      const concerned = paused || (records && own(state.nodes, id) !== own(previous.nodes, id))
         || (evaluation && isCurrent(state, id) !== isCurrent(previous, id))
         || (keys && isStale(state, id) !== isStale(previous, id));
       if (!concerned) continue;

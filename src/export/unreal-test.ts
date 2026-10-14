@@ -196,17 +196,18 @@ export async function writeMarkerBuild(sink: FileSink, res: number, requestId = 
       targets: [],
       weightsMs: null,
       commitMs: null,
+      peakPoolBytes: null,
       height: { measuredMin: 0, measuredMax: 1, valueMin: 0, valueMax: 1, clippedSamples: 0 },
       layers: manifest.landscape!.layers.map(({ name, base, blend, meanWeight }) => ({ name, base, blend, meanWeight })),
       files,
     };
     const reportPath = reportFile(MARKER_NAME);
     await sink.write(reportPath, serializeJson(report));
-    return { requestId, status: 'ok', problems: [], files, manifest: manifestPath, report: reportPath, outDir: null };
+    return { requestId, status: 'ok', problems: [], files, manifest: manifestPath, report: reportPath, outDir: null, peakPoolBytes: null };
   } catch (thrown) {
     await sink.abortAll().catch(() => {});
     const message = `Cannot write the acceptance pattern: ${thrown instanceof Error ? thrown.message : String(thrown)}.`;
-    return { requestId, status: 'errors', problems: [{ severity: 'error', code: 'E_WRITE_FAILED', message }], files: [], manifest: null, report: null, outDir: null };
+    return { requestId, status: 'errors', problems: [{ severity: 'error', code: 'E_WRITE_FAILED', message }], files: [], manifest: null, report: null, outDir: null, peakPoolBytes: null };
   }
 }
 

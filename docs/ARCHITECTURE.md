@@ -64,7 +64,9 @@ measured on the target machine or on D3D12 hardware.
 - In a window that was never shown, `window.resizeTo` ends the GPU process within a frame, and the recovery that follows fails now and then for want of an adapter; a GPU process that is killed outright recovers in under a second, and a panel resized through the dock loses nothing. Whether a visible window that is resized by hand does the same has not been seen (`testing.md` 8.5).
 - A dedicated worker that is ended with `terminate()` says nothing to its page: no event, and no answer to a message. A second worker made from the same script opens a device of its own, and a canvas element created for it presents (`runtime.md` 8.5).
 - Two applications started beside each other, each with a user-data folder of its own, each open the hardware adapter, and the statistics of the field they show for one project agree within 1e-6.
-- The application runs from the `app.asar` that `electron-builder` packs: the page, the engine worker and the CPU worker load from it (measured with an unpacked Linux package; the Windows package is built on CI and not run).
+- The application runs from the `app.asar` that `electron-builder` packs: the page, the engine worker and the CPU worker load from it (measured with an unpacked Linux package; CI builds the Windows package and has a step that starts it once, hidden, on a runner without a graphics card, a step that had not run when this was written: read the run).
+- Chromium has two limits of its own on a GPU process that ends, both stricter than the session's rule and both silent: after a second end within about two minutes it refuses the page every WebGPU adapter for about two minutes, and after more it leaves hardware acceleration for SwiftShader. The switches `disable-domain-blocking-for-3d-apis` and `disable-gpu-process-crash-limit` turn them off (`runtime.md` 1.6, 7.8 rule 3; measured by killing the GPU process four times ten seconds apart).
+- After the page's process is killed, `webContents.reload()` starts a new one, the engine worker with it, and the test driver reaches the new page (`runtime.md` 8.2 rule 11).
 
 **GitHub-hosted runners (no GPU)**
 
@@ -97,6 +99,10 @@ src/
     electron/        main process, preload bridge, engine worker, CPU worker
   app/             the interface: state, shell, panels (graph viewport inspector library build)
 tests/             harness, unit, engine, nodes/<category>, export, graphs, electron, ui/<owner>
+tools/             the guard every test and command runs under, the node reference generator, the build's folder swap
+examples/          the six example projects of the library, and their index
+build/             the application's icon and what makes it (packaging resources)
+.github/           the CI workflow, and scripts/ with the launch check of the packaged application
 unreal/            the experimental editor plugin, C++ source
 docs/contract/     the contract        docs/research/   research reports
 docs/changes/      change requests     docs/user/       user documentation

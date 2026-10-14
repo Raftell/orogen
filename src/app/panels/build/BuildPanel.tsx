@@ -11,6 +11,7 @@ import { viewProgress } from './model/log.ts';
 import { describeOutcome } from './model/outcome.ts';
 import { viewProblems } from './model/problems.ts';
 import { describeStatus } from './model/status.ts';
+import { interruptedBuild } from './model/store.ts';
 import { css, useBuildScope, useDoc, useEngine, useExports, useModel, useNow, usePanel, usePlan } from './parts.tsx';
 import { PlanSection } from './PlanSection.tsx';
 import { FilesSection, ReportSection, UnrealSection } from './ResultSection.tsx';
@@ -48,6 +49,7 @@ function Status() {
       computed: log?.evalStartedAt != null,
       changed,
     } : null,
+    interrupted: interruptedBuild(build, mine, changed),
     blockers,
     blockersUnder: current ? 'Plan' : 'Exports',
     folder,

@@ -68,7 +68,7 @@ test('the three stores hold every member the contract prints, and no other', () 
   assert.deepEqual(sorted(Object.keys(engine)), sorted(membersOf(RUNTIME, 'EngineState')));
   assert.deepEqual(sorted(Object.keys(engine.device)), ['caps', 'message', 'state']);
   assert.deepEqual(sorted(Object.keys(engine.build)), ['fraction', 'lastStatus', 'phase', 'plan', 'problems', 'requestId', 'result', 'running', 'target']);
-  const ran = reduceEngineEvent(engine, { type: 'node-done', requestId: 1, nodeId: 'a', cached: false, wallMs: 1, gpuMs: null, peakBytes: 0 });
+  const ran = reduceEngineEvent(engine, { type: 'node-done', requestId: 1, nodeId: 'a', cached: false, resolution: 257, wallMs: 1, gpuMs: null, peakBytes: 0 });
   assert.deepEqual(sorted(Object.keys(ran.nodes.a!)), sorted(membersOf(RUNTIME, 'NodeRuntime')));
 
   // A history entry, as a transaction leaves it.
@@ -110,7 +110,7 @@ test('the engine client is a whole EngineSession, with the viewport, the thumbna
 
 test('the bridge has the members the contract prints, in the page and in the main process', () => {
   const members = membersOf(RUNTIME, 'PlatformApi');
-  assert.equal(members.length, 17);
+  assert.equal(members.length, 24);
   // The preload script exposes each, and the hidden-window test of the bridge compares the same list with the page's object.
   const preload = read('src/platform/electron/preload/preload.ts');
   for (const member of members) assert.match(preload, new RegExp(`\\b${member}\\b`), `the preload script has ${member}`);
@@ -275,7 +275,7 @@ test('a throwaway panel adds a command, a key and a menu entry from its own Pane
 
   // The menu entries: a menu of the panel's own after the shell's four, and an item in one of those.
   const menus = shell.menus();
-  assert.deepEqual(menus.map((menu) => menu.title), ['File', 'Edit', 'View', 'Engine', 'Graph']);
+  assert.deepEqual(menus.map((menu) => menu.title), ['File', 'Edit', 'View', 'Engine', 'Graph', 'Help']);
   const graph = menus.find((menu) => menu.title === 'Graph')!;
   assert.deepEqual(graph.items, [{ kind: 'command', command: 'graph.addTerraces', title: 'Add Terraces', key: 'T' }]);
   const edit = menus.find((menu) => menu.title === 'Edit')!;

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 
 import type { BuildProblem } from '../../../../src/core/runtime.ts';
 import { landscapeLayout } from '../../../../src/export/unreal.ts';
-import { ENCODING_LABEL, exportNodes, knownProblems, viewPlan } from '../../../../src/app/panels/build/model/plan.ts';
+import { ENCODING_LABEL, exportNodes, hasLandscape, knownProblems, NO_LANDSCAPE, totalText, viewPlan } from '../../../../src/app/panels/build/model/plan.ts';
 import { firstProblemNode, PROBLEM_TEXT, viewProblems } from '../../../../src/app/panels/build/model/problems.ts';
 import {
   colorBytes, describeLayout, describeSpacing, estimateMemory, fieldBytes, LANDSCAPE_SIZES, metresPerVertex, presetLayout, resolutionOptions,
@@ -54,6 +54,13 @@ test('a plan is shown target by target: each export node with its files, their f
   assert.equal(view.planeBytes, 2 * 1009 * 1009, 'one weight-blended layer is held in main memory as 16-bit codes');
   assert.equal(view.layout, '8 × 8 components of 2 × 2 sections, 63 × 63 quads each');
 
+  // Each target of an export node says what feeds it, in the words the list of export nodes uses; the base layer
+  // and the manifest are fed by no node. Without the wiring nothing is said.
+  const feeds = new Map(exportNodes(doc, REGISTRY).map((node) => [node.nodeId, node.source]));
+  for (const target of view.targets) assert.equal(target.source, target.nodeId === null ? null : feeds.get(target.nodeId), target.title);
+  assert.ok(view.targets.filter((target) => target.nodeId !== null).every((target) => typeof target.source === 'string' && target.source !== ''));
+  assert.ok(viewPlan(made, { nodes: doc.nodes }, REGISTRY).targets.every((target) => target.source === null));
+
   // An export node can be selected; the base layer and the manifest are no node.
   assert.deepEqual(view.targets.filter((target) => target.selectable).map((target) => target.nodeId), ['outland', 'outrock', 'outflow', 'outpaint', 'outmask', 'outnormal', 'outexr']);
   assert.deepEqual(view.targets.filter((target) => !target.selectable).map((target) => target.kind), ['base', 'manifest']);
@@ -79,6 +86,20 @@ test('a plan of a node that is gone, and a plan without a landscape, are shown a
   assert.equal(view.layout, null);
   assert.equal(view.targets[0]!.files[0]!.format, 'TIFF, 16-bit');
   assert.equal(view.planeBytes, 0);
+  // A plan that writes files and none of them the terrain: the panel says so, for nothing else would.
+  assert.deepEqual([view.ok, view.landscape, hasLandscape(plan(doc))], [true, false, false]);
+  assert.match(NO_LANDSCAPE, /^No Unreal Landscape node: this build writes no heightmap\./);
+  const full = plan(docOf(FULL));
+  assert.deepEqual([viewPlan(full, docOf(FULL), REGISTRY).landscape, hasLandscape(full)], [true, true]);
+});
+
+test('the sum of a plan: what is known, how many files are sized when written, and never "0 B and"', () => {
+  assert.equal(totalText(3 * 2 ** 20, 0), '3.0 MB');
+  assert.equal(totalText(3 * 2 ** 20, 5), '3.0 MB and 5 files sized when written');
+  assert.equal(totalText(2048, 1), '2.0 KB and 1 file sized when written');
+  // A build of PNG textures alone: no file has a size before it is written.
+  assert.equal(totalText(0, 3), 'sized when written');
+  assert.equal(totalText(0, 0), '0 B');
 });
 
 test('a plan with an error is shown as one, and a plan of nothing lists no file: a build never writes a manifest alone', () => {
@@ -92,7 +113,7 @@ test('a plan with an error is shown as one, and a plan of nothing lists no file:
   // Nothing to export: the pipeline's plan still names the manifest; shown, it would read as a file the build writes.
   const empty = plan(docOf(SOURCES));
   assert.deepEqual([empty.ok, empty.items.length, empty.files.map((file) => file.encoding)], [false, 0, ['json']]);
-  assert.deepEqual(viewPlan(empty, docOf(SOURCES), REGISTRY), { ok: false, resolution: 1009, layout: null, targets: [], fileCount: 0, knownBytes: 0, unsizedFiles: 0, planeBytes: 0 });
+  assert.deepEqual(viewPlan(empty, docOf(SOURCES), REGISTRY), { ok: false, resolution: 1009, layout: null, targets: [], fileCount: 0, knownBytes: 0, unsizedFiles: 0, planeBytes: 0, landscape: false });
 });
 
 test('before any plan: the export nodes of the document, each by what it exports, whether it is switched on and what feeds it', () => {

@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { BuildEvent, BuildProblem, BuildResult, Engine, EvalEvent, FileSink } from '../core/runtime.ts';
+import { BUSY_RM, retryBusy, type BuildEvent, type BuildProblem, type BuildResult, type Engine, type EvalEvent, type FileSink } from '../core/runtime.ts';
 import { buildProject, type BuildOptions } from './build.ts';
 import { MANIFEST_SCHEMA_ID, REPORT_SCHEMA_ID } from './manifest.ts';
 
@@ -21,6 +21,9 @@ const REPORT_SUFFIX = '.report.json';
 export const STAGING_MARKER = '.orogen-staging';
 /** What an operating system puts into a folder it has shown: not the user's work, and no part of a build either. */
 const SYSTEM_FILES: ReadonlySet<string> = new Set(['thumbs.db', 'desktop.ini', '.ds_store']);
+/** Where a file that another program holds for a moment is refused and is free a moment later (runtime.md 6.2). */
+const WINDOWS = process.platform === 'win32';
+const HELD = WINDOWS ? BUSY_RM : {};
 const reasonOf = (thrown: unknown): string => (thrown instanceof Error ? thrown.message : String(thrown));
 const codeOf = (thrown: unknown): unknown => (thrown as { code?: unknown } | null)?.code;
 
@@ -121,10 +124,10 @@ async function remove(dir: string, found: Folder): Promise<void> {
   if (found.is === 'absent') return;
   if (found.is === 'build') {
     for (const name of await fs.promises.readdir(dir)) {
-      if (!found.manifests.includes(name)) await fs.promises.rm(path.join(dir, name), { recursive: true, force: true });
+      if (!found.manifests.includes(name)) await fs.promises.rm(path.join(dir, name), { recursive: true, force: true, ...HELD });
     }
   }
-  await fs.promises.rm(dir, { recursive: true, force: true });
+  await fs.promises.rm(dir, { recursive: true, force: true, ...HELD });
 }
 
 /**
@@ -140,7 +143,7 @@ export async function intoFolder(
   if (typeof outDir !== 'string' || !path.isAbsolute(outDir)) throw new TypeError(`The output folder ${JSON.stringify(outDir)} is not an absolute path`);
   const out = path.resolve(outDir);
   const refused = (code: BuildProblem['code'], message: string): BuildResult => ({
-    requestId, status: 'errors', problems: [{ severity: 'error', code, message }], files: [], manifest: null, report: null, outDir: null,
+    requestId, status: 'errors', problems: [{ severity: 'error', code, message }], files: [], manifest: null, report: null, outDir: null, peakPoolBytes: null,
   });
 
   // 1. The folder is nobody else's.
@@ -170,12 +173,12 @@ export async function intoFolder(
   try {
     built = await run(staging);
   } catch (thrown) {
-    await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
+    await fs.promises.rm(staging, { recursive: true, force: true, ...HELD }).catch(() => {});
     throw thrown;
   }
   const { result } = built;
   if (built.planFailed) {
-    await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
+    await fs.promises.rm(staging, { recursive: true, force: true, ...HELD }).catch(() => {});
     return { ...result, outDir: null };
   }
   const unmarked = await fs.promises.rm(marker, { force: true }).then(() => null, (thrown: unknown) => reasonOf(thrown));
@@ -192,13 +195,13 @@ export async function intoFolder(
   let moved = false;
   try {
     if (fs.existsSync(out)) {
-      await fs.promises.rename(out, previous);
+      await retryBusy(() => fs.promises.rename(out, previous), WINDOWS);
       moved = true;
     }
-    await fs.promises.rename(staging, out);
+    await retryBusy(() => fs.promises.rename(staging, out), WINDOWS);
   } catch (thrown) {
     // 5. The complete build stays in the staging folder; what was in the output folder is put back.
-    if (moved) await fs.promises.rename(previous, out).catch(() => {});
+    if (moved) await retryBusy(() => fs.promises.rename(previous, out), WINDOWS).catch(() => {});
     return stays(reasonOf(thrown));
   }
   try {

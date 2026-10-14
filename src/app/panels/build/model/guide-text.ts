@@ -65,7 +65,7 @@ export const GUIDE_SECTIONS: readonly GuideSection[] = [
         "text": "If Unreal asks whether to use the tiled image path, answer No. Unreal asks this when it considers the heightmap tiled (confirmed); an Orogen build is one file."
       },
       {
-        "text": "Compare the layout the panel shows with `landscape.layout` in the manifest and correct the panel if it differs: Section Size = `quadsPerSection` (for 8129: 127x127 quads), Sections Per Component = 1x1 or 2x2 for `sectionsPerComponent` 1 or 2, Number of Components = `components` (32 x 32), Overall Resolution = `resolution` (8129 x 8129). These values are confirmed for the four sizes Orogen offers; that the panel fills them in by itself is unconfirmed."
+        "text": "Compare the layout the panel shows with `landscape.layout` in the manifest and correct the panel if it differs: Section Size = `quadsPerSection`, Sections Per Component = 1x1 or 2x2 for `sectionsPerComponent` 1 or 2, Number of Components = `components`, Overall Resolution = `resolution`. As an example, a build at 8129 has 127x127 quads, 32 x 32 components and 8129 x 8129; your build has the values of its own manifest. These values are confirmed for the four sizes Orogen offers; that the panel fills them in by itself is unconfirmed."
       },
       {
         "text": "Scale: type `landscape.transform.scaleCm` x, y and z (derived)."

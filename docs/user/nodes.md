@@ -2,10 +2,11 @@
 
 This page is generated from the node registry by `tools/node-reference.ts`. Do not edit it by hand: change the
 node, then run `tools/guard node tools/node-reference.ts` (on Windows `node tools/guard.mjs node
-tools/node-reference.ts`). It lists the nodes this checkout of Orogen registers: what the command-line program
-offers today, and what the Library panel of the desktop application will.
+tools/node-reference.ts`). It lists the nodes this checkout of Orogen registers.
 
-96 nodes are registered.
+96 nodes are registered: 86 nodes of the product, which the Library panel and the add-node palette of
+the desktop application offer and the command-line program takes, and 10 reference nodes, which the
+command-line program takes as well and the application offers nowhere (the last section says what they are for).
 
 ## How to read an entry
 
@@ -212,7 +213,7 @@ Also found by: erosion, mountains, ridges, valleys, gullies, alpine, fbm, noise.
 
 Generates rolling, ridged or billowing terrain from layers of noise, each finer than the one before.
 
-Also found by: perlin, simplex, fbm, noise, ridged, billow, turbulence, multifractal, warp.
+Also found by: perlin, simplex, fbm, noise, ridged, billow, turbulence, multifractal, warp, hills.
 
 - Random: the node's seed is combined with the project seed.
 
@@ -1536,7 +1537,7 @@ Also found by: hsl, hsv, tint, vibrance, desaturate, grayscale, brightness, colo
 
 Colors a terrain as a landscape: rock on steep ground, vegetation and soil by height and shelter, wet valley lines and snow.
 
-Also found by: biome, texture, satellite, landscape, vegetation, rock, snow, colorize, satmap, albedo.
+Also found by: biome, texture, satellite, landscape, vegetation, rock, snow, colorize, satmap, albedo, forest, grass.
 
 - Reads the project's sea level.
 - Random: the node's seed is combined with the project seed.
@@ -1844,7 +1845,7 @@ Nodes that read image files, and the export nodes that say what a build writes. 
 
 Exports a color map, or three channels of data, as a texture that covers the landscape, for use in its material.
 
-Also found by: unreal, texture, albedo, diffuse, base color, packed masks, linear, srgb, png.
+Also found by: unreal, texture, albedo, diffuse, base color, packed masks, linear, srgb, png, export, output.
 
 - An export node: it has no output and takes part in a build while its Enabled switch is on.
 
@@ -1865,7 +1866,7 @@ Also found by: unreal, texture, albedo, diffuse, base color, packed masks, linea
 
 Exports a terrain, a mask or a data map as a one-channel image at build resolution, for other tools.
 
-Also found by: save, write, heightmap, exr, tiff, png, raw, r16, r32.
+Also found by: save, write, heightmap, exr, tiff, png, raw, r16, r32, export, output, image.
 
 - An export node: it has no output and takes part in a build while its Enabled switch is on.
 
@@ -1886,7 +1887,7 @@ Also found by: save, write, heightmap, exr, tiff, png, raw, r16, r32.
 
 Exports a terrain as the heightmap of an Unreal Engine landscape, with the scale and location to import it at.
 
-Also found by: unreal, heightmap, build, r16, png, world partition.
+Also found by: unreal, heightmap, build, r16, png, world partition, export, output, terrain.
 
 - An export node: it has no output and takes part in a build while its Enabled switch is on.
 
@@ -1919,7 +1920,7 @@ Also found by: unreal, heightmap, build, r16, png, world partition.
 
 Exports a mask as an Unreal landscape target layer.
 
-Also found by: unreal, weightmap, splat, paint layer.
+Also found by: unreal, weightmap, splat, paint layer, export, output, splatmap, mask.
 
 - An export node: it has no output and takes part in a build while its Enabled switch is on.
 
@@ -1939,7 +1940,7 @@ Also found by: unreal, weightmap, splat, paint layer.
 
 Exports a mask as a grayscale texture that covers the landscape, for use in its material.
 
-Also found by: unreal, texture, grayscale, data, png.
+Also found by: unreal, texture, grayscale, data, png, export, output.
 
 - An export node: it has no output and takes part in a build while its Enabled switch is on.
 
@@ -1960,7 +1961,7 @@ Also found by: unreal, texture, grayscale, data, png.
 
 Exports the surface normals of a terrain as a texture that covers the landscape, for use in its material.
 
-Also found by: unreal, texture, normal map, macro normal, png.
+Also found by: unreal, texture, normal map, macro normal, png, export, output.
 
 - An export node: it has no output and takes part in a build while its Enabled switch is on.
 
@@ -2021,7 +2022,7 @@ Also found by: load, open, file, image, png, tiff, exr, raw, r16, dem.
 
 ## Reference nodes
 
-Small nodes the engine itself ships with. They are the templates node authors copy and the fixtures the tests use; the product registers them like any other node.
+Small nodes the engine itself ships with. They are the templates node authors copy and the fixtures the tests use. They are not offered in the application: neither the Library panel nor the add-node palette lists them. A project file may name one, the command-line program draws one by its type, and a node of one that a file holds is drawn and computed like any other.
 
 [Auto Level (Reference)](#ref-autolevel) · [Blur (Reference)](#ref-blur) · [Colorize (Reference)](#ref-colorize) · [Combine (Reference)](#ref-combine) · [Distance (Reference)](#ref-distance) · [Fail (Reference)](#ref-fail) · [Fractal Noise (Reference)](#ref-fbm) · [Image (Reference)](#ref-image) · [Slope Mask (Reference)](#ref-slope-mask) · [Talus (Reference)](#ref-talus)
 

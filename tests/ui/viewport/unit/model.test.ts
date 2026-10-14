@@ -9,8 +9,9 @@ import { nodes } from '../../../../src/core/nodes/index.ts';
 import { addNode, createRegistry, newDoc, setNodeFlags, type DocDraft } from '../../../../src/core/runtime.ts';
 import {
   axes, cameraOf, centerOrbit, centerTop, DEFAULT_DISPLAY, dolly, dollyDrag, dragKind, dragSun, eyeOf, fly, flyKeys, flySpeed, frameOrbit, frameTop, initialModel,
-  isBlank, look, metres, orbit, outputTitle, pan, panTop, PITCH_MAX, PITCH_MIN, STATUS_TEXT, STATUS_WORD, topUv, viewStatus, wheelFactor, zoomTop,
-  type OrbitCamera, type ViewFacts, type ViewStatus,
+  dragScale, FINE, HINT_WHILE_BUILDING, isBlank, look, metres, orbit, outputTitle, pan, panTop, pinchFactor, PITCH_MAX, PITCH_MIN, STATUS_HINT, STATUS_TEXT, STATUS_WORD,
+  topUv, viewStatus, WHEEL_NOTCH_PX, WHEEL_STREAM_MS, wheelFactor, wheelKind, wheelStep, zoomTop,
+  type OrbitCamera, type ViewFacts, type ViewStatus, type WheelKind, type WheelLike, type WheelStream,
 } from '../../../../src/app/panels/viewport/model.ts';
 import { orbitEye, project, viewOf } from '../../../../src/viewport/camera.ts';
 
@@ -155,6 +156,67 @@ test('the sun of a new project lights what the first camera sees: it stands behi
   assert.ok(sunElevation >= 25 && sunElevation <= 50);
 });
 
+test('the wheel of a mouse, two fingers on a trackpad and a pinch are told apart, each gesture as a whole', () => {
+  const event = (deltaX: number, deltaY: number, more: Partial<WheelLike> = {}): WheelLike => ({ deltaX, deltaY, deltaMode: 0, ctrlKey: false, ...more });
+  /** A gesture: events a few milliseconds apart, each classified with what the one before it was. */
+  const gesture = (events: readonly WheelLike[], gap = 12, start: WheelStream | null = null, at = 1000): WheelKind[] => {
+    let stream = start, now = at;
+    return events.map((e) => {
+      const kind = wheelKind(e, stream, now);
+      stream = { kind, time: now };
+      now += gap;
+      return kind;
+    });
+  };
+  // A notch of a wheel: 100 pixels in Chromium on Windows, 53 or 120 on Linux, or lines; with Shift it arrives across.
+  for (const notch of [100, -100, 53, -120, 300]) assert.deepEqual(gesture([event(0, notch)]), ['wheel'], `${notch}`);
+  assert.deepEqual(gesture([event(0, 3, { deltaMode: 1 })]), ['wheel'], 'a wheel that counts in lines');
+  assert.deepEqual(gesture([event(-100, 0, { shiftKey: true })]), ['wheel']);
+  assert.equal(wheelStep(event(-100, 0, { shiftKey: true })), -100);
+  assert.ok(WHEEL_NOTCH_PX > 30 && WHEEL_NOTCH_PX <= 53);
+
+  // Two fingers: they begin slowly and seldom along one axis; the fast middle of the swipe and its coasting are still fingers.
+  const swipe = [event(0, 2), event(1, 6), event(3, 22), event(4, 61), event(2, 118), event(0, 96), event(0, 40), event(0, 9), event(0, 1)];
+  assert.deepEqual(gesture(swipe), swipe.map(() => 'pan'));
+  assert.deepEqual(gesture([event(-14, 0), event(-30, 0)]), ['pan', 'pan'], 'straight across');
+  assert.deepEqual(gesture([event(0, 1.5), event(0, 2.25)]), ['pan', 'pan'], 'straight up, in the fractions a scaled display gives');
+
+  // A wheel turned fast, then gently between two notches, is a wheel throughout; after a rest the next gesture is judged anew.
+  assert.deepEqual(gesture([event(0, 100), event(0, 100), event(0, 12), event(0, 100)]), ['wheel', 'wheel', 'wheel', 'wheel']);
+  assert.deepEqual(gesture([event(0, 100)], 12, { kind: 'pan', time: 1000 - WHEEL_STREAM_MS - 1 }), ['wheel']);
+  assert.deepEqual(gesture([event(0, 100)], 12, { kind: 'pan', time: 1000 - 20 }), ['pan'], 'the same step within a swipe is the swipe\'s');
+
+  // A pinch is said by every one of its events (ctrlKey, as Chromium sends it), in the middle of anything; what follows it is judged anew.
+  assert.deepEqual(gesture([event(0, 4), event(0, -3.2, { ctrlKey: true }), event(0, -8, { ctrlKey: true }), event(0, 100)]), ['pan', 'pinch', 'pinch', 'wheel']);
+  assert.deepEqual(gesture([event(0, -100, { ctrlKey: true })]), ['pinch'], 'the wheel of a mouse with Ctrl held zooms as a pinch does');
+
+  // A pinch that spreads the fingers by a tenth brings the picture a tenth nearer; a notch with Ctrl is a bounded step.
+  assert.ok(Math.abs(pinchFactor(-10) - Math.exp(-0.1)) < 1e-12 && pinchFactor(10) > 1 && pinchFactor(0) === 1);
+  assert.ok(pinchFactor(-100) > 0.7 && pinchFactor(100) < 1.4);
+  assert.ok(Math.abs(pinchFactor(-7) * pinchFactor(7) - 1) < 1e-12, 'a pinch and its opposite leave the picture where it was');
+});
+
+test('a drag is exact and has no momentum of its own: the camera is where the pointer has brought it, however the way there was cut up', () => {
+  // The same way in six moves and in sixty.
+  const walk = (steps: number): OrbitCamera => {
+    let camera = CAMERA;
+    for (let i = 0; i < steps; i++) camera = orbit(camera, 120 / steps, 48 / steps);
+    return camera;
+  };
+  const few = walk(6), many = walk(60), one = orbit(CAMERA, 120, 48);
+  assert.ok(Math.abs(few.yaw - one.yaw) < 1e-9 && Math.abs(many.yaw - one.yaw) < 1e-9 && Math.abs(many.pitch - one.pitch) < 1e-9);
+  // There and back is where it began, to the last digit that counts.
+  const back = orbit(orbit(CAMERA, 77, -31), -77, 31);
+  assert.ok(Math.abs(back.yaw - CAMERA.yaw) < 1e-9 && Math.abs(back.pitch - CAMERA.pitch) < 1e-9);
+  assert.deepEqual([back.target, back.distance], [CAMERA.target, CAMERA.distance]);
+  // No move, no change: a pointer that rests gives the same camera, the very object.
+  assert.equal(fly(CAMERA, { forward: 0, right: 0, up: 0 }, 1000, 1), CAMERA);
+  // With Ctrl a drag moves a quarter as far: four pixels for what one does.
+  assert.deepEqual([dragScale({ ctrl: true }), dragScale({ ctrl: false }), FINE], [0.25, 1, 0.25]);
+  const fine = orbit(CAMERA, 4 * dragScale({ ctrl: true }), 0);
+  assert.ok(Math.abs(fine.yaw - orbit(CAMERA, 1, 0).yaw) < 1e-12);
+});
+
 test('the model starts in the 3D view, and sends the camera of the view it is in', () => {
   const model = initialModel();
   assert.deepEqual([model.mode, model.display, model.framed], ['orbit', DEFAULT_DISPLAY, null]);
@@ -169,11 +231,23 @@ test('what the panel says of the picture, from the device down to the result', (
     said({}), said({ device: 'starting' }), said({ device: 'lost', shown: null }), said({ device: 'failed' }), said({ bound: false, shown: null }),
     said({ evaluating: true }), said({ node: 'error' }), said({ node: 'skipped', shown: null }), said({ node: 'error', evaluating: true }),
     said({ shown: null, node: 'running', evaluating: true }), said({ shown: null, node: null }),
-  ], ['shown', 'starting', 'lost', 'failed', 'empty', 'updating', 'error', 'error', 'updating', 'updating', 'empty']);
+  ], ['shown', 'starting', 'lost', 'failed', 'empty', 'updating', 'error', 'error', 'updating', 'updating', 'waiting']);
 
-  // A picture of an earlier document while nothing computes the next: previews are paused, or a build runs.
+  // A view that names nothing: in a project without a node there is none to name, and that is another thing to say.
+  assert.deepEqual([said({ bound: false, shown: null, nodes: 0 }), said({ bound: false, shown: null, nodes: 3 }), said({ bound: false, nodes: 0 })], ['bare', 'empty', 'bare']);
+
+  // A picture of an earlier document while nothing computes the next: a build runs, or the newer one could not be computed.
   assert.equal(said({ sent: 6 }), 'stale');
   assert.equal(said({ sent: 6, evaluating: true }), 'updating');
+  // Because previews are paused: that is no fault, and it is said as what it is, with a picture and without one.
+  assert.deepEqual([said({ sent: 6, paused: true }), said({ shown: null, node: null, paused: true }), said({ paused: true }), said({ sent: 6, paused: true, evaluating: true })],
+    ['paused', 'paused', 'shown', 'updating']);
+  assert.equal(said({ shown: null, node: null, paused: false }), 'waiting', 'named and not computed yet, as before the engine\'s first word of a project and while a build runs');
+  // A build that runs stands in the way before a pause does (8.7 rule 10): the word is the build's.
+  assert.deepEqual([said({ sent: 6, paused: true, building: true }), said({ shown: null, node: null, paused: true, building: true })], ['stale', 'waiting']);
+  // A view that named nothing was shown, as nothing: the project that follows it has no picture yet, whatever was "shown".
+  assert.deepEqual([said({ pictured: false, sent: 6 }), said({ pictured: false, sent: 6, paused: true }), said({ pictured: false, sent: 6, evaluating: true }), said({ pictured: true, sent: 6 })],
+    ['waiting', 'paused', 'updating', 'stale']);
 
   // A draft is a draft for as long as it is what is shown: the word does not change with every evaluation of a drag.
   const draft = { revision: 5, resolution: 253, draft: true };
@@ -193,21 +267,35 @@ test('what the panel says of the picture, from the device down to the result', (
   assert.equal(said({ node: 'unwired', evaluating: true }), 'updating');
   assert.equal(said({ overlay: 'unwired' }), 'unwired', 'a mask that is not wired yet, over a terrain that is well');
   assert.equal(said({ node: 'error', overlay: 'unwired' }), 'error', 'a terrain that failed is said first');
-  assert.deepEqual([STATUS_WORD.unwired, STATUS_TEXT.unwired], ['Missing input', 'The selected node lacks an input']);
+  assert.deepEqual([STATUS_WORD.unwired, STATUS_TEXT.unwired], ['Missing input', 'The shown node lacks an input']);
 
   // testing.md 6.2: one sentence, capitalised, no full stop. The toolbar's word is short enough for a narrow panel.
-  for (const text of [...Object.values(STATUS_TEXT), ...Object.values(STATUS_WORD)]) assert.ok(text === '' || (/^[A-Z]/.test(text) && !text.endsWith('.')), text);
+  for (const text of [...Object.values(STATUS_TEXT), ...Object.values(STATUS_WORD), ...Object.values(STATUS_HINT), HINT_WHILE_BUILDING]) {
+    assert.ok(text === '' || (/^[A-Z]/.test(text) && !text.endsWith('.')), text);
+  }
   for (const [status, word] of Object.entries(STATUS_WORD)) {
     assert.ok(word.length <= 14, word);
-    assert.equal(word === '', status === 'shown' || status === 'empty', `${status} has a word unless there is nothing to say`);
+    assert.equal(word === '', status === 'shown' || status === 'empty' || status === 'bare', `${status} has a word unless there is nothing to say`);
     assert.equal(STATUS_TEXT[status as ViewStatus] === '', status === 'shown');
   }
 });
 
-test('the canvas is covered when there is no picture to trust, and only then', () => {
+test('the canvas is covered when there is no picture to trust, and only then; every cover says what can be done or what comes next', () => {
   const covered = (shown: boolean): ViewStatus[] => (Object.keys(STATUS_WORD) as ViewStatus[]).filter((status) => isBlank(status, shown));
-  assert.deepEqual(covered(true), ['starting', 'failed', 'empty']);
-  assert.deepEqual(covered(false), ['starting', 'lost', 'failed', 'empty', 'error', 'unwired']);
+  assert.deepEqual(covered(true), ['starting', 'failed', 'bare', 'empty', 'waiting']);
+  assert.deepEqual(covered(false), ['starting', 'lost', 'failed', 'bare', 'empty', 'waiting', 'error', 'unwired', 'paused']);
+  for (const status of covered(false)) {
+    assert.ok(STATUS_TEXT[status].length > 0 && STATUS_HINT[status].length > 0, `${status} has a title and a second line`);
+    assert.ok(STATUS_HINT[status].length <= 96 && STATUS_TEXT[status].length <= 40, `${status}: the cover is two short lines`);
+    assert.notEqual(STATUS_HINT[status], STATUS_TEXT[status]);
+  }
+  // No two states are covered by the same words: a person can tell which it is.
+  assert.equal(new Set(covered(false).map((status) => STATUS_TEXT[status])).size, covered(false).length);
+  // What names a command names it as the menus do, with the menu before it.
+  assert.match(STATUS_HINT.failed, /^Engine › Retry Graphics Device /);
+  assert.match(STATUS_HINT.paused, /^Engine › Pause or Resume Previews /);
+  assert.match(STATUS_HINT.error, /^View › Show Errors /);
+  assert.match(HINT_WHILE_BUILDING, /^A build is running/);
 });
 
 test('what is shown is called by its node\'s title, the user\'s before the type\'s, with the output\'s name when it is not the first', () => {

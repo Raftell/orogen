@@ -5,7 +5,7 @@
 import type { ComponentType } from 'react';
 import type { StoreApi } from 'zustand/vanilla';
 
-import type { EngineSession, NodeRegistry } from '../../core/runtime.ts';
+import type { EngineSession, GraphDoc, NodeRegistry } from '../../core/runtime.ts';
 import type { PlatformApi } from '../platform.ts';
 import type { DocState } from '../state/doc-store.ts';
 import type { EngineState } from '../state/engine-store.ts';
@@ -60,6 +60,13 @@ export interface Notice {
   readonly level: 'info' | 'warning' | 'error';
   readonly message: string;                  // one sentence, no full stop (testing.md 6.2)
   readonly detail?: string;                  // shown when the notice is opened: a stack, a GPU message
+  /**
+   * The panel that shows the same thing in its own place: the outcome of a build is the build panel's to show.
+   * Such a notice is for whoever cannot see that panel. It is not shown while the panel is in view, it leaves
+   * when the panel comes into view, and it takes the place of the notice of that panel that was shown before:
+   * there is one at the most.
+   */
+  readonly panel?: PanelId;
 }
 
 /** What the shell gives every panel component through `useApp()` (src/app/ui/app.tsx). */
@@ -78,4 +85,10 @@ export interface AppServices {
    * A panel behind another tab is not in the document (8.7 rule 3): a command that needs its panel seen calls this first.
    */
   showPanel(id: PanelId): void;
+  /**
+   * Opens a document as a new project that has no file, in place of the project that is open, as File > Open
+   * opens a file: after the shell's questions about a build that is running and about unsaved changes. Resolves
+   * true when the document is the project, false when the user kept the project that was open.
+   */
+  openDocument(doc: GraphDoc): Promise<boolean>;
 }

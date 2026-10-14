@@ -6,7 +6,7 @@ export default defineNode({
   title: 'Unreal Landscape',
   category: 'io',
   description: 'Exports a terrain as the heightmap of an Unreal Engine landscape, with the scale and location to import it at.',
-  keywords: ['unreal', 'heightmap', 'build', 'r16', 'png', 'world partition'],
+  keywords: ['unreal', 'heightmap', 'build', 'r16', 'png', 'world partition', 'export', 'output', 'terrain'],
   inputs: [{ name: 'in', type: 'field' }],
   outputs: [],
   params: [

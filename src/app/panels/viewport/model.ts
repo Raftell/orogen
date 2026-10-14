@@ -4,7 +4,7 @@
 // Angles are degrees and directions follow engine.md 1.8: a yaw or an azimuth of 0 points along +X, 90 along +Y,
 // which is down the screen in the top view. The camera is the one of runtime.md 7.5.
 
-import type { CameraState, GraphDoc, NodeRegistry, PortRef, ViewportDisplay } from '../../../core/runtime.ts';
+import { portLabel, type CameraState, type GraphDoc, type NodeRegistry, type PortRef, type ViewportDisplay } from '../../../core/runtime.ts';
 
 export type Vec3 = readonly [number, number, number];
 export type OrbitCamera = Extract<CameraState, { kind: 'orbit' }>;
@@ -208,6 +208,54 @@ export function dolly(camera: OrbitCamera, factor: number, towards?: Vec3 | null
 export const dollyDrag = (camera: OrbitCamera, dx: number, dy: number): OrbitCamera => dolly(camera, Math.exp(-(dx - dy) * DOLLY_SPEED));
 export const wheelFactor = (deltaY: number): number => Math.exp(clamp(deltaY, -600, 600) * WHEEL_SPEED);
 
+/** With Ctrl held a drag moves the camera, or the sun, a quarter as far: for the last degree of a view. */
+export const FINE = 0.25;
+export const dragScale = (mods: Pick<Modifiers, 'ctrl'>): number => (mods.ctrl ? FINE : 1);
+
+// ---- the wheel, and the two fingers of a trackpad ---------------------------------------------------------------------
+// A browser has one event for all of it. A pinch on a trackpad arrives as a wheel event with ctrlKey set, by
+// Chromium's own convention, and so does the wheel of a mouse with Ctrl held: both zoom. Two fingers that move
+// over a trackpad arrive as wheel events without it, and so does the wheel of a mouse; the picture should follow
+// the fingers and be dollied by the wheel, and nothing in the event says which it is. What tells them apart:
+// a wheel turns in notches, each a large step along one axis (100 pixels in Chromium on Windows, 53 or more on
+// Linux), or counts in lines; fingers begin slowly, in pixels, and seldom along one axis alone.
+
+export type WheelKind = 'pinch' | 'pan' | 'wheel';
+export interface WheelLike { readonly deltaX: number; readonly deltaY: number; readonly deltaMode: number; readonly ctrlKey: boolean; readonly shiftKey?: boolean }
+/** The gesture a wheel event belongs to: events less than WHEEL_STREAM_MS apart are one. */
+export interface WheelStream { readonly kind: WheelKind; readonly time: number }
+export const WHEEL_STREAM_MS = 180;
+/** A step along the wheel's axis that is at least this many pixels is a notch of a wheel. */
+export const WHEEL_NOTCH_PX = 40;
+
+/**
+ * What a wheel event is: a pinch, two fingers that move, or the wheel of a mouse. Within one gesture it stays
+ * what its first event was, so that the fast middle of a swipe, or its coasting to a stop, is not taken for a
+ * wheel, and a wheel that is turned gently between two notches is not taken for fingers. A pinch is known by
+ * every one of its events and may begin or end in the middle of another gesture.
+ */
+export function wheelKind(event: WheelLike, stream: WheelStream | null, now: number): WheelKind {
+  if (event.ctrlKey) return 'pinch';
+  if (stream && stream.kind !== 'pinch' && now - stream.time < WHEEL_STREAM_MS) return stream.kind;
+  // Lines or pages: a wheel.
+  if (event.deltaMode !== 0) return 'wheel';
+  // Shift turns a wheel's notch into a step across: still a notch.
+  const along = event.shiftKey && event.deltaY === 0 ? event.deltaX : event.deltaY;
+  const across = along === event.deltaY ? event.deltaX : 0;
+  if (across !== 0) return 'pan';
+  return Math.abs(along) >= WHEEL_NOTCH_PX ? 'wheel' : 'pan';
+}
+
+/** The step of a wheel's notch, whichever axis it came on. */
+export const wheelStep = (event: WheelLike): number => (event.deltaY !== 0 ? event.deltaY : event.deltaX);
+
+/**
+ * The factor of a pinch: the distance, or the span of the top view, is multiplied by it. Chromium sends a pinch
+ * as steps of a hundred times the change of the fingers' spread, so a step of −10 is a tenth nearer; the wheel
+ * of a mouse with Ctrl held sends whole notches, which count as a step of 30.
+ */
+export const pinchFactor = (deltaY: number): number => Math.exp(clamp(deltaY, -30, 30) * 0.01);
+
 /** Turns the camera about its own position, as a head turns: the target swings round the eye. */
 export function look(camera: OrbitCamera, dx: number, dy: number): OrbitCamera {
   const eye = eyeOf(camera);
@@ -272,7 +320,7 @@ export function dragSun(display: DisplayOptions, dx: number, dy: number): Displa
 
 // ---- what the panel says of the view ---------------------------------------------------------------------------------
 
-export type ViewStatus = 'starting' | 'lost' | 'failed' | 'empty' | 'error' | 'overlayError' | 'unwired' | 'updating' | 'stale' | 'draft' | 'shown';
+export type ViewStatus = 'starting' | 'lost' | 'failed' | 'bare' | 'empty' | 'waiting' | 'error' | 'overlayError' | 'unwired' | 'updating' | 'paused' | 'stale' | 'draft' | 'shown';
 /** A node's state in engineStore, and 'unwired' for one whose error is that an input is not connected. */
 export type NodeState = 'idle' | 'running' | 'done' | 'error' | 'skipped' | 'unwired';
 
@@ -285,9 +333,20 @@ export interface ViewFacts {
   /** The state of the overlay's node, when the view has a terrain and an overlay. */
   readonly overlay: NodeState | null;
   readonly shown: { readonly revision: number; readonly resolution: number; readonly draft: boolean } | null;
+  /**
+   * Whether what is shown has anything in it. A view that names nothing is shown too, as nothing (7.4 rule 5):
+   * a project that comes after it has no picture yet, whatever `shown` says. Default true.
+   */
+  readonly pictured?: boolean;
   /** The revision the engine was last sent. */
   readonly sent: number;
   readonly evaluating: boolean;
+  /** Previews are paused (engineStore `paused`). Default false. */
+  readonly paused?: boolean;
+  /** A build runs: nothing is previewed until it has ended (7.6 rule 2), and that stands in the way before a pause does (8.7 rule 10). Default false. */
+  readonly building?: boolean;
+  /** How many nodes the project has. Default: some. */
+  readonly nodes?: number;
 }
 
 const failed = (state: NodeState | null): boolean => state === 'error' || state === 'skipped';
@@ -296,49 +355,83 @@ const failed = (state: NodeState | null): boolean => state === 'error' || state 
  * What is to be said of the picture: the first that holds, from the device down to the result. A view whose
  * terrain or overlay failed shows nothing new (runtime.md 7.3 rule 6), so either failure is said, and which. A
  * draft is a draft while its gesture lasts, whether or not the next one is being computed: the word does not
- * come and go with every evaluation. 'stale': the picture is of an earlier document and nothing is computing
- * the next, as while previews are paused or a build runs.
+ * come and go with every evaluation. A picture of an earlier document, or none, while nothing computes the
+ * next: 'paused' when that is because previews are paused, which is no fault and is said as what it is;
+ * 'stale' and 'waiting' otherwise, as while a build runs. A view that names nothing is 'empty', and 'bare' in a
+ * project that has no node to name.
  */
 export function viewStatus(facts: ViewFacts): ViewStatus {
   if (facts.device === 'starting') return 'starting';
   if (facts.device === 'lost') return 'lost';
   if (facts.device === 'failed') return 'failed';
-  if (!facts.bound) return 'empty';
+  if (!facts.bound) return facts.nodes === 0 ? 'bare' : 'empty';
   // A node that waits for a wire is unfinished, not failed: the graph and the inspector say so, and so does this.
   if (!facts.evaluating && (facts.node === 'unwired' || (!failed(facts.node) && facts.overlay === 'unwired'))) return 'unwired';
   if (!facts.evaluating && failed(facts.node)) return 'error';
   if (!facts.evaluating && failed(facts.overlay)) return 'overlayError';
-  if (!facts.shown) return facts.evaluating ? 'updating' : 'empty';
+  const paused = facts.paused === true && facts.building !== true;
+  if (!facts.shown || facts.pictured === false) return facts.evaluating ? 'updating' : paused ? 'paused' : 'waiting';
   if (facts.shown.draft) return 'draft';
   if (facts.evaluating) return 'updating';
-  return facts.shown.revision < facts.sent ? 'stale' : 'shown';
+  if (facts.shown.revision >= facts.sent) return 'shown';
+  return paused ? 'paused' : 'stale';
 }
 
-/** A status as a sentence: what covers the canvas when there is no picture, and the tooltip of the toolbar's word. */
+/** A status as a sentence: the title of what covers the canvas when there is no picture, and the tooltip of the toolbar's word. */
 export const STATUS_TEXT: Readonly<Record<ViewStatus, string>> = {
   starting: 'Starting the engine',
-  lost: 'The graphics device was lost; recovering',
+  lost: 'The graphics device was lost',
   failed: 'No graphics device',
-  empty: 'Nothing to show',
+  bare: 'This project has no nodes yet',
+  empty: 'Nothing is shown',
+  waiting: 'Not computed yet',
   error: 'The shown node failed',
   overlayError: 'The overlay failed; the picture is the last one',
-  unwired: 'The selected node lacks an input',
+  unwired: 'The shown node lacks an input',
   updating: 'Updating',
+  paused: 'Previews are paused',
   stale: 'The picture is of an earlier state of the project',
   draft: 'A coarser draft, while a value is being changed',
   shown: '',
 };
+
+/**
+ * What a person can do about a status, or what happens next: the second line of the cover. The commands are
+ * named as the menus name them (src/app/shell/app-commands.ts); tests/ui/viewport/states.test.ts holds the two
+ * to each other.
+ */
+export const STATUS_HINT: Readonly<Record<ViewStatus, string>> = {
+  starting: 'The graphics device is being opened',
+  lost: 'It is being recovered, and the picture comes back by itself',
+  failed: 'Engine › Retry Graphics Device tries again. The status bar says what the device reported',
+  bare: 'Drag a node in from the Library, or open one of its examples',
+  empty: 'Select a node in the graph to see its terrain',
+  waiting: 'The terrain is shown as soon as it is computed',
+  error: 'View › Show Errors lists what failed and why',
+  overlayError: 'View › Show Errors lists what failed and why',
+  unwired: 'Connect its input in the graph to see its terrain',
+  updating: '',
+  paused: 'Engine › Pause or Resume Previews computes what the project is now',
+  stale: 'A build is running, or the newer state could not be computed',
+  draft: '',
+  shown: '',
+};
+/** The hint of 'waiting' and 'stale' while a build runs: nothing is previewed until it has ended (7.6 rule 2). */
+export const HINT_WHILE_BUILDING = 'A build is running: the terrain is computed when it has ended';
 
 /** A status as the toolbar says it: a word or two beside the resolution. */
 export const STATUS_WORD: Readonly<Record<ViewStatus, string>> = {
   starting: 'Starting',
   lost: 'Device lost',
   failed: 'No device',
+  bare: '',
   empty: '',
+  waiting: 'Waiting',
   error: 'Node failed',
   overlayError: 'Overlay failed',
   unwired: 'Missing input',
   updating: 'Updating',
+  paused: 'Paused',
   stale: 'Out of date',
   draft: 'Draft',
   shown: '',
@@ -346,7 +439,8 @@ export const STATUS_WORD: Readonly<Record<ViewStatus, string>> = {
 
 /** Whether a status leaves the canvas without a picture to trust: it is covered, and the status said there. */
 export function isBlank(status: ViewStatus, shown: boolean): boolean {
-  return status === 'empty' || status === 'starting' || status === 'failed' || ((status === 'lost' || status === 'error' || status === 'unwired') && !shown);
+  if (status === 'bare' || status === 'empty' || status === 'starting' || status === 'failed' || status === 'waiting') return true;
+  return (status === 'lost' || status === 'error' || status === 'unwired' || status === 'paused') && !shown;
 }
 
 /**
@@ -361,8 +455,8 @@ export function outputTitle(doc: GraphDoc, registry: NodeRegistry, ref: PortRef 
   const outputs = def?.outputs ?? [];
   const port = outputs.find((output) => output.name === ref.port);
   if (!port || outputs[0] === port) return title;
-  // An output without a label of its own is called by its name, capitalised, as the graph draws it.
-  return `${title} · ${port.label ?? port.name.charAt(0).toUpperCase() + port.name.slice(1)}`;
+  // As every panel names a port (runtime.md 8.7 rule 9).
+  return `${title} · ${portLabel(port)}`;
 }
 
 /** A length in metres as the readout writes it: three significant digits below a hundred metres, whole metres above. */

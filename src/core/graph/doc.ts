@@ -48,6 +48,7 @@ export interface GraphDoc {
   readonly ui: {
     readonly view?: ViewBinding;       // 7.4
     readonly graphViewport?: { readonly x: number; readonly y: number; readonly zoom: number };
+    readonly viewport?: unknown;       // the viewport panel's own value (7.5 rule 14); carried as it is
   };
 }
 

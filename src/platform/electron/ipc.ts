@@ -8,6 +8,29 @@ export interface Preferences {
   readonly keymap: Readonly<Record<string, string>>;     // command id → key, overriding defaults (8.8)
   readonly layout: unknown;                              // the dock layout
   readonly recent: readonly string[];
+  readonly viewport: unknown;                            // the viewport panel's cameras and display options; opaque, as `layout` is
+  readonly panels: Readonly<Record<string, unknown>>;    // panel id → what that panel keeps for itself; each value opaque
+}
+
+/**
+ * What is kept of a project that has changes no file holds, for the start after a run that ended without a
+ * save: the page's process went, the application was ended, the machine lost power.
+ */
+export interface RecoveryRecord {
+  /** The project file the changes belong to; null for a project that was never saved. */
+  readonly path: string | null;
+  /** The project as `serializeDoc` writes it. */
+  readonly text: string;
+  /** When it was kept: milliseconds since the epoch. */
+  readonly savedAt: number;
+}
+
+/** What `statPath` tells of a path. One that names nothing is `{ exists: false, isFile: false, size: 0, mtimeMs: 0 }`. */
+export interface PathStat {
+  readonly exists: boolean;
+  readonly isFile: boolean;                              // false for a folder
+  readonly size: number;                                 // bytes of a file; 0 for a folder
+  readonly mtimeMs: number;                              // last modified, milliseconds since the epoch
 }
 
 export interface PlatformApi {
@@ -27,6 +50,20 @@ export interface PlatformApi {
   setPreferences(patch: Partial<Preferences>): Promise<void>;
   setBuildActive(active: boolean): void;
   showInFolder(path: string): void;
+  /** What `path` names. A relative path is taken from the folder of `projectPath`, the form 6.1 rule 2 stores; without one it names nothing. */
+  statPath(path: string, projectPath?: string | null): Promise<PathStat>;
+  /** Opens a web address in the system's browser: `http` and `https` alone. False: refused, or the system could not. */
+  openExternal(url: string): Promise<boolean>;
+  /** Opens a page or a picture of the user documentation in the system's program for it, by its name in docs/user: 'unreal-import.md'. */
+  openDocument(name: string): Promise<boolean>;
+  /** Opens a file a build wrote in the system's program for it. `path` is absolute, and its folder holds that build. */
+  openBuildFile(path: string): Promise<boolean>;
+  /** What a run before this one kept of a project with unsaved changes; null: nothing was kept, or it cannot be read. */
+  readRecovery(): Promise<RecoveryRecord | null>;
+  /** Keeps the project as it is now, in place of what was kept before; `null` removes what is kept. */
+  writeRecovery(record: { readonly path: string | null; readonly text: string } | null): Promise<void>;
+  /** A project file a second start of the application was given: the running application opens it. */
+  onOpenRequested(listener: (path: string) => void): () => void;
   onMenuCommand(listener: (commandId: string) => void): () => void;
   onCloseRequested(listener: () => void): () => void;
   confirmClose(): void;
@@ -56,12 +93,19 @@ export const CHANNELS = {
   writeTextFile: 'orogen:write-text-file',
   getPreferences: 'orogen:get-preferences',
   setPreferences: 'orogen:set-preferences',
+  readRecovery: 'orogen:read-recovery',
+  writeRecovery: 'orogen:write-recovery',
+  statPath: 'orogen:stat-path',
+  openExternal: 'orogen:open-external',
+  openDocument: 'orogen:open-document',
+  openBuildFile: 'orogen:open-build-file',
   // preload → main, not answered (ipcRenderer.send)
   setBuildActive: 'orogen:set-build-active',
   showInFolder: 'orogen:show-in-folder',
   confirmClose: 'orogen:confirm-close',
   // main → preload
   menuCommand: 'orogen:menu-command',
+  openRequested: 'orogen:open-requested',
   closeRequested: 'orogen:close-requested',
 } as const;
 

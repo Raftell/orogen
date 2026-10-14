@@ -29,6 +29,8 @@ export interface ScheduledRequest {
   readonly outputs: 'all' | 'needed';
   /** The view the targets were made from; undefined for thumbnails. */
   readonly view?: ViewParts;
+  /** For thumbnails: evaluated at the thumbnail resolution, or at the preview resolution, where what a slow node made for the view is cached (7.3 rule 10). */
+  readonly at?: 'thumbnail' | 'preview';
 }
 
 /** Whether the document has the node and, when its type is known, the output. A node of an unknown type is kept: its error says why nothing is shown. */
@@ -68,8 +70,14 @@ export function viewTargets(doc: GraphDoc, registry: NodeRegistry): EvalTarget[]
   return [...viewParts(doc, registry).targets];
 }
 
-/** A node's thumbnail above this predicted time is left to a view evaluation (7.3 rule 9). */
+/** A node above this predicted time is not run for a thumbnail alone (7.3 rules 9 and 10). */
 export const THUMBNAIL_NODE_LIMIT_MS = 100;
+/**
+ * The most nodes one idle evaluation is made for (7.3 rule 9). Every edit aborts the idle evaluation and each
+ * abort is one event per node of its plan: with a graph of hundreds of nodes in view, an evaluation for all of
+ * them at once sent tens of thousands of events through the thread boundary during one run of edits. To calibrate.
+ */
+export const THUMBNAIL_BATCH = 32;
 const THUMBNAIL_MIN_RESOLUTION = 128;
 
 /** 7.3 rule 9: the coarsest ladder level of buildResolution that is at least 128, or level 0 when none is. */
@@ -110,8 +118,11 @@ export interface Scheduler {
   setBuilding(building: boolean): void;
   /** The device is lost (true) or was replaced (false): nothing starts in between, and what was evaluated is gone. */
   setDeviceLost(lost: boolean): void;
-  /** The requested nodes whose thumbnails are stale and worth an idle evaluation, in the order requested. */
-  setThumbnails(stale: readonly string[]): void;
+  /**
+   * The requested nodes whose thumbnails are stale and worth an idle evaluation, in the order requested: those to
+   * evaluate at the thumbnail resolution (7.3 rule 9), and those that are left to the preview resolution (rule 10).
+   */
+  setThumbnails(stale: readonly string[], atPreview?: readonly string[]): void;
   /** A cause of a full request that is not a document change: a watched file changed, the device was replaced, the preview resolution changed. */
   requestFull(): void;
   /** The request to start now, when nothing runs and one is due; null otherwise. The session calls it whenever something changed. */
@@ -138,23 +149,30 @@ export function createScheduler(registry: NodeRegistry): Scheduler {
   /** The last full evaluation that completed: endGesture asks for no other of the same revision (7.3, the table of causes). */
   let fullOf: number | null = null;
   let stale: readonly string[] = [];
+  let staleAtPreview: readonly string[] = [];
 
   const full = (): void => {
     if (latest) pending = 'full';
   };
 
   function thumbnailRequest(doc: GraphDoc, revision: number): ScheduledRequest | null {
-    const targets: EvalTarget[] = [];
-    for (const id of stale) {
-      const node = own(doc.nodes, id);
-      const port = node && registry.get(node.type)?.outputs[0];
-      if (port) targets.push({ ref: { node: id, port: port.name } });
+    // The cheap resolution first; what it leaves to the preview resolution follows when it has nothing more to do.
+    for (const at of ['thumbnail', 'preview'] as const) {
+      const targets: EvalTarget[] = [];
+      for (const id of at === 'thumbnail' ? stale : staleAtPreview) {
+        const node = own(doc.nodes, id);
+        const port = node && registry.get(node.type)?.outputs[0];
+        if (port) targets.push({ ref: { node: id, port: port.name } });
+        // The rest are still stale when this evaluation has settled, and follow in the next.
+        if (targets.length === THUMBNAIL_BATCH) break;
+      }
+      if (targets.length === 0) continue;
+      return {
+        purpose: 'thumbnails', doc, revision, targets, cache: 'keep', outputs: 'needed', at,
+        resolution: at === 'thumbnail' ? thumbnailResolution(doc.settings.buildResolution) : previewResolution(doc.settings),
+      };
     }
-    if (targets.length === 0) return null;
-    return {
-      purpose: 'thumbnails', doc, revision, targets, cache: 'keep', outputs: 'needed',
-      resolution: thumbnailResolution(doc.settings.buildResolution),
-    };
+    return null;
   }
 
   return {
@@ -198,8 +216,9 @@ export function createScheduler(registry: NodeRegistry): Scheduler {
       if (lost) fullOf = null;
     },
 
-    setThumbnails(list) {
+    setThumbnails(list, atPreview = []) {
       stale = list;
+      staleAtPreview = atPreview;
     },
 
     requestFull: full,
@@ -219,7 +238,7 @@ export function createScheduler(registry: NodeRegistry): Scheduler {
         };
         return running;
       }
-      if (gesture || stale.length === 0) return null;
+      if (gesture || (stale.length === 0 && staleAtPreview.length === 0)) return null;
       running = thumbnailRequest(doc, revision);
       return running;
     },

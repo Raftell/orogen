@@ -224,7 +224,8 @@ test('every refusal of the output folder, and a build with a node that fails: wh
     await chooseFolder(app, good);
     const goodBefore = contents(good);
     await app.eval(`void orogenTest.ctx.doc.getState().transact('Enable', (draft) => { draft.nodes[${quote(exported)}].params.enabled = true; })`);
-    await app.waitFor(`document.querySelector('[data-build-export="${exported}"]')?.hasAttribute('data-enabled') === true`, PAGE_BACKSTOP_MS);
+    // The plan of the project as it is now lists the export that was switched on.
+    await app.waitFor(`document.querySelector('[data-build="plan-targets"] [data-build-target="${exported}"]') !== null`, PAGE_BACKSTOP_MS);
     const failed: BuildResult = await build(app);
     assert.equal(failed.status, 'errors');
     assert.deepEqual([failed.files, failed.manifest, failed.report, failed.outDir], [[], null, 'Ridge.report.json', `${good}.partial`]);

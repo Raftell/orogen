@@ -67,7 +67,7 @@ test('build: a terrain graph made by input alone, each step undone and redone', 
     await app.eval(`void graphTest.hover(${free.x}, ${free.y})`);
     await key(app, 'Tab');
     await appears(app, PALETTE);
-    assert.equal(await app.eval<number>(`document.querySelectorAll(${quote(`${PALETTE} [role="option"][data-type]`)}).length`), REGISTRY.list().length, 'every node type is listed');
+    assert.equal(await app.eval<number>(`document.querySelectorAll(${quote(`${PALETTE} [role="option"][data-type]`)}).length`), REGISTRY.list().filter((def) => def.category !== 'ref').length, 'every node of the product is listed, and no reference node');
     assert.ok((await app.eval<string[]>(`[...document.querySelectorAll(${quote(`${PALETTE} [data-role="categories"] [role="option"]`)})].map((e) => e.getAttribute('data-category'))`)).includes('simulate'));
     await search(app, 'terr', 'surface/terraces');
     const described = await text(app, `${PALETTE} [data-role="description"]`);

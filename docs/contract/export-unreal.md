@@ -350,7 +350,7 @@ landscape item. All files of a build lie directly in the output folder.
 
 1. The files Unreal's landscape importer reads (heightmap and layer PNG) have names made of letters only plus the extension: no digits, spaces, underscores or resolution suffix. This is a precaution against the file-name reports of 7.4; its mechanism is `[U]`. A layer's file name therefore drops the digits and underscores of its layer name.
 2. Two planned files whose paths are equal ignoring case are the plan error `E_FILE_COLLISION`, reported before anything is evaluated or written. The message names both nodes. Layers named `Rock1` and `Rock2` collide (`LayerRock`); name them `RockA` and `RockB`.
-3. An empty or over-long sanitised name is `E_NAME_INVALID`.
+3. An empty or over-long sanitised name is `E_NAME_INVALID`. So is a sanitised name that is the whole base name of a file and that Windows keeps for a device, ignoring case (`WINDOWS_DEVICE`: `con`, `prn`, `aux`, `nul`, `com0` to `com9`, `lpt0` to `lpt9`): the name of a landscape, whose manifest is `<Name>.orogen.json`, and the name of an image. Windows reads such a name as the device whatever follows its first dot, so `Con.orogen.json` and `NUL.r16` could be neither written nor opened there. A texture and a layer file have a prefix and cannot be one.
 4. The manifest is the only authority on which file is which. Nothing is ever assigned by directory order or by file-name pattern.
 
 ---
@@ -373,14 +373,17 @@ declare function buildToFolder(engine: Engine, opts: FolderBuildOptions): Promis
 
 | Function | Does | Called by |
 | --- | --- | --- |
-| `planBuild` | Collects and validates the export items and derives every file. Pure, synchronous, no GPU, no I/O | `buildProject`; the command line; tests |
+| `planBuild` | Collects and validates the export items and derives every file. Pure, synchronous, no GPU, no I/O | `buildProject`; the engine worker for `EngineSession.plan` (`runtime.md` 7.1); the command line; tests |
 | `buildProject` | Runs a plan: evaluates through the engine, converts on the CPU, writes through a `FileSink` | a caller that has a sink: `buildToFolder`, tests with a memory sink |
 | `buildToFolder` | Stages a build beside an output folder and swaps it in on success (3.8) | a caller that has a folder path: the command line, and the engine worker on behalf of the session (`runtime.md` 7.1, 7.6) |
 
 `buildProject` plans with `engine.registry`, the registry the engine was
 created with (`runtime.md` 5.1). The interface does not call `planBuild`: it
-may not import `src/export/` and receives the plan in the `build-plan` event
-(3.9).
+may not import `src/export/`. It receives the plan of a build in the
+`build-plan` event (3.9), and asks for one without building through
+`EngineSession.plan(doc)` (`runtime.md` 7.1, 7.6), which the engine worker
+answers with `planBuild(doc, engine.registry)`: the same plan, of the document
+as it is, for showing the files and the problems before a build is started.
 
 ```ts
 // src/export/build.ts
@@ -408,6 +411,7 @@ interface BuildResult {
   readonly manifest: string | null;              // path of the manifest in the sink; null unless ok
   readonly report: string | null;                // path of the report in the sink; null when the plan had an error
   readonly outDir: string | null;                // buildToFolder only: the folder that holds the files
+  readonly peakPoolBytes: number | null;         // the most the pool's ledger held while the build ran (3.10); null when nothing was evaluated
 }
 ```
 
@@ -525,13 +529,13 @@ Plan problems:
 | `E_RESOLUTION` | error | step 1 |
 | `E_SIZE_NOT_LANDSCAPE` | error | a landscape item exists and `landscapeLayout(resolution)` is null (5.2). The message lists the nearest valid sizes below and above |
 | `E_SEVERAL_LANDSCAPES`, `E_LAYER_WITHOUT_LANDSCAPE` | error | 2.5 |
-| `E_NAME_INVALID` | error | 2.6 rule 3 |
+| `E_NAME_INVALID` | error | 2.6 rule 3: no usable character, too many, or a name Windows keeps for a device |
 | `E_LAYER_NAME_INVALID` | error | a `layer` or `baseLayer` breaks the pattern of 2.2 |
 | `E_LAYER_NAME_DUPLICATE` | error | two layer names are equal ignoring case; `baseLayer` takes part when the build has a weight-blended layer item |
 | `E_TOO_MANY_LAYERS` | error | more than 15 weight-blended layer items |
 | `E_RANGE_INVALID` | error | a `HeightRange` breaks 2.2 |
 | `E_FORMAT_INVALID` | error | any other member of an item breaks its rule in 2.2 |
-| `E_FILE_COLLISION` | error | 2.6 rule 2, once for every path that is taken: two layers of one file name collide in their PNG and in their raw file. The name of the report counts as taken |
+| `E_FILE_COLLISION` | error | 2.6 rule 2, once for every path that is taken: two layers of one file name collide in their PNG and in their raw file. The name of the report counts as taken. The files of a layer whose name was reported as `E_LAYER_NAME_DUPLICATE` are not reported again: they collide for that one reason, and one problem says it |
 | `W_MANY_LAYERS` | warning | more than 12 layers in all, the base layer included (5.8) |
 | `W_GRID_SIZE` | warning | `layout.components` is not a multiple of `gridSize` |
 | `W_REGION_SIZE` | warning | `regionSize` is 4 (7.4) |
@@ -741,6 +745,7 @@ interface BuildReport {
   }[];
   weightsMs: number | null;                      // duration of phase 3
   commitMs: number | null;                       // duration of phase 4; null when the build did not reach it
+  peakPoolBytes: number | null;                  // the most the pool's ledger held at once while the build ran, in bytes; null when no engine ran (section 9)
   height: null | {
     measuredMin: number; measuredMax: number;    // normalised heights
     valueMin: number; valueMax: number;          // normalised heights mapped to codes 0 and 65535
@@ -761,6 +766,21 @@ which no other figure of the report holds. With the `evaluateMs` and
 the plan and the bookkeeping between the phases.
 `layers` lists the layers whose bytes were written: all of them in a build that
 succeeded.
+
+`peakPoolBytes` is the GPU memory of the build as one measured figure, the
+same in the report and in `BuildResult`: the most the engine's ledger held at
+once, `committed` of `runtime.md` 2.4 (working, published, free and reserved
+bytes together). The pipeline reads the ledger at every event of the
+evaluation and after every band it reads; a node's own peak lies between two
+events, so for each node that ran it also takes what was published and
+reserved when the node started plus the `peakBytes` of its `node-done`, all of
+which is held until the node has run (`runtime.md` 2.8). In the application
+the figure includes what the viewport holds: the result on screen, which a
+build does not release, and the renderer's own textures. A build that
+evaluated nothing, because its plan had an error or its folder was refused,
+has `null` in its result; `outputPeakBytes` of `eval-start` is the widest cut
+of the plan, known before the first node, and `peakPoolBytes` what was held in
+the event.
 
 A report that cannot be written does not change what a build is: its status
 stays, `result.report` is `null`, and a problem of severity `'warning'` with the
@@ -809,8 +829,8 @@ and, on success, the path of the manifest on standard output. Problems that
 
 The exit code is 0 only when a manifest was written. Without `--json` and
 `--quiet` the last progress line of a build that succeeded states its duration,
-the number and size of its files, the most the pool's ledger held and the peak
-resident memory of the process. The `unreal-test` forms are defined in section
+the number and size of its files, the most the pool's ledger held
+(`peakPoolBytes`, 3.10) and the peak resident memory of the process. The `unreal-test` forms are defined in section
 9; they need no GPU and exit with 0, 1 (the check found a difference, the file
 is no heightmap of the pattern's size, or the output folder was refused) or 2.
 
@@ -1391,7 +1411,8 @@ Unreal side:
 | A layer file's resolution must equal the landscape's overall resolution exactly, or the editor refuses it | `[E]` |
 | A target layer is a named weight channel; names come from the landscape material, are case-insensitive and unique; a material layer with no matching target layer has weight 0 | `[E]` |
 | Every target layer needs its own Landscape Layer Info asset; no two layers share one | `[E]` |
-| Blend methods of a layer info: No Weight Blending (`None`), Final Weight Blending (Legacy) (`FinalWeightBlending`), Advanced Weight Blending (`PremultipliedAlphaBlending`) | `[E]` |
+| Blend methods of a layer info: No Weight Blending, Final Weight Blending (Legacy), Advanced Weight Blending, as the Python enum `NONE`, `FINAL_WEIGHT_BLENDING`, `PREMULTIPLIED_ALPHA_BLENDING` and the C++ enumerator `PremultipliedAlphaBlending` | `[E]` |
+| The C++ enumerators `ELandscapeTargetLayerBlendMethod::None` and `::FinalWeightBlending` | `[U]`: inferred from the Python names; the C++ enum's page was not read. The plugin marks both so |
 | Final Weight Blending normalises once at the end of the edit-layer stack, so those layers total 255 except where all are 0. Advanced Weight Blending blends at each edit layer and only keeps the group's total from exceeding 255 | `[E]` |
 | Import alphamap type `Additive`: the maps of blended layers total 1.0; the style Unreal uses internally | `[E]` |
 | A component gets one more weightmap texture for every 4 target layers on it; layers a component does not use are stripped from its shader | `[E]` |
@@ -1924,7 +1945,7 @@ test (section 9) once on your engine version before you trust an import.
 3. Heightmap File: choose `<Name>Height.png`. Unreal imports 16-bit greyscale PNG and 16-bit `.r16` heightmaps (confirmed). The `.r16` file holds the same data; that Unreal reads it as little-endian is third party, so prefer the PNG.
 4. Leave Flip Y Axis off. The option exists (confirmed); what it does to a single file is unconfirmed.
 5. If Unreal asks whether to use the tiled image path, answer No. Unreal asks this when it considers the heightmap tiled (confirmed); an Orogen build is one file.
-6. Compare the layout the panel shows with `landscape.layout` in the manifest and correct the panel if it differs: Section Size = `quadsPerSection` (for 8129: 127x127 quads), Sections Per Component = 1x1 or 2x2 for `sectionsPerComponent` 1 or 2, Number of Components = `components` (32 x 32), Overall Resolution = `resolution` (8129 x 8129). These values are confirmed for the four sizes Orogen offers; that the panel fills them in by itself is unconfirmed.
+6. Compare the layout the panel shows with `landscape.layout` in the manifest and correct the panel if it differs: Section Size = `quadsPerSection`, Sections Per Component = 1x1 or 2x2 for `sectionsPerComponent` 1 or 2, Number of Components = `components`, Overall Resolution = `resolution`. As an example, a build at 8129 has 127x127 quads, 32 x 32 components and 8129 x 8129; your build has the values of its own manifest. These values are confirmed for the four sizes Orogen offers; that the panel fills them in by itself is unconfirmed.
 7. Scale: type `landscape.transform.scaleCm` x, y and z (derived).
 8. Location: type `landscape.transform.uiLocationCm`. This assumes the panel's Location is the centre of the landscape in X and Y, which is unconfirmed; step 13 checks it. Leave Rotation at 0.
 9. Material: choose your landscape material.

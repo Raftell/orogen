@@ -2,19 +2,17 @@
 // bypass, and what the engine says of the node: its state, the time and the memory of its last run, the range and
 // the mean of its first output, and its error with everything the error holds.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
 import type { FieldStats, NodeDef } from '../../../core/api.ts';
-import type { NodeError, NodeInstance, ProjectSettings } from '../../../core/runtime.ts';
+import { canBypass, missingInputs, portLabel, previewResolution, type GraphDoc, type NodeError, type NodeInstance, type ProjectSettings } from '../../../core/runtime.ts';
 import type { NodeRuntime } from '../../state/engine-store.ts';
 import { Checkbox, CommandButton, Icon, nodeErrorText, TextField, Tooltip, useApp, useCommandContext, useCommandEnabled } from '../../ui/index.ts';
 import { setFlagsOf } from './edit.ts';
 import styles from './inspector.module.css';
-import {
-  canBypass, errorFacts, excerptLines, formatStat, formatStatMetres, isSteady, missingInputs, outputRole, statusLine, statusSummary, type EngineSituation, type StatusLine,
-} from './model.ts';
+import { errorFacts, excerptLines, formatStat, formatStatMetres, isSteady, outputRole, statusLine, statusSummary, type EngineSituation, type StatusLine } from './model.ts';
 import { inspectorStore } from './state.ts';
 
 const own = <T,>(record: Readonly<Record<string, T>>, key: string): T | undefined => (Object.hasOwn(record, key) ? record[key] : undefined);
@@ -158,6 +156,13 @@ function useOutputStats(nodeId: string, port: string | null): OutputStats {
   return { stats: held.stats, stale: held.stats !== null && (held.revision < sent || view === null || view.draft) };
 }
 
+/** The labels of the required inputs of a node that the evaluator finds unconnected (the core's `missingInputs`, runtime.md 5.3). */
+function useMissingInputs(doc: GraphDoc, nodeId: string): string[] {
+  const { registry } = useCommandContext();
+  // The wiring and the nodes decide it; the settings and the view, which change with every drag elsewhere, do not.
+  return useMemo(() => missingInputs(doc, registry, nodeId).map(portLabel), [doc.nodes, doc.edges, registry, nodeId]);
+}
+
 function NodeStatus(props: { readonly node: NodeInstance; readonly def: NodeDef; readonly settings: ProjectSettings; readonly locked: boolean }) {
   const { engineState, doc, registry } = useCommandContext();
   const { node, def, settings } = props;
@@ -165,6 +170,10 @@ function NodeStatus(props: { readonly node: NodeInstance; readonly def: NodeDef;
   const device = useStore(engineState, (state) => state.device.state);
   const evaluating = useStore(engineState, (state) => state.evaluation !== null);
   const building = useStore(engineState, (state) => state.build.running);
+  const paused = useStore(engineState, (state) => state.paused);
+  // What the viewport shows the project at when no value is being dragged: a draft is coarser for a moment, and
+  // the line of a node that was computed for the view does not change with it.
+  const viewResolution = previewResolution(settings);
   const draftShown = useStore(engineState, (state) => state.view?.draft === true);
   const gesture = useStore(doc, (state) => state.gesture !== null);
   // The request of the evaluation that refines a drag. Its record of the node is no draft's, although the picture
@@ -174,8 +183,8 @@ function NodeStatus(props: { readonly node: NodeInstance; readonly def: NodeDef;
   if (refining !== null) refined.current = refining;
   const drafting = gesture || (draftShown && (runtime === undefined || runtime.requestId !== refined.current));
   const output = def.outputs[0];
-  const edges = useStore(doc, (state) => state.doc.edges);
-  const nodes = useStore(doc, (state) => state.doc.nodes);
+  const held = useStore(doc, (state) => state.doc);
+  const { edges, nodes } = held;
   // Only a field has statistics (runtime.md 7.1), and only heights have metres.
   const role = output ? outputRole({ nodes, edges }, registry, { node: node.id, port: output.name }) : null;
   const measured = role !== null;
@@ -190,10 +199,11 @@ function NodeStatus(props: { readonly node: NodeInstance; readonly def: NodeDef;
     const failed = own(nodes, shown.upstream);
     upstream = failed ? failed.title ?? registry.get(failed.type)?.title ?? failed.type : null;
   }
-  const situation: EngineSituation = { device, evaluating, building, exports: def.export !== undefined };
-  // A required input that nothing is connected to is read off the document, as the graph reads it, and said in the
-  // graph's words: the node is unfinished, not failed, whether or not the engine was asked for it meanwhile.
-  const missing = missingInputs(node, def, edges, nodes, registry);
+  const situation: EngineSituation = { device, evaluating, building, exports: def.export !== undefined, paused, viewResolution };
+  // A required input that nothing is connected to is read off the document by the evaluator's own rule, as the
+  // graph reads it, and said in the graph's words: the node is unfinished, not failed, whether or not the engine
+  // was asked for it meanwhile.
+  const missing = useMissingInputs(held, node.id);
   const status: StatusLine = missing.length > 0 ? { tone: 'skipped', text: `Missing input: ${missing.join(', ')}`, facts: [] } : statusLine(shown, upstream, situation);
   // The notice below the head says that the node is of another version: the engine's error says it in the same words.
   // And the line above says that an input is missing.
@@ -239,12 +249,13 @@ export function NodesStatus(props: { readonly nodes: readonly NodeInstance[]; re
   const { engineState, registry } = useCommandContext();
   // The records of these nodes alone: the engine reports on some node many times a second.
   const runtimes = useStore(engineState, useShallow((state) => props.nodes.map((node) => own(state.nodes, node.id))));
+  const paused = useStore(engineState, (state) => state.paused);
   return (
     <>
       <dl className={styles.facts} data-node-status="several">
         <div className={styles.fact}>
           <dt>Status</dt>
-          <dd className={styles.oneLine} data-status-text="">{statusSummary(runtimes)}</dd>
+          <dd className={styles.oneLine} data-status-text="">{statusSummary(runtimes, paused)}</dd>
         </div>
       </dl>
       {props.nodes.map((node, index) => {

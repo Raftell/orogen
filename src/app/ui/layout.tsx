@@ -15,16 +15,26 @@ export interface PropertyRowProps {
   readonly children: ReactNode;
 }
 
-/** A label and its control on one row. The label column is `--og-label-width` wide in every panel. */
+/**
+ * A label and its control on one row. The label column is `--og-label-width` wide in every panel. A row that is
+ * narrower than PROPERTY_ROW_STACKS_BELOW pixels puts the label above the control, each at the full width: in a
+ * panel the user has dragged narrow, a label column of 38 % is three letters and an ellipsis. The row asks its own
+ * width (it is its own size container), so a panel has nothing to declare and nothing to override.
+ */
 export function PropertyRow(props: PropertyRowProps) {
   const label = <label className="og-row-label" htmlFor={props.htmlFor}>{props.label}</label>;
   return (
-    <div className="og-row" data-ui="row">
-      {props.help ? <Tooltip content={props.help} side="left">{label}</Tooltip> : label}
-      <div className="og-row-control">{props.children}</div>
+    <div className="og-row-box">
+      <div className="og-row" data-ui="row">
+        {props.help ? <Tooltip content={props.help} side="left">{label}</Tooltip> : label}
+        <div className="og-row-control">{props.children}</div>
+      </div>
     </div>
   );
 }
+
+/** The width of a row, in CSS pixels, below which its label stands above its control. controls.css holds the same number. */
+export const PROPERTY_ROW_STACKS_BELOW = 280;
 
 export function SectionTitle(props: { readonly children: ReactNode }) {
   return <h3 className="og-section-title">{props.children}</h3>;

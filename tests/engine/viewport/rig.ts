@@ -169,19 +169,22 @@ export function within<T>(work: Promise<T>, what: string, ms: number = BACKSTOP_
 }
 
 export async function startView(opts: { readonly size?: ViewportSize; readonly renderer?: RendererOptions; readonly budgetBytes?: number; readonly gpu?: GpuContext;
-  readonly reopenGpu?: () => Promise<GpuContext>; readonly hooks?: EngineTestHooks } = {}): Promise<ViewRig> {
+  readonly reopenGpu?: () => Promise<GpuContext>; readonly hooks?: EngineTestHooks;
+  /** Another renderer than the one of src/viewport/, made with the same options: what a comparison is made against. */
+  readonly create?: (options: RendererOptions) => Viewport } = {}): Promise<ViewRig> {
   const gpu = opts.gpu ?? await testGpu();
   const engine = await createEngine({
     gpu, registry: REGISTRY, cpu: createNodeCpuRunner(), files: NodeFileSource(null), budgetBytes: opts.budgetBytes ?? 2 * 2 ** 30,
     ...(opts.hooks ? { test: opts.hooks } : {}),
   });
   // The light maps of a small card whatever the adapter is, so that a test says the same of every adapter (lightCapFor).
-  const renderer = createViewportRenderer({ canvasFormat: 'rgba8unorm', lightSize: 2048, ...opts.renderer });
+  const renderer = (opts.create ?? createViewportRenderer)({ canvasFormat: 'rgba8unorm', lightSize: 2048, ...opts.renderer });
   const session = createSession({
     engine, renderer,
     reopenGpu: opts.reopenGpu ?? (() => Promise.reject(new Error('This test has no second device'))),
     createFiles: () => NodeFileSource(null),
     build: () => Promise.reject(new Error('This test builds nothing')),
+    plan: () => { throw new Error('This test plans nothing'); },
   });
   const events: EngineEvent[] = [];
   let waiter: (() => void) | null = null;

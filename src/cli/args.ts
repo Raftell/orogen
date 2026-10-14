@@ -246,16 +246,21 @@ function parser(subcommand: Subcommand, scanned: Scanned, env: Environment, cwd:
   };
 }
 
+/** A value of --param that is taken as text without quotes: a word of letters, digits, `-` and `_` that is no JSON. */
+const BARE_WORD = /^[A-Za-z][A-Za-z0-9_-]*$/;
+
 function parseParam(text: string, fail: (message: string) => never): ParamArg {
   const equals = text.indexOf('=');
   const name = equals < 0 ? text : text.slice(0, equals);
-  if (equals < 0 || !PARAM_NAME.test(name)) fail(`--param ${JSON.stringify(text)} is not <name>=<json>, such as octaves=4 or mode='"add"'`);
+  if (equals < 0 || !PARAM_NAME.test(name)) fail(`--param ${JSON.stringify(text)} is not <name>=<json>, such as octaves=4 or mode=add`);
   const json = text.slice(equals + 1);
   let value: unknown;
   try {
     value = JSON.parse(json);
   } catch {
-    fail(`--param ${name}: ${JSON.stringify(json)} is not JSON. A number is written 0.25, a text '"add"', a pair '[0.5,0.5]'`);
+    // A plain word is the text it is: the quotes of JSON do not survive every shell (PowerShell and cmd strip them).
+    if (BARE_WORD.test(json)) return { name, value: json };
+    fail(`--param ${name}: ${JSON.stringify(json)} is not JSON. A number is written 0.25, a text add or '"two words"', a pair '[0.5,0.5]'`);
   }
   if (value === null) fail(`--param ${name}: null is not a parameter value`);
   return { name, value };

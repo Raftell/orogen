@@ -33,13 +33,13 @@ const evalStart = (at: number, outputPeakBytes: number | null = 40e6): Timed => 
 }];
 const nodeStart = (at: number, nodeId: string): Timed => [at, { type: 'node-start', requestId: R, nodeId }];
 const nodeDone = (at: number, nodeId: string, wallMs: number, peakBytes: number, cached = false): Timed =>
-  [at, { type: 'node-done', requestId: R, nodeId, cached, wallMs, gpuMs: null, peakBytes }];
+  [at, { type: 'node-done', requestId: R, nodeId, cached, resolution: 1009, wallMs, gpuMs: null, peakBytes }];
 const target = (at: number, index: number): Timed => [at, { type: 'build-target', requestId: R, index, count: PLAN.items.length, nodeId: PLAN.items[index]!.nodeId, label: 'x' }];
 const progress = (at: number, phase: 'targets' | 'weights' | 'commit', fraction: number): Timed => [at, { type: 'build-progress', requestId: R, phase, fraction }];
 const evalProgress = (at: number, fraction: number): Timed => [at, { type: 'eval-progress', requestId: R, fraction, etaMs: null }];
 const evalEnd = (at: number, status: 'ok' | 'errors' | 'aborted' | 'device-lost' = 'ok'): Timed => [at, { type: 'eval-end', requestId: R, status, wallMs: 0 }];
 const result = (at: number, status: 'ok' | 'errors' | 'aborted' | 'device-lost'): Timed =>
-  [at, { type: 'build-result', requestId: R, result: { requestId: R, status, problems: [], files: [], manifest: null, report: null, outDir: null } }];
+  [at, { type: 'build-result', requestId: R, result: { requestId: R, status, problems: [], files: [], manifest: null, report: null, outDir: null, peakPoolBytes: null } }];
 const end = (at: number, status: 'ok' | 'errors' | 'aborted' | 'device-lost'): Timed => [at, { type: 'build-end', requestId: R, status }];
 
 const rows = progressRows(PLAN);
@@ -137,7 +137,7 @@ test('a build under way: what runs, how far each stage is, and the target being 
 test('a cached node took no time of its own, and events of another request say nothing of this build', () => {
   const log = run([start(0), evalStart(10), nodeStart(20, 'land'), nodeDone(20, 'land', 0, 0, true)]);
   assert.deepEqual([log.nodes, log.nodeMs, log.runningNode], [{}, 0, null]);
-  const other: EngineEvent = { type: 'node-done', requestId: R + 1, nodeId: 'land', cached: false, wallMs: 999, gpuMs: null, peakBytes: 1 };
+  const other: EngineEvent = { type: 'node-done', requestId: R + 1, nodeId: 'land', cached: false, resolution: 1009, wallMs: 999, gpuMs: null, peakBytes: 1 };
   assert.equal(reduceBuildLog(log, other, 30), log);
   assert.equal(reduceBuildLog(log, { type: 'keys', revision: 3, keys: {} }, 30), log);
   assert.equal(reduceBuildLog(null, other, 30), null, 'no build, no log');
@@ -272,7 +272,7 @@ test('what is left is estimated from what the finished part took, and only once 
 
 test('what a node held is kept with the resolution it ran at, which the evaluation it ran in names', () => {
   const feed = (events: readonly EngineEvent[], from: Measurements = NO_MEASUREMENTS): Measurements => events.reduce(reduceMeasurements, from);
-  const done = (requestId: number, nodeId: string, peakBytes: number, cached = false): EngineEvent => ({ type: 'node-done', requestId, nodeId, cached, wallMs: 1, gpuMs: null, peakBytes });
+  const done = (requestId: number, nodeId: string, peakBytes: number, cached = false): EngineEvent => ({ type: 'node-done', requestId, nodeId, cached, resolution: 0, wallMs: 1, gpuMs: null, peakBytes });
   const began = (requestId: number, resolution: number): EngineEvent => ({ type: 'eval-start', requestId, resolution, mode: 'preview', plan: [], outputPeakBytes: null });
 
   let measured = feed([began(1, 505), done(1, 'land', 4e6), done(1, 'steep', 6e6), done(1, 'paint', 0)]);

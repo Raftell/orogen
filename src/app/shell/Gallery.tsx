@@ -7,7 +7,7 @@ import { useStore } from 'zustand';
 
 import {
   Button, Checkbox, ColorSwatch, ContextMenu, Dialog, EmptyState, formatMetres, IconButton, Menu, metricUnits, NumberField, Popover,
-  PropertyRow, SectionTitle, Select, Slider, TextField, Tooltip, type MenuItemSpec, type Rgb,
+  PropertyRow, SearchField, SectionTitle, Select, Slider, TextField, Tooltip, type MenuItemSpec, type Rgb,
 } from '../ui/index.ts';
 import type { Shell } from './shell.ts';
 
@@ -26,13 +26,14 @@ export interface GalleryState {
   readonly choice: string;
   readonly text: string;
   readonly color: Rgb;
+  readonly search: string;
   /** What the controls reported beside their values, oldest first; the last 100. */
   readonly events: readonly string[];
 }
 
 export const galleryStore = createStore<GalleryState>()(() => ({
   amount: 0.5, length: 0.1, angle: 45, count: 8, frequency: 4, offset: 0, slider: 0.25, checked: false, choice: 'ridged', text: 'Ridge',
-  color: [0.2, 0.4, 0.8], events: [],
+  color: [0.2, 0.4, 0.8], search: '', events: [],
 }));
 
 const set = (patch: Partial<GalleryState>): void => galleryStore.setState(patch);
@@ -148,6 +149,27 @@ export function Gallery(props: { readonly shell: Shell }) {
               <Button data-button="tooltip" variant="quiet">Hover</Button>
             </Tooltip>
           </PropertyRow>
+          <SectionTitle>Search, and a narrow panel</SectionTitle>
+          <PropertyRow label="Search">
+            <SearchField aria-label="Search the gallery" placeholder="Search" value={state.search} onChange={(search) => set({ search })} onKeyDown={(event) => note(`search:key:${event.key}`)} />
+          </PropertyRow>
+          {/* As wide as a panel the user dragged narrow: the row stacks, and the metric text gives way with an ellipsis. */}
+          <div data-area="narrow" style={{ width: 200 }}>
+            <PropertyRow label="Radius of the outer rim">
+              <NumberField
+                aria-label="Narrow radius"
+                label="Outer"
+                value={state.length}
+                min={0}
+                max={4}
+                softMax={1}
+                precision={6}
+                units={metricUnits(TERRAIN_METRES)}
+                secondary={`${formatMetres(state.length, TERRAIN_METRES)} of the terrain's width`}
+                onChange={(length) => set({ length })}
+              />
+            </PropertyRow>
+          </div>
           <ContextMenu items={() => MENU}>
             <div data-area="context" style={{ height: 64, marginTop: 4, borderRadius: 3, background: 'var(--og-bg-sunken)' }}>
               <EmptyState title="Context menu">Press the secondary button here</EmptyState>

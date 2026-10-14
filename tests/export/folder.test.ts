@@ -104,6 +104,7 @@ test('a folder with files that are no Orogen build is refused and left as it is'
   const { result, events } = await build(makeDoc(graph('First', 'Rock')), foreign);
   assert.deepEqual([result.status, result.files, result.manifest, result.report, result.outDir], ['errors', [], null, null, null]);
   assert.deepEqual(result.problems.map((p) => [p.severity, p.code]), [['error', 'E_OUT_DIR']]);
+  assert.equal(result.peakPoolBytes, null, 'nothing was evaluated');
   assert.match(result.problems[0]!.message, /^Cannot build into this folder: .*foreign holds files and no Orogen build manifest/);
   assert.deepEqual(list(foreign), ['notes.txt']);
   assert.equal(fs.readFileSync(path.join(foreign, 'notes.txt'), 'utf8'), 'mine');

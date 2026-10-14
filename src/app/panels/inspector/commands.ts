@@ -3,9 +3,10 @@
 // Parameter" on the parameter under the pointer, else on the one last pressed or focused (state.ts).
 
 // From types.ts and not from the index of src/app/ui/: this file is loaded by tests that have no window, and the index loads the controls.
+import { canBypass } from '../../../core/runtime.ts';
 import type { CommandContext, CommandDef, KeyBinding, MenuEntry } from '../../ui/types.ts';
 import { randomSeed, resetParamsOf, setFlagsOf, setParamOf, setSettingOf } from './edit.ts';
-import { canBypass, isChanged, isVisible, nodeValues, targetOf, type Target } from './model.ts';
+import { isChanged, isVisible, nodeValues, targetOf, type Target } from './model.ts';
 import { activeParam, inspectorStore, sectionKey, setSectionOpen } from './state.ts';
 
 type NodesTarget = Extract<Target, { kind: 'nodes' }>;

@@ -1,18 +1,26 @@
-// What the add-node palette lists: every type of the registry by category, found by a few letters of its
-// title or of a keyword, narrowed to a category, and for a dragged wire only what the wire can end at.
+// What the add-node palette lists: the nodes of the product, as the library lists them, by category, found by
+// the library's own search (a few letters of a title, a keyword, another tool's name for the node), narrowed to
+// a category, and for a dragged wire only what the wire can end at.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { CATEGORIES, CATEGORY_TITLES } from '../../../../src/app/panels/graph/model.ts';
+import { CATEGORY_TITLES } from '../../../../src/app/panels/graph/model.ts';
 import { PALETTE_MARGIN, paletteCategories, paletteEntries, palettePlace, searchPalette } from '../../../../src/app/panels/graph/palette-model.ts';
+import { catalogOf, CATEGORIES as CATALOG_CATEGORIES } from '../../../../src/app/ui/node-catalog.ts';
+import { createSearchIndex, searchCatalog } from '../../../../src/app/ui/node-search.ts';
 import { REGISTRY } from './_graph.ts';
+
+const CATALOG = catalogOf(REGISTRY);
+/** The categories of the product, in the order of engine.md 4.1: `ref`, the engine's reference nodes, is none of them. */
+const CATEGORIES = CATALOG_CATEGORIES.map((category) => category.id);
 
 const ENTRIES = paletteEntries(REGISTRY);
 const types = (text: string, category: Parameters<typeof searchPalette>[2] = null): string[] => searchPalette(ENTRIES, text, category).map((row) => row.entry.type);
 
-test('the palette lists every node type once, by category in the order of the contract and by title within one', () => {
-  assert.equal(ENTRIES.length, REGISTRY.list().length);
+test('the palette lists every node of the product once, by category in the order of the contract and by title within one', () => {
+  assert.deepEqual(ENTRIES.map((entry) => entry.type), CATALOG.entries.map((entry) => entry.type), 'what the library lists, in its order');
+  assert.equal(ENTRIES.length, REGISTRY.list().filter((def) => def.category !== 'ref').length);
   assert.equal(new Set(ENTRIES.map((entry) => entry.type)).size, ENTRIES.length);
   const ranks = ENTRIES.map((entry) => CATEGORIES.indexOf(entry.category));
   assert.ok(ranks.every((rank, i) => rank >= 0 && (i === 0 || rank >= ranks[i - 1]!)), 'categories in the order of engine.md 4.1');
@@ -59,7 +67,8 @@ test('a keyword finds a node whose title does not hold the word: the names other
   assert.ok(types('talus').includes('simulate/thermal-erosion'));
   const row = searchPalette(ENTRIES, 'voronoi')[0]!;
   assert.deepEqual(row.title, [{ text: 'Cellular Noise', match: false }]);
-  assert.match(row.matchedKeywords ?? '', /voronoi/, 'the row says which keywords it was found by');
+  assert.equal(row.matchedKeywords, 'Voronoi in Gaea', 'the row says what it was found by');
+  assert.equal(searchPalette(ENTRIES, 'talus').find((found) => found.entry.type === 'simulate/thermal-erosion')!.matchedKeywords, 'talus');
   // A title match is worth more than the same match in a keyword.
   const erosion = types('erosion');
   assert.ok(erosion.indexOf('simulate/hydraulic-erosion') < erosion.indexOf('generate/eroded-noise') || !erosion.includes('generate/eroded-noise'));
@@ -68,7 +77,6 @@ test('a keyword finds a node whose title does not hold the word: the names other
 test('the text and a category narrow together, and the categories are counted for the text', () => {
   assert.deepEqual(types('blur', 'filter').filter((type) => !type.startsWith('filter/')), []);
   assert.ok(types('blur', 'filter').length >= 4);
-  assert.ok(types('blur', 'ref').every((type) => type.startsWith('ref/')));
   assert.deepEqual(types('blur', 'simulate'), []);
 
   const all = paletteCategories(ENTRIES, '');
@@ -83,6 +91,53 @@ test('the text and a category narrow together, and the categories are counted fo
   assert.deepEqual(paletteCategories(ENTRIES, 'zzqx'), [{ category: null, count: 0 }]);
 });
 
+test('the engine\'s reference nodes are not offered: the palette holds what the library holds', () => {
+  assert.ok(REGISTRY.list().some((def) => def.category === 'ref'), 'the registry has reference nodes');
+  assert.deepEqual(ENTRIES.filter((entry) => entry.type.startsWith('ref/')), []);
+  assert.ok(!paletteCategories(ENTRIES, '').some((item) => (item.category as string) === 'ref'));
+  for (const query of ['blur', 'combine', 'perlin', 'color', 'fail', 'reference', 'slow']) {
+    assert.deepEqual(types(query).filter((type) => type.startsWith('ref/')), [], query);
+  }
+  for (const pending of [{ from: { node: 'a', port: 'out' } }, { to: { node: 'b', port: 'in' } }]) {
+    assert.deepEqual(paletteEntries(REGISTRY, pending).filter((entry) => entry.type.startsWith('ref/')), []);
+  }
+});
+
+test('one search for the library and the palette: the names other tools use find the same node first in both', () => {
+  const library = createSearchIndex(CATALOG);
+  for (const [query, type] of [
+    ['combiner', 'adjust/combine'], ['mixer', 'adjust/combine'], ['erosion2', 'simulate/hydraulic-erosion'], ['thermal2', 'simulate/thermal-erosion'],
+    ['fractalterraces', 'surface/terraces'], ['stratify', 'surface/strata'], ['select height', 'select/height'],
+  ] as const) {
+    assert.equal(types(query)[0], type, `${query} in the palette`);
+    assert.equal(searchCatalog(library, query)[0]?.entry.type, type, `${query} in the library`);
+  }
+  // And any query, in the same order.
+  for (const query of ['blur', 'erosion', 'export', 'color', 'noise', 'water', 'unreal land', 'mask']) {
+    assert.deepEqual(types(query), searchCatalog(library, query).map((hit) => hit.entry.type), query);
+  }
+  assert.equal(searchPalette(ENTRIES, 'erosion2')[0]!.matchedKeywords, 'Erosion2 in Gaea');
+});
+
+test('the obvious words pick the node they mean: "export" and "output" the terrain\'s export, "color" the node that colours', () => {
+  // A wire dragged from a terrain and dropped on the canvas, and the words a newcomer types.
+  const fromTerrain = paletteEntries(REGISTRY, { from: { node: 'a', port: 'out' } });
+  const first = (query: string): string | undefined => searchPalette(fromTerrain, query)[0]?.entry.type;
+  assert.equal(first('export'), 'io/export-landscape');
+  assert.equal(first('output'), 'io/export-landscape');
+  assert.equal(first('heightmap'), 'io/export-landscape');
+  assert.equal(first('unreal'), 'io/export-landscape');
+  assert.equal(first('color'), 'color/natural', 'the node that makes a colour before the one that writes one');
+  assert.equal(first('colour'), 'color/natural');
+  // The whole title of an export node still finds it first.
+  assert.equal(first('color texture'), 'io/export-color');
+  assert.equal(first('mask texture'), 'io/export-mask');
+  // In the palette opened with Tab the same.
+  assert.equal(types('export')[0], 'io/export-landscape');
+  assert.equal(types('output')[0], 'io/export-landscape');
+  assert.deepEqual(new Set(types('export').slice(0, 6)), new Set(['io/export-landscape', 'io/export-color', 'io/export-field', 'io/export-mask', 'io/export-layer', 'io/export-normal']));
+});
+
 test('opened for a dragged wire, the palette lists the nodes the wire can end at', () => {
   const fromOutput = paletteEntries(REGISTRY, { from: { node: 'a', port: 'out' } });
   const intoInput = paletteEntries(REGISTRY, { to: { node: 'b', port: 'in' } });
@@ -92,7 +147,7 @@ test('opened for a dragged wire, the palette lists the nodes the wire can end at
   assert.equal(fromOutput.some((entry) => entry.type === 'generate/mountain-range'), false);
   assert.equal(fromOutput.some((entry) => entry.type === 'generate/crater'), true);
   assert.equal(fromOutput.some((entry) => entry.type === 'io/export-landscape'), true);
-  assert.equal(fromOutput.length, REGISTRY.list().filter((def) => def.inputs.length > 0 || def.maskable).length);
+  assert.equal(fromOutput.length, REGISTRY.list().filter((def) => def.category !== 'ref' && (def.inputs.length > 0 || def.maskable)).length);
   // Into an input: everything with an output.
   assert.ok(intoInput.every((entry) => entry.outputs.length > 0));
   assert.equal(intoInput.some((entry) => entry.type === 'io/export-landscape'), false);

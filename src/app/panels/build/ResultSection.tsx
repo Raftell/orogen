@@ -49,7 +49,11 @@ export function ReportSection() {
   if (!mine || build.running || build.result === null) return null;
   const read = files !== null && files.requestId === build.requestId ? files.report : null;
   const peak = log ? peakMemory(log) : null;
-  if (read === null && (peak === null || (peak.node === null && peak.outputBytes === null))) return null;
+  // The one figure that was measured: the most the pool's ledger held while the build ran (export-unreal.md 3.10).
+  // The two under it say what it was made of, as far as the build's events tell.
+  const measured = typeof build.result.peakPoolBytes === 'number' && build.result.peakPoolBytes > 0 ? build.result.peakPoolBytes : null;
+  const parts = peak !== null && (peak.node !== null || peak.outputBytes !== null);
+  if (read === null && !parts && measured === null) return null;
   const report = read?.ok ? read.value : null;
   return (
     <Section id="report" title="Report" aside={report ? `${formatDuration(report.durationMs)} in all` : undefined}>
@@ -79,17 +83,23 @@ export function ReportSection() {
           <p className={css.hint}>Each target by its first file. The first time is what the nodes took that lead to it, the second its conversion and encoding.</p>
         </>
       ) : null}
-      {peak !== null && (peak.node !== null || peak.outputBytes !== null) ? (
+      {parts || measured !== null ? (
         <>
           <h4 className={css.subhead}>Graphics memory at its height</h4>
           <ul className={css.list} data-build="report-memory">
-            {peak.outputBytes !== null ? (
+            {measured !== null ? (
+              <li className={css.total} data-build="peak-pool" data-bytes={measured}>
+                <span>Most held at once, measured</span>
+                <span className={css.number}>{formatBytes(measured)}</span>
+              </li>
+            ) : null}
+            {peak !== null && peak.outputBytes !== null ? (
               <li className={css.total} data-build="peak-outputs">
                 <span>Fields held for later nodes and targets</span>
                 <span className={css.number}>{formatBytes(peak.outputBytes)}</span>
               </li>
             ) : null}
-            {peak.node !== null ? (
+            {peak !== null && peak.node !== null ? (
               <li className={css.total} data-build="peak-node">
                 <span>Largest working set: {titleOf(peak.node.nodeId)}</span>
                 <span className={css.number}>{formatBytes(peak.node.bytes)}</span>

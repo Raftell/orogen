@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
-import { FileError } from '../../src/core/runtime.ts';
+import { BUSY_DELAYS_MS, BUSY_RM, FileError, retryBusy } from '../../src/core/runtime.ts';
 import { NodeFileSink, NodeFileSource } from '../../src/platform/node/files.ts';
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'orogen-files-'));
@@ -373,3 +373,36 @@ if (process.platform === 'linux') {
     assert.deepEqual(listing(dir), ['a.bin', 'old.bin']);
   });
 }
+
+// ---- a file that another program holds for a moment (6.2 rule 7) ------------------------------------------------------
+
+test('retryBusy: a rename that Windows refuses while a scanner holds the file is tried again; elsewhere, and for any other failure, once', async () => {
+  const refusal = (code: string): Error => Object.assign(new Error(`${code}: operation not permitted, rename`), { code });
+  const delays = [1, 1, 1];
+  let calls = 0;
+  const heldTwice = async (): Promise<string> => {
+    if (++calls <= 2) throw refusal(calls === 1 ? 'EPERM' : 'EACCES');
+    return 'renamed';
+  };
+  assert.equal(await retryBusy(heldTwice, true, delays), 'renamed');
+  assert.equal(calls, 3);
+
+  // Held for good: every wait is used, and the last refusal is the one thrown.
+  let attempts = 0;
+  await assert.rejects(retryBusy(async () => { attempts++; throw refusal('EBUSY'); }, true, delays), /EBUSY/);
+  assert.equal(attempts, delays.length + 1);
+
+  // Not Windows: the codes mean what they say.
+  attempts = 0;
+  await assert.rejects(retryBusy(async () => { attempts++; throw refusal('EPERM'); }, false, delays), /EPERM/);
+  assert.equal(attempts, 1);
+  // A full disk or a missing folder does not pass by waiting.
+  for (const code of ['ENOSPC', 'ENOENT', 'EXDEV']) {
+    attempts = 0;
+    await assert.rejects(retryBusy(async () => { attempts++; throw refusal(code); }, true, delays), new RegExp(code));
+    assert.equal(attempts, 1, code);
+  }
+  assert.equal(BUSY_DELAYS_MS.length, 7, 'eight attempts');
+  assert.ok(BUSY_DELAYS_MS.reduce((sum, ms) => sum + ms, 0) <= 3000, 'within about three seconds');
+  assert.deepEqual(BUSY_RM, { maxRetries: 5, retryDelay: 100 });
+});

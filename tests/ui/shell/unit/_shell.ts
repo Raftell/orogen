@@ -33,16 +33,32 @@ export interface FakePlatform extends PlatformApi {
   readonly asked: string[];
   preferences: Preferences;
   readonly buildActive: boolean[];
+  /** The pages of the documentation that were asked for, in order. */
+  readonly opened: string[];
+  /** The pages `openDocument` finds: the others answer false, as a page the package lacks does. */
+  documents: readonly string[];
   confirmed: number;
   /** Fails the next write or read with this message. */
   failNext: string | null;
+  /** What `statPath` says of each file that was written: its time moves with every write, here or by `touch`. */
+  readonly times: Map<string, number>;
+  /** Another program writes the file: its text and its time change behind the application's back. */
+  touch(file: string, text: string): void;
+  /** What is kept for recovery, as the main process keeps it; null: nothing. */
+  recovery: { path: string | null; text: string; savedAt: number } | null;
+  /** Every call of `writeRecovery`: the revision-free text, or null for a removal. */
+  readonly recoveryWrites: (string | null)[];
   menu(commandId: string): void;
   requestClose(): void;
+  /** A second start of the application was given this project file. */
+  requestOpen(file: string): void;
 }
 
 export function fakePlatform(options: { readonly launchProject?: string | null; readonly testMode?: boolean } = {}): FakePlatform {
   const menuListeners = new Set<(commandId: string) => void>();
   const closeListeners = new Set<() => void>();
+  const openListeners = new Set<(file: string) => void>();
+  let clock = 1_000;
   const platform: FakePlatform = {
     gpuProfile: 'core',
     testMode: options.testMode ?? false,
@@ -50,10 +66,19 @@ export function fakePlatform(options: { readonly launchProject?: string | null; 
     files: new Map(),
     answers: { open: [], save: [], folder: [] },
     asked: [],
-    preferences: { gpu: DEFAULT_PREFERENCES, keymap: {}, layout: null, recent: [] },
+    preferences: { gpu: DEFAULT_PREFERENCES, keymap: {}, layout: null, recent: [], viewport: null, panels: {} },
     buildActive: [],
+    opened: [],
+    documents: ['README.md', 'unreal-import.md', 'first-run-on-windows.md'],
     confirmed: 0,
     failNext: null,
+    times: new Map(),
+    touch(file, text) {
+      platform.files.set(file, text);
+      platform.times.set(file, ++clock);
+    },
+    recovery: null,
+    recoveryWrites: [],
     async openProjectDialog() {
       platform.asked.push('open');
       return platform.answers.open.shift() ?? null;
@@ -86,6 +111,7 @@ export function fakePlatform(options: { readonly launchProject?: string | null; 
         throw new Error(message);
       }
       platform.files.set(file, text);
+      platform.times.set(file, ++clock);
     },
     // The rule of runtime.md 6.1 rule 2, as src/platform/electron/main/files.ts has it, on POSIX paths.
     toProjectPath(projectPath, filePath) {
@@ -97,13 +123,39 @@ export function fakePlatform(options: { readonly launchProject?: string | null; 
     async getPreferences() {
       return platform.preferences;
     },
+    // As the main process does (8.6): of `panels` the entries the patch names are replaced, the others kept.
     async setPreferences(patch) {
-      platform.preferences = { ...platform.preferences, ...patch };
+      platform.preferences = { ...platform.preferences, ...patch, panels: { ...platform.preferences.panels, ...patch.panels } };
     },
     setBuildActive(active) {
       platform.buildActive.push(active);
     },
     showInFolder() {},
+    async statPath(file) {
+      const text = platform.files.get(file);
+      return text === undefined ? { exists: false, isFile: false, size: 0, mtimeMs: 0 } : { exists: true, isFile: true, size: text.length, mtimeMs: platform.times.get(file) ?? 1 };
+    },
+    async readRecovery() {
+      return platform.recovery;
+    },
+    async writeRecovery(record) {
+      platform.recoveryWrites.push(record === null ? null : record.text);
+      platform.recovery = record === null ? null : { ...record, savedAt: ++clock };
+    },
+    onOpenRequested(listener) {
+      openListeners.add(listener);
+      return () => void openListeners.delete(listener);
+    },
+    async openExternal() {
+      return false;
+    },
+    async openDocument(name) {
+      platform.opened.push(name);
+      return platform.documents.includes(name);
+    },
+    async openBuildFile() {
+      return false;
+    },
     onMenuCommand(listener) {
       menuListeners.add(listener);
       return () => void menuListeners.delete(listener);
@@ -120,6 +172,9 @@ export function fakePlatform(options: { readonly launchProject?: string | null; 
     },
     requestClose() {
       for (const listener of [...closeListeners]) listener();
+    },
+    requestOpen(file) {
+      for (const listener of [...openListeners]) listener(file);
     },
   };
   return platform;
@@ -151,9 +206,10 @@ export function fakeEngine(engineState: StoreApi<EngineState>): FakeEngine {
     inspect: async () => null,
     async build(request) {
       calls.push(['build', request.outDir]);
-      return { requestId: 1, status: 'ok', problems: [], files: [], manifest: null, report: null, outDir: request.outDir };
+      return { requestId: 1, status: 'ok', problems: [], files: [], manifest: null, report: null, outDir: request.outDir, peakPoolBytes: null };
     },
     cancelBuild: call('cancelBuild'),
+    plan: async () => { throw new Error('This stand-in plans nothing'); },
     setPreferences: call('setPreferences') as (prefs: EnginePreferences) => void,
     retryDevice: call('retryDevice'),
     subscribe(listener) {
@@ -206,12 +262,19 @@ export function createRig(options: {
   readonly testMode?: boolean;
   readonly panels?: PanelDef[];
   readonly preferences?: Partial<Preferences>;
+  /** How long a build that was told to stop is waited for; default the shell's own. */
+  readonly buildStopBackstopMs?: number;
+  /** How long an unsaved project rests before it is kept for recovery; default the shell's own. */
+  readonly recoveryDelayMs?: number;
+  /** What a run before this one kept for recovery. */
+  readonly recovery?: { readonly path: string | null; readonly text: string; readonly savedAt: number };
 } = {}): Rig {
   const ui = createUiStore();
   const doc = createDocStore({ ui });
   const engineState = createEngineStore();
   const platform = fakePlatform(options);
   platform.preferences = { ...platform.preferences, ...options.preferences };
+  if (options.recovery) platform.recovery = { ...options.recovery };
   const engine = fakeEngine(engineState);
   const rig = { edits: [] as string[], textField: false, closed: 0, restarts: 0 } as Rig;
   const shell = createShell({
@@ -226,6 +289,8 @@ export function createRig(options: {
       restartEngine: () => { rig.restarts++; },
     },
     now: () => 1_000,
+    ...(options.buildStopBackstopMs === undefined ? {} : { buildStopBackstopMs: options.buildStopBackstopMs }),
+    ...(options.recoveryDelayMs === undefined ? {} : { recoveryDelayMs: options.recoveryDelayMs }),
   });
   const stop = shell.connect();
   return Object.assign(rig, { shell, doc, engineState, ui, platform, engine, stop });

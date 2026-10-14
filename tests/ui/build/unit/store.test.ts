@@ -6,7 +6,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { disconnect, moveNodes, setNodeFlags, setParam, setSettings, type BuildPlan, type BuildResult, type GraphDoc } from '../../../../src/core/runtime.ts';
-import { buildSignature, createBuildModel, type PanelStorage } from '../../../../src/app/panels/build/model/store.ts';
+import type { PanelKeep } from '../../../../src/app/platform.ts';
+import { EngineReplacedError } from '../../../../src/app/engine/client.ts';
+import { buildSignature, cleanKept, createBuildModel, interruptedBuild } from '../../../../src/app/panels/build/model/store.ts';
+import { INITIAL_ENGINE_STATE } from '../../../../src/app/state/engine-store.ts';
 import { docOf, FULL, plan, ready, REGISTRY, resultOf, SOURCES, turn, createPage, type Page } from './_docs.ts';
 
 const OUT = '/home/ada/Builds/Ridge';
@@ -59,6 +62,80 @@ test('a build asks for the output folder when none is chosen, keeps it, and does
   assert.deepEqual(page.folders, ['/elsewhere']);
   page.endBuild(resultOf('ok'));
   await second;
+});
+
+test('a refusal of the output folder is withdrawn when another folder is chosen: it was of the folder before', async () => {
+  const page = createPage();
+  ready(page);
+  page.model.setFolder('/home/ada/Pictures');
+  const started = page.model.start();
+  await turn();
+  const refused = resultOf('errors', { problems: [{ severity: 'error', code: 'E_OUT_DIR', message: 'Cannot build into this folder: /home/ada/Pictures holds holiday.jpg.' }] });
+  runBuild(page, 4, refused, '/home/ada/Pictures');
+  page.endBuild(refused);
+  await started;
+  assert.deepEqual([page.model.scope().mine, page.model.scope().build.result?.status], [true, 'errors'], 'the refusal is this project\'s, and shown');
+
+  // The same folder chosen again answers nothing.
+  page.model.setFolder('/home/ada/Pictures');
+  assert.equal(page.model.scope().mine, true);
+  // Another folder does: what stands at the head of the panel is no longer the refusal of a folder nobody builds into.
+  page.model.setFolder(OUT);
+  assert.equal(page.model.folder(), OUT);
+  assert.equal(page.model.scope().mine, false, 'the last result is not shown as how this project\'s build stands');
+  assert.equal(page.model.problemNode(), null);
+
+  // The next build is this project's again, whatever its number.
+  const again = page.model.start();
+  await turn();
+  runBuild(page, 5, resultOf('ok', { outDir: OUT }));
+  page.endBuild(resultOf('ok', { outDir: OUT }));
+  await again;
+  assert.deepEqual([page.model.scope().mine, page.model.scope().build.result?.status], [true, 'ok']);
+  // A build that failed for another reason is not withdrawn by a change of folder: its report is of the project.
+  const failing = page.model.start();
+  await turn();
+  const failed = resultOf('errors', { problems: [{ severity: 'error', code: 'E_NODE_FAILED', message: 'x' }] });
+  runBuild(page, 6, failed);
+  page.endBuild(failed);
+  await failing;
+  page.model.setFolder('/home/ada/Builds/Other');
+  assert.equal(page.model.scope().mine, true);
+});
+
+test('the engine restarted while a build ran: the build has ended, and the command that started it has not failed', async () => {
+  const page = createPage();
+  ready(page);
+  page.folders.push(OUT);
+  const started = page.model.start();
+  await turn();
+  page.emit({ type: 'request-start', requestId: 7, revision: 1, purpose: 'build' });
+  page.emit({ type: 'build-start', requestId: 7, resolution: 1009, outDir: OUT });
+  // Engine > Restart Engine: the client moves to another session, the call rejects, and the store is left with a
+  // build that is not running, cancelled, without a result (runtime.md 8.5).
+  const { build } = page.ctx.engineState.getState();
+  page.ctx.engineState.setState({ ...INITIAL_ENGINE_STATE, build: { ...INITIAL_ENGINE_STATE.build, requestId: build.requestId, plan: build.plan, problems: build.problems, lastStatus: 'aborted' } }, true);
+  page.failBuild(new EngineReplacedError());
+  await started;   // resolves: no "Build failed: The engine worker was replaced"
+  const scope = page.model.scope();
+  assert.equal(interruptedBuild(scope.build, scope.mine, scope.changed), true, 'the panel says that the build stopped with the engine');
+  // A build can be started again once the new engine has its device.
+  ready(page);
+  const again = page.model.start();
+  await turn();
+  assert.equal(page.built.length, 2);
+  page.endBuild(resultOf('ok'));
+  await again;
+
+  // Any other rejection is a defect, and is thrown to whoever ran the command.
+  const broken = page.model.start();
+  await turn();
+  page.failBuild(new Error('the session threw'));
+  await assert.rejects(broken, /the session threw/);
+  // A build that ended by itself, and no build at all, are not "stopped with the engine".
+  assert.equal(interruptedBuild({ ...INITIAL_ENGINE_STATE.build, requestId: 3, lastStatus: 'aborted', result: resultOf('aborted') }, true, false), false);
+  assert.equal(interruptedBuild(INITIAL_ENGINE_STATE.build, true, false), false);
+  assert.equal(interruptedBuild({ ...INITIAL_ENGINE_STATE.build, requestId: 3, lastStatus: 'aborted' }, false, false), false, 'another project\'s build');
 });
 
 test('a build does not start before the device is ready', async () => {
@@ -324,14 +401,28 @@ test('a build of another project is not shown, revealed or selected from as this
   assert.equal(page.model.problemNode(), 'outloose');
 });
 
-test('the output folder of a project and the folded sections outlive the application; a project without a file is not remembered', () => {
-  const held = new Map<string, string>();
-  const storage: PanelStorage = { getItem: (key) => held.get(key) ?? null, setItem: (key, value) => void held.set(key, value) };
+/** The panel's entry of the preferences as a test holds it: what was written last, and how often something was. */
+function entry(held: { value: unknown; writes: number } = { value: null, writes: 0 }): { readonly held: { value: unknown; writes: number }; readonly keep: PanelKeep } {
+  return {
+    held,
+    keep: {
+      read: async () => held.value,
+      write: (value) => {
+        held.value = structuredClone(value);
+        held.writes++;
+      },
+    },
+  };
+}
+
+test('the output folder of a project and the folded sections outlive the application, in the preferences; a project without a file is not remembered', async () => {
+  const { held, keep } = entry();
   const ridge = '/home/ada/Terrain/ridge.orogen';
 
-  const first = createPage(docOf(FULL), ridge, { storage });
+  const first = createPage(docOf(FULL), ridge, { keep });
+  await turn();
   assert.equal(first.model.folder(), null);
-  assert.equal(held.size, 0, 'nothing is written before something is chosen');
+  assert.equal(held.writes, 0, 'nothing is written before something is chosen');
   first.model.setFolder(OUT);
   first.model.setFolded('settings', true);
   first.model.setFolded('plan', true);
@@ -339,47 +430,73 @@ test('the output folder of a project and the folded sections outlive the applica
   // A project without a file has its folder for the session alone.
   first.ctx.doc.getState().load(docOf(SOURCES), null);
   first.model.setFolder('/home/ada/Builds/Untitled');
-  assert.deepEqual(JSON.parse(held.get('orogen.build/1')!), { folders: { [ridge]: OUT }, folded: ['settings'] });
+  assert.deepEqual(held.value, { folders: { [ridge]: OUT }, folded: ['settings'] });
   first.model.dispose();
 
   // The application is started again: the project builds where it built, and what was folded is folded.
-  const second = createPage(docOf(FULL), ridge, { storage });
+  const second = createPage(docOf(FULL), ridge, { keep });
+  assert.equal(second.model.folder(), null, 'until the preferences are read the panel knows no folder');
+  await turn();
   assert.equal(second.model.folder(), OUT);
   assert.deepEqual(second.model.state.getState().folded, ['settings']);
-  const other = createPage(docOf(FULL), '/home/ada/Other/dunes.orogen', { storage });
+  const other = createPage(docOf(FULL), '/home/ada/Other/dunes.orogen', { keep });
+  const fileless = createPage(docOf(FULL), null, { keep });
+  await turn();
   assert.equal(other.model.folder(), null, 'another project has no folder');
-  assert.equal(createPage(docOf(FULL), null, { storage }).model.folder(), null, 'nor has a project without a file');
+  assert.equal(fileless.model.folder(), null, 'nor has a project without a file');
 
   // A folder that is taken back is forgotten.
   second.model.setFolder(null);
-  assert.deepEqual(JSON.parse(held.get('orogen.build/1')!).folders, {});
+  assert.deepEqual((held.value as { folders: unknown }).folders, {});
 
-  // What the storage holds is read as far as it is of the kind expected, and a storage that fails is done without.
-  for (const text of ['not json', '[]', '{"folders": 3, "folded": "x"}', `{"folders": {"": "/a", "${ridge}": 7, "/p.orogen": ""}, "folded": [1, null]}`]) {
-    held.set('orogen.build/1', text);
-    const page = createPage(docOf(FULL), ridge, { storage });
-    assert.deepEqual([page.model.state.getState().folders, page.model.state.getState().folded], [{}, []], text);
+  // What the entry holds is read as far as it is of the kind expected.
+  for (const value of ['not an entry', [], 7, null, { folders: 3, folded: 'x' }, { folders: { '': '/a', [ridge]: 7, '/p.orogen': '' }, folded: [1, null] }]) {
+    assert.deepEqual(cleanKept(value), { folders: {}, folded: [] }, JSON.stringify(value));
   }
-  const failing: PanelStorage = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('full'); } };
-  const page = createPage(docOf(FULL), ridge, { storage: failing });
-  page.model.setFolder(OUT);
-  assert.equal(page.model.folder(), OUT);
+  assert.deepEqual(cleanKept({ folders: { [ridge]: OUT }, folded: ['plan', 3] }), { folders: { [ridge]: OUT }, folded: ['plan'] });
 
   // Sixty-four projects are remembered, the last that were given a folder.
-  held.clear();
-  const many = createPage(docOf(FULL), null, { storage });
+  const many = entry();
+  const crowd = createPage(docOf(FULL), null, { keep: many.keep });
+  await turn();
   for (let i = 0; i < 70; i++) {
-    many.ctx.doc.getState().load(docOf(FULL), `/p/${i}.orogen`);
-    many.model.setFolder(`/b/${i}`);
+    crowd.ctx.doc.getState().load(docOf(FULL), `/p/${i}.orogen`);
+    crowd.model.setFolder(`/b/${i}`);
   }
-  many.ctx.doc.getState().load(docOf(FULL), '/p/10.orogen');
-  many.model.setFolder('/b/ten');
-  const kept = Object.keys(JSON.parse(held.get('orogen.build/1')!).folders as Record<string, string>);
+  crowd.ctx.doc.getState().load(docOf(FULL), '/p/10.orogen');
+  crowd.model.setFolder('/b/ten');
+  const kept = Object.keys((many.held.value as { folders: Record<string, string> }).folders);
   assert.deepEqual([kept.length, kept[0], kept.at(-1)], [64, '/p/6.orogen', '/p/10.orogen']);
 });
 
-test('a session that plans without building is asked for the plan of the project as it stands; one that does not is asked nothing', async () => {
-  // Today's session has no such method: nothing is scheduled, and the draft stays empty.
+test('a folder chosen before the preferences were read stands, beside the folders the runs before chose; and without preferences nothing is kept', async () => {
+  const ridge = '/home/ada/Terrain/ridge.orogen';
+  const dunes = '/home/ada/Other/dunes.orogen';
+  const { held, keep } = entry({ value: { folders: { [ridge]: '/old/ridge', [dunes]: '/old/dunes' }, folded: ['report'] }, writes: 0 });
+  const page = createPage(docOf(FULL), ridge, { keep });
+  // The user is faster than the file: the choice of this run is the newer word.
+  page.model.setFolder(OUT);
+  assert.equal(held.writes, 0, 'what the last run kept is not replaced by what this one started with');
+  await turn();
+  assert.equal(page.model.folder(), OUT);
+  assert.deepEqual(page.model.state.getState().folded, ['report'], 'what was not touched is what was kept');
+  assert.deepEqual(held.value, { folders: { [dunes]: '/old/dunes', [ridge]: OUT }, folded: ['report'] });
+
+  // A model that is disposed before the answer arrives takes nothing and writes nothing.
+  const late = entry({ value: { folders: { [ridge]: '/old/ridge' }, folded: [] }, writes: 0 });
+  const gone = createPage(docOf(FULL), ridge, { keep: late.keep });
+  gone.model.dispose();
+  await turn();
+  assert.deepEqual([gone.model.folder(), late.held.writes], [null, 0]);
+
+  // Without an entry of the preferences the panel works and remembers nothing.
+  const plain = createPage(docOf(FULL), ridge);
+  plain.model.setFolder(OUT);
+  assert.equal(plain.model.folder(), OUT);
+});
+
+test('the session is asked for the plan of the project as it stands, without a build; a stand-in that cannot plan is asked nothing', async () => {
+  // A stand-in for a session without the method `plan`: nothing is scheduled, and the draft stays empty.
   const plain = createPage();
   ready(plain);
   plain.ctx.doc.getState().transact('Octaves', (draft) => setParam(draft, REGISTRY, 'land', 'octaves', 2));
@@ -394,11 +511,15 @@ test('a session that plans without building is asked for the plan of the project
     planner: (doc) => { asked.push(doc); return plan(doc); },
     defer: (run) => { due.push(run); return () => { cancelled++; due.splice(due.indexOf(run), 1); }; },
   });
+  // The project as it was opened is planned when the model is made; a device that becomes ready asks again in
+  // place of that, for a session that could not plan before it had one.
+  assert.deepEqual([due.length, cancelled], [1, 0]);
   ready(page);
+  assert.deepEqual([due.length, cancelled], [1, 1]);
+  cancelled = 0;
   const run = async (): Promise<void> => { for (const one of due.splice(0)) one(); await turn(); };
   const draft = (): BuildPlan | null => page.model.state.getState().draft?.plan ?? null;
 
-  // The project as it was opened.
   assert.equal(due.length, 1);
   await run();
   assert.equal(asked.length, 1);
@@ -460,6 +581,32 @@ test('a session that plans without building is asked for the plan of the project
   assert.equal(refusing.model.state.getState().draft, null);
 });
 
+test('a session that could not plan yet is asked again when its device is ready', async () => {
+  let able = false;
+  const due: (() => void)[] = [];
+  const page = createPage(docOf(FULL), null, {
+    planner: (doc) => {
+      if (!able) throw new Error('The engine has not started');
+      return plan(doc);
+    },
+    defer: (run) => {
+      due.push(run);
+      return () => {
+        const at = due.indexOf(run);
+        if (at >= 0) due.splice(at, 1);
+      };
+    },
+  });
+  const run = async (): Promise<void> => { for (const one of due.splice(0)) one(); await turn(); };
+  await run();
+  assert.deepEqual([page.model.state.getState().draft, due.length], [null, 0], 'a plan that was refused is not asked for again by itself');
+  able = true;
+  ready(page);
+  await run();
+  assert.equal(page.model.state.getState().draft?.plan.ok, true);
+  assert.equal(page.model.state.getState().draft?.signature, buildSignature(page.ctx.doc.getState().doc));
+});
+
 test('a build that somebody else started is recorded with the project as it is then', () => {
   const page = createPage();
   ready(page);
@@ -488,7 +635,7 @@ test('the model begins with what engineStore already knows: a build that has end
   page.emit({ type: 'request-start', requestId: 1, revision: 1, purpose: 'view' });
   page.emit({ type: 'eval-start', requestId: 1, resolution: 505, mode: 'preview', plan: [{ nodeId: 'land', state: 'run' }], outputPeakBytes: null });
   page.emit({ type: 'node-start', requestId: 1, nodeId: 'land' });
-  page.emit({ type: 'node-done', requestId: 1, nodeId: 'land', cached: false, wallMs: 5, gpuMs: null, peakBytes: 4e6 });
+  page.emit({ type: 'node-done', requestId: 1, nodeId: 'land', cached: false, resolution: 505, wallMs: 5, gpuMs: null, peakBytes: 4e6 });
   page.emit({ type: 'eval-end', requestId: 1, status: 'ok', wallMs: 5 });
   page.emit({ type: 'view-updated', requestId: 1, revision: 1, resolution: 505, draft: false, height: true, overlay: false });
   // The model that listened from the start measured it as it happened.

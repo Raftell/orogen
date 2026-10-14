@@ -17,6 +17,16 @@ test('switches: every platform gets the developer features and no renderer backg
   }
 });
 
+test('switches: a GPU process that ended does not cost the page its adapter on any platform (7.8 rule 3)', () => {
+  for (const platform of ['linux', 'win32', 'darwin']) {
+    for (const software of [false, true]) {
+      const switches = names(launchSwitches(platform, software));
+      assert.ok(switches.includes('disable-gpu-process-crash-limit'), `${platform}: hardware acceleration is not dropped after repeated losses`);
+      assert.ok(switches.includes('disable-domain-blocking-for-3d-apis'), `${platform}: WebGPU is not blocked for two minutes after a second loss`);
+    }
+  }
+});
+
 test('switches: Linux enables WebGPU and Vulkan, without which the adapter is SwiftShader', () => {
   const switches = launchSwitches('linux', false);
   assert.ok(names(switches).includes('enable-unsafe-webgpu'));

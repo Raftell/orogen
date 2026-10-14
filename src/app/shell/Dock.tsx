@@ -10,8 +10,8 @@ import {
 import 'dockview-react/dist/styles/dockview.css';
 import { Component, useEffect, useMemo, useRef, type ErrorInfo, type FunctionComponent, type ReactNode } from 'react';
 
-import type { PanelDef } from '../ui/types.ts';
-import { initialSize, LAYOUT_VERSION, placementOrder, savedDock, type SavedLayout } from './layout.ts';
+import type { PanelDef, PanelId } from '../ui/types.ts';
+import { initialSize, LAYOUT_VERSION, PANEL_MIN, placementOrder, savedDock, withMinimums, type SavedLayout } from './layout.ts';
 import type { Shell } from './shell.ts';
 
 const THEME: DockviewTheme = { name: 'orogen', className: 'dockview-theme-orogen', colorScheme: 'dark', dndOverlayMounting: 'relative', dndPanelOverlay: 'group' };
@@ -23,6 +23,14 @@ export interface DockHandle {
   layout(): SavedLayout;
   /** Applies a value of Preferences.layout as start-up does: the default layout when it is none this build restores. */
   restore(saved: unknown): 'restored' | 'default';
+  /**
+   * Gives the group of a panel a width, a height or both, in CSS pixels, as dragging its dividers does; its
+   * neighbours take or give the difference. No size goes below the dock's minimum. This is how a test makes a
+   * panel narrow or low: a window that was never shown cannot be resized (testing.md 8.5).
+   */
+  setSize(id: PanelId, size: { readonly width?: number; readonly height?: number }): void;
+  /** The size of a panel's group as the dock holds it; null for a panel it does not hold. */
+  size(id: PanelId): { readonly width: number; readonly height: number } | null;
 }
 
 /** A panel that throws while it renders shows what went wrong in its own frame; the others go on. */
@@ -90,6 +98,8 @@ function applyDefault(api: DockviewApi, panels: readonly PanelDef[], size: { rea
       renderer: rendererOf(panel),
       // A panel added as a tab stays behind the one it joins.
       inactive: step.direction === 'within',
+      minimumWidth: PANEL_MIN.width,
+      minimumHeight: PANEL_MIN.height,
       ...position,
       ...initialSize(panel.id, size),
     });
@@ -104,7 +114,8 @@ function applyDefault(api: DockviewApi, panels: readonly PanelDef[], size: { rea
 /** True when `dock` was restored. A layout dockview refuses, or one that lost a panel on the way, leaves the dock empty. */
 function applySaved(api: DockviewApi, panels: readonly PanelDef[], dock: Record<string, unknown>): boolean {
   try {
-    api.fromJSON(dock as unknown as Parameters<DockviewApi['fromJSON']>[0]);
+    // A layout saved by a build that had no minimum sizes gets them: no divider is dragged past them from now on.
+    api.fromJSON(withMinimums(dock) as unknown as Parameters<DockviewApi['fromJSON']>[0]);
   } catch (thrown) {
     console.warn('[orogen] the saved layout could not be restored; the default layout is used', thrown);
     api.clear();
@@ -133,6 +144,20 @@ export function Dock(props: { readonly shell: Shell; expose?(handle: DockHandle 
   };
   const components = useMemo(() => Object.fromEntries(shell.panels.map((panel) => [panel.id, panelComponent(panel)])), [shell]);
 
+  /** What stops telling the shell that a panel came into view. The panels of a layout are made anew with it. */
+  const watching = useRef<(() => void)[]>([]);
+  function watch(dock: DockviewApi): void {
+    for (const stop of watching.current.splice(0)) stop();
+    for (const panel of shell.panels) {
+      const docked = dock.getPanel(panel.id);
+      if (!docked) continue;
+      const listener = docked.api.onDidVisibilityChange((event) => {
+        if (event.isVisible) shell.panelShown(panel.id);
+      });
+      watching.current.push(() => listener.dispose());
+    }
+  }
+
   function restore(saved: unknown): 'restored' | 'default' {
     const dock = api.current;
     if (!dock) return 'default';
@@ -143,6 +168,7 @@ export function Dock(props: { readonly shell: Shell; expose?(handle: DockHandle 
       // The graph is where work begins. A restored layout has the panel in front that it was saved with.
       dock.getPanel('graph')?.api.setActive();
     }
+    watch(dock);
     const active = shell.panels.find((panel) => panel.id === dock.activePanel?.id);
     if (active && shell.ctx.ui.getState().focusedPanel !== active.id) shell.ctx.ui.setState({ focusedPanel: active.id });
     return restored ? 'restored' : 'default';
@@ -171,6 +197,18 @@ export function Dock(props: { readonly shell: Shell; expose?(handle: DockHandle 
     props.expose?.({
       layout: () => ({ version: LAYOUT_VERSION, dock: dock.toJSON() }),
       restore,
+      setSize(id, size) {
+        const group = dock.getPanel(id)?.group;
+        if (!group) throw new Error(`The dock holds no panel "${id}"`);
+        group.api.setSize({
+          width: size.width === undefined ? undefined : Math.max(PANEL_MIN.width, Math.round(size.width)),
+          height: size.height === undefined ? undefined : Math.max(PANEL_MIN.height, Math.round(size.height)),
+        });
+      },
+      size(id) {
+        const group = dock.getPanel(id)?.group;
+        return group ? { width: group.api.width, height: group.api.height } : null;
+      },
     });
     // What a panel's command asks for through `useApp().showPanel`: its tab in front, and the focus with it.
     shell.attachDock({
@@ -180,6 +218,7 @@ export function Dock(props: { readonly shell: Shell; expose?(handle: DockHandle 
         if (!panel.api.isActive) panel.api.setActive();
         if (ui.getState().focusedPanel !== id) ui.setState({ focusedPanel: id });
       },
+      visible: (id) => dock.getPanel(id)?.api.isVisible === true,
     });
   }
 
@@ -191,6 +230,7 @@ export function Dock(props: { readonly shell: Shell; expose?(handle: DockHandle 
       resets = state.layoutResets;
       if (!api.current) return;
       applyDefault(api.current, shell.panels, sizeOf());
+      watch(api.current);
       api.current.getPanel('graph')?.api.setActive();
       shell.ctx.ui.setState({ focusedPanel: 'graph' });
     });
@@ -198,6 +238,7 @@ export function Dock(props: { readonly shell: Shell; expose?(handle: DockHandle 
 
   // When the dock goes, nobody holds its handle.
   useEffect(() => () => {
+    for (const stop of watching.current.splice(0)) stop();
     api.current = null;
     props.expose?.(null);
     shell.attachDock(null);

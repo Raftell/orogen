@@ -24,6 +24,11 @@ export function alnumOnly(text: string): string {      // 'Rock_Wet 2' -> 'RockW
 /** The pattern of a target layer's name (2.2). */
 export const LAYER_NAME = /^[A-Za-z][A-Za-z0-9_]{0,62}$/;
 const NAME_MAX = 64;
+/**
+ * The base names Windows reads as devices whatever follows the first dot: `Con.orogen.json` and `NUL.r16` cannot
+ * be made there, or opened. Ignoring case.
+ */
+export const WINDOWS_DEVICE = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
 /** `Name` of a build without a landscape item. */
 const NAME_WITHOUT_LANDSCAPE = 'Export';
 const WEIGHT_BLENDED_MAX = 15;
@@ -162,10 +167,14 @@ function notAnItem(item: unknown, nodeId: string, sources: ReadonlySet<string>):
 function itemProblems(c: Collected): { readonly code: BuildProblemCode; readonly message: string }[] {
   const out: { code: BuildProblemCode; message: string }[] = [];
   const fail = (code: BuildProblemCode, message: string): void => { out.push({ code, message }); };
-  const named = (text: unknown, clean: (text: string) => string, of: string): void => {
-    const length = typeof text === 'string' ? clean(text).length : 0;
+  /** `whole`: the cleaned name is the whole base name of a file (`<Name>.orogen.json`, `<name>.png`), which Windows then reads as a device. */
+  const named = (text: unknown, clean: (text: string) => string, of: string, whole: boolean): void => {
+    const cleaned = typeof text === 'string' ? clean(text) : '';
+    const length = cleaned.length;
     if (length < 1 || length > NAME_MAX) {
       fail('E_NAME_INVALID', `${c.title}: the name ${JSON.stringify(text)} leaves ${length === 0 ? 'nothing' : `${length} characters`} for a file name; ${of} are needed`);
+    } else if (whole && WINDOWS_DEVICE.test(cleaned)) {
+      fail('E_NAME_INVALID', `${c.title}: the name ${JSON.stringify(text)} gives the file name ${cleaned}, which Windows keeps for a device and cannot open as a file; choose another name`);
     }
   };
   const inputType = c.def.inputs.find((port) => port.name === c.item.source.input)?.type;
@@ -173,7 +182,7 @@ function itemProblems(c: Collected): { readonly code: BuildProblemCode; readonly
   switch (c.item.kind) {
     case 'landscape': {
       const item: LandscapeItem = c.item;
-      named(item.name, lettersOnly, '1 to 64 ASCII letters');
+      named(item.name, lettersOnly, '1 to 64 ASCII letters', true);
       const range = item.range as { mode?: unknown; headroom?: unknown; min?: unknown; max?: unknown } | null;
       if (range?.mode === 'measured') {
         if (!within(range.headroom, 0, 1)) fail('E_RANGE_INVALID', `${c.title}: the headroom ${String(range.headroom)} is not within 0..1`);
@@ -211,7 +220,7 @@ function itemProblems(c: Collected): { readonly code: BuildProblemCode; readonly
     }
     case 'texture': {
       const item: TextureItem = c.item;
-      named(item.name, alnumOnly, '1 to 64 ASCII letters and digits');
+      named(item.name, alnumOnly, '1 to 64 ASCII letters and digits', false);
       // A colour texture and a data texture are both made of a colour field: the first holds colour, the second three channels of data.
       const wanted = item.content === 'color' || item.content === 'data' ? 'color' : 'field';
       const broken = !oneOf(item.content, ['color', 'data', 'mask', 'normal']) ? 'content'
@@ -225,7 +234,7 @@ function itemProblems(c: Collected): { readonly code: BuildProblemCode; readonly
     }
     case 'image': {
       const item: ImageItem = c.item;
-      named(item.name, alnumOnly, '1 to 64 ASCII letters and digits');
+      named(item.name, alnumOnly, '1 to 64 ASCII letters and digits', true);
       const broken = !Object.hasOwn(IMAGE_FORMATS, item.format) ? 'format' : !oneOf(item.map, ['unit', 'measured']) ? 'map' : inputType !== 'field' ? 'source (a field)' : null;
       if (broken) fail('E_FORMAT_INVALID', `${c.title}: the image item has an invalid ${broken}`);
       break;
@@ -326,13 +335,17 @@ export function planBuild(doc: GraphDoc, registry: NodeRegistry, opts?: { resolu
   }
   // Layer names are unique ignoring case, the base layer among them.
   const seen = new Map<string, string>();
+  /** The layer nodes whose name is another layer's: their files collide for that one reason, which is said once. */
+  const duplicateLayers = new Set<string>();
   if (hasBase && typeof landscape.item.baseLayer === 'string') seen.set(landscape.item.baseLayer.toLowerCase(), `the base layer of ${landscape.title}`);
   for (const c of layerItems) {
     if (typeof c.item.layer !== 'string') continue;
     const key = c.item.layer.toLowerCase();
     const first = seen.get(key);
-    if (first !== undefined) fail('E_LAYER_NAME_DUPLICATE', `${c.title}: the layer name "${c.item.layer}" is also used by ${first}; layer names differ by more than case.`, c.nodeId);
-    else seen.set(key, c.title);
+    if (first !== undefined) {
+      fail('E_LAYER_NAME_DUPLICATE', `${c.title}: the layer name "${c.item.layer}" is also used by ${first}; layer names differ by more than case.`, c.nodeId);
+      duplicateLayers.add(c.nodeId);
+    } else seen.set(key, c.title);
   }
 
   const layout = landscape && resolutionValid ? landscapeLayout(resolution) : null;
@@ -412,6 +425,7 @@ export function planBuild(doc: GraphDoc, registry: NodeRegistry, opts?: { resolu
     const key = file.path.toLowerCase();
     const first = taken.get(key);
     if (first !== undefined) {
+      if (file.nodeId !== null && duplicateLayers.has(file.nodeId)) continue;
       fail('E_FILE_COLLISION', `${owners[i]} and ${first} would both write the file ${file.path}; give them names that differ in letters.`, file.nodeId ?? undefined);
     } else taken.set(key, owners[i]!);
   }

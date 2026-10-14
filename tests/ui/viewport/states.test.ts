@@ -9,9 +9,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { CameraState } from '../../../src/core/runtime.ts';
+import { newDoc, type CameraState } from '../../../src/core/runtime.ts';
 import { launchApp } from '../../helpers/index.ts';
 import { gpuProcesses } from '../platform/rig.ts';
+import { STATUS_HINT, STATUS_TEXT } from '../../../src/app/panels/viewport/model.ts';
 import { attr, camera, canvasSize, capture, EVALUATION_BACKSTOP_MS, makeDoc, PAGE_BACKSTOP_MS, pick, prepare, quote, run, settled, setView, show } from './rig.ts';
 
 const HEIGHT = { node: 'range', port: 'out' };
@@ -24,15 +25,50 @@ test('the states of the viewport: nothing bound, a draft and its refinement, a f
   const app = await launchApp({ profile: 'core' });
   const statusText = (): Promise<string> => app.eval<string>(`viewportTest.statusText()`);
   const cover = (): Promise<string | null> => app.eval<string | null>(`document.querySelector('[data-viewport="cover"]')?.textContent ?? null`);
+  const covered = (): Promise<{ state: string; title: string; hint: string } | null> => app.eval(`viewportTest.cover()`);
+  /** The title a menu gives a command: the menu is opened, read and closed. */
+  const menuLabel = async (menu: string, command: string): Promise<string> => {
+    await app.eval(`void shellTest.press('.og-menubar-item[data-menu="${menu}"]')`);
+    await app.waitFor(`document.querySelector('[data-ui="menu"][data-menu="${menu}"] [data-item="${command}"]') !== null`, PAGE_BACKSTOP_MS);
+    const label = await app.eval<string>(`document.querySelector('[data-ui="menu"][data-menu="${menu}"] [data-item="${command}"] .og-menu-item-label').textContent`);
+    await app.eval(`void shellTest.key('Escape', {}, document.querySelector('[data-ui="menu"]'))`);
+    await app.waitFor(`document.querySelector('[data-ui="menu"]') === null`, PAGE_BACKSTOP_MS);
+    return label;
+  };
   try {
     await prepare(app);
     const size = await canvasSize(app);
     let mid: readonly [number, number] = [size.width / 2, size.height * 0.55];
 
+    // ---- a project without a node: there is none to show, and the cover says where nodes come from ----
+    await app.eval(`void orogenTest.ctx.doc.getState().load(${quote(newDoc())}, null)`);
+    await app.waitFor(`viewportTest.attr('data-status') === 'bare'`, PAGE_BACKSTOP_MS);
+    assert.deepEqual(await covered(), { state: 'bare', title: STATUS_TEXT.bare, hint: STATUS_HINT.bare });
+    assert.match(STATUS_HINT.bare, /Library/);
+
+    // ---- previews are paused before anything was computed: no picture, and the cover says why and what resumes them ----
+    await run(app, 'engine.togglePause');
+    await app.eval(`void orogenTest.ctx.doc.getState().load(${quote(makeDoc(NODES, { height: HEIGHT }, { buildResolution: 2017, previewLevel: 1 }))}, null)`);
+    await app.waitFor(`viewportTest.attr('data-status') === 'paused'`, PAGE_BACKSTOP_MS);
+    assert.deepEqual(await covered(), { state: 'paused', title: 'Previews are paused', hint: STATUS_HINT.paused });
+    assert.equal(await statusText(), 'Paused', 'the toolbar says it too, and gives no size of a picture that is not there');
+    // What a cover names of the menus is there under that name: the hints are held to the menus as they are.
+    for (const [hint, menu, command] of [[STATUS_HINT.paused, 'Engine', 'engine.togglePause'], [STATUS_HINT.failed, 'Engine', 'engine.retryDevice'], [STATUS_HINT.error, 'View', 'view.showErrors']] as const) {
+      assert.ok(hint.startsWith(`${menu} › ${await menuLabel(menu, command)} `), `"${hint}" names ${command} as the ${menu} menu does`);
+    }
+    t.diagnostic(`capture: ${await capture(app, 'states-00-paused-before-the-first-picture')}`);
+    await run(app, 'engine.togglePause');
+    await settled(app);
+    assert.equal(await attr(app, 'data-status'), 'shown');
+    assert.equal(await covered(), null);
+
     // ---- nothing bound ----
     await app.eval(`void orogenTest.ctx.doc.getState().load(${quote(makeDoc(NODES, undefined, { buildResolution: 2017, previewLevel: 1 }))}, null)`);
     await app.waitFor(`viewportTest.attr('data-status') === 'empty' && orogenTest.ctx.engineState.getState().evaluation === null`, EVALUATION_BACKSTOP_MS);
-    assert.match((await cover())!, /^Nothing to show/);
+    assert.deepEqual(await covered(), { state: 'empty', title: 'Nothing is shown', hint: 'Select a node in the graph to see its terrain' });
+    // The panel says so from the document, at once; the engine shows nothing when it has taken the document in
+    // (7.4 rule 5), and until then the last terrain is still what a pick finds.
+    await settled(app);
     assert.equal(await pick(app, mid[0], mid[1]), null);
     assert.equal(await statusText(), '', 'and nothing is claimed in the toolbar');
     t.diagnostic(`capture: ${await capture(app, 'states-01-nothing-bound')}`);

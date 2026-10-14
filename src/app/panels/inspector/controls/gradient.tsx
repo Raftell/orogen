@@ -13,7 +13,6 @@ import {
 } from '../gradient.ts';
 import styles from '../inspector.module.css';
 import { sameValue } from '../model.ts';
-import { usePickerGesture } from './picker.ts';
 import type { ControlProps } from './types.ts';
 
 /** Pixels of the strip's picture: as many as the table a kernel reads has entries (engine.md 4.9). */
@@ -47,7 +46,6 @@ export function GradientControl(props: ControlProps<GradientParam, readonly Grad
   const latest = useRef(props);
   latest.current = props;
   const chosen = Math.min(selected, stops.length - 1);
-  usePickerGesture(props.id, props.begin, props.end);
 
   useEffect(() => {
     const context = strip.current?.getContext('2d');
@@ -238,6 +236,8 @@ export function GradientControl(props: ControlProps<GradientParam, readonly Grad
             value={stop.color}
             disabled={props.disabled}
             onChange={(color) => send(setStopColor(stops, chosen, color))}
+            onScrubStart={props.begin}
+            onScrubEnd={() => props.end(true)}
           />
         </div>
         <NumberField

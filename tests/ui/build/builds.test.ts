@@ -16,7 +16,7 @@ import { test } from 'node:test';
 import type { BuildResult } from '../../../src/core/runtime.ts';
 import type { AppDriver } from '../../helpers/index.ts';
 import {
-  appears, attr, build, capture, chooseFolder, dismissNotices, press, ridge, scratch, scrollTo, text, texts, vanishes, withBuildPanel, writeProject, PAGE_BACKSTOP_MS,
+  appears, attr, build, capture, chooseFolder, dismissNotices, planned, press, ridge, run, scratch, scrollTo, settled, text, texts, vanishes, withBuildPanel, writeProject, PAGE_BACKSTOP_MS,
 } from './rig.ts';
 
 const FOLDER = scratch('builds');
@@ -185,6 +185,8 @@ test('a small project built at 241 and at 1009: the files, and the numbers Unrea
       `landscape:${IDS.landscape}`, 'base:base', `layer:${IDS.rock}`, `texture:${IDS.normal}`, 'manifest:manifest',
     ]);
     assert.deepEqual(await texts(app, '[data-build-file="RidgeHeight.r16"] > span'), ['RidgeHeight.r16', 'Raw, 16-bit', '113 KB']);
+    // The one measured figure of memory, from the build's result (export-unreal.md 3.10).
+    assert.match((await text(app, '[data-build="peak-pool"]'))!, /^Most held at once, measured\d+(\.\d)? (KB|MB)$/);
     assert.deepEqual(await texts(app, '[data-build-file="RidgeHeight.png"] > span'), ['RidgeHeight.png', 'PNG, 16-bit gray', '—']);
     assert.deepEqual(await texts(app, '[data-build-file="T_Normal_1024.png"] > span'), ['T_Normal_1024.png', 'PNG, 8-bit RGB', '—']);
     assert.equal(await text(app, '[data-build="plan-layout"]'), 'Landscape of 241 × 241: 8 × 8 components of 2 × 2 sections, 15 × 15 quads each');
@@ -222,9 +224,10 @@ test('a small project built at 241 and at 1009: the files, and the numbers Unrea
       ['Build out of date', 'The project has changed since', 'warning']);
     assert.equal(await text(app, '[data-build="stale"]'), 'The project has changed since this build.');
     assert.match((await text(app, '[data-build-note="unreal-stale"]'))!, /^These are the numbers of the last build, and the project has changed since\. Build again before you import\.$/);
-    // The plan was of the project as it was: the export nodes stand there again.
-    assert.equal(await text(app, '[data-build-section="plan"] button'), 'Exports');
-    assert.equal((await texts(app, '[data-build-export]')).length, 3);
+    // The plan of the build was of the project as it was: a moment later the plan of the project as it is stands there,
+    // with the sizes of the new resolution.
+    await planned(app);
+    assert.equal(await attr(app, '[data-build-file="RidgeHeight.r16"] [data-bytes]', 'data-bytes'), String(2 * 1009 * 1009));
 
     // ---- the build at 1009, into the folder that holds the build at 241 ----
     const before = Object.fromEntries(fs.readdirSync(OUT).map((name) => [name, fs.statSync(path.join(OUT, name)).size]));
@@ -244,5 +247,25 @@ test('a small project built at 241 and at 1009: the files, and the numbers Unrea
     assert.equal(await text(app, '[data-build="plan-layout"]'), 'Landscape of 1009 × 1009: 8 × 8 components of 2 × 2 sections, 63 × 63 quads each');
     assert.deepEqual(await texts(app, '[data-build-file="RidgeHeight.r16"] > span'), ['RidgeHeight.r16', 'Raw, 16-bit', '1.9 MB']);
     t.diagnostic(`at 1009: Scale ${second['scale-x']}, ${second['scale-y']}, ${second['scale-z']}; Location ${second['location-x']}, ${second['location-y']}, ${second['location-z']}`);
+
+    // ---- the engine is restarted: the folder still holds the build, and the panel still shows it ----
+    const shown = async (): Promise<(string | null)[]> => [
+      await text(app, '[data-build="status-line"]'), await text(app, '[data-build="outcome"]'),
+      await attr(app, '[data-build-section="unreal"] [data-build-row="scale-x"]', 'data-value'), await text(app, '[data-build-section="plan"] button'),
+    ];
+    const beforeRestart = await shown();
+    assert.deepEqual(beforeRestart.slice(0, 2), ['Build finished', 'Build finished']);
+    await app.eval(`void (window.workerBefore = orogenTest.shell.engineWorker())`);
+    await run(app, 'engine.restart');
+    await app.waitFor(`orogenTest.shell.engineWorker() !== window.workerBefore && orogenTest.ctx.engineState.getState().device.state === 'ready'`, 60_000);
+    assert.deepEqual(await shown(), beforeRestart, 'what the last build wrote and reported is what the panel shows');
+    const kept = await app.eval<{ status: string | null; running: boolean; files: number }>(`(() => { const { build } = orogenTest.ctx.engineState.getState(); return { status: build.lastStatus, running: build.running, files: build.result?.files.length ?? 0 }; })()`);
+    assert.deepEqual(kept, { status: 'ok', running: false, files: large.files.length });
+    assert.equal(await app.eval<boolean>(`!document.querySelector('[data-panel="build"] [data-command="build.revealFolder"]').disabled`), true, 'and its folder can still be shown');
+    // The new engine builds as the old one did.
+    await settled(app);
+    const again = await build(app);
+    assert.equal(again.status, 'ok', JSON.stringify(again.problems));
+    checkFolder(again, OUT);
   });
 });

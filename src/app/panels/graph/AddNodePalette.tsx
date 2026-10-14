@@ -1,5 +1,6 @@
-// The add-node palette: every node type, found by a few letters of its title or of a keyword, narrowed by
-// category, with the description of the one that is highlighted. It opens where the pointer is. Opened for a
+// The add-node palette: every node of the product, found by a few letters of its title, by a keyword or by the
+// name another tool has for it (the library's own search), narrowed by category, with the description of the
+// one that is highlighted. It opens where the pointer is. Opened for a
 // wire that was dropped on the canvas it lists only the types the wire can end at.
 //
 // It has the keyboard while it is open (runtime.md 8.8 rule 3): `data-chrome` tells the shell's key listener so.
@@ -9,9 +10,9 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 
-import type { Category } from '../../../core/api.ts';
 import type { NodeRegistry } from '../../../core/runtime.ts';
-import { Icon } from '../../ui/index.ts';
+import { SearchField } from '../../ui/index.ts';
+import type { ProductCategory } from '../../ui/node-catalog.ts';
 import styles from './graph.module.css';
 import { CATEGORY_TITLES } from './model.ts';
 import { paletteCategories, paletteEntries, palettePlace, searchPalette, type PaletteEntry } from './palette-model.ts';
@@ -41,7 +42,7 @@ function ports(entry: PaletteEntry): string {
 export function AddNodePalette(props: AddNodePaletteProps) {
   const { request, registry, origin } = props;
   const [text, setText] = useState('');
-  const [category, setCategory] = useState<Category | null>(null);
+  const [category, setCategory] = useState<ProductCategory | null>(null);
   const [selected, setSelected] = useState(0);
   const root = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -119,25 +120,24 @@ export function AddNodePalette(props: AddNodePaletteProps) {
       onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
     >
       <div className={styles.paletteSearch}>
-        <Icon name="search" />
-        <input
+        <SearchField
           ref={input}
-          className={styles.paletteInput}
-          type="text"
-          spellCheck={false}
-          autoComplete="off"
+          variant="plain"
           role="combobox"
           aria-expanded="true"
           aria-controls="graph-palette-list"
           aria-activedescendant={highlighted ? `graph-palette-item-${index}` : undefined}
-          placeholder="Search nodes by name or keyword"
+          aria-label="Search nodes"
+          placeholder="Search nodes by name, keyword or another tool's name"
           value={text}
-          onChange={(event) => {
-            setText(event.target.value);
+          onChange={(next) => {
+            setText(next);
             setSelected(0);
           }}
+          // Escape closes the palette, whatever is typed: the key is the palette's (onKeyDown of the frame), not the field's.
+          onKeyDown={(event) => { if (event.key === 'Escape') event.preventDefault(); }}
+          end={props.wire ? <span className={styles.paletteWire} data-role="wire" title={props.wire}>{props.wire}</span> : null}
         />
-        {props.wire ? <span className={styles.paletteWire} data-role="wire" title={props.wire}>{props.wire}</span> : null}
       </div>
       <div className={styles.paletteMain}>
         <ul className={styles.paletteCategories} role="listbox" aria-label="Categories" data-role="categories">

@@ -42,26 +42,8 @@
   --library-list-least: calc(var(--og-control-height) + 2 * var(--og-space-3) + 4 * var(--library-row));
 }
 
-/* ---- search ---- */
-.search { position: relative; display: flex; flex: none; align-items: center; padding: var(--og-space-3) var(--og-space-4); }
-.searchIcon { position: absolute; left: calc(var(--og-space-4) + var(--og-space-3)); color: var(--og-text-dim); pointer-events: none; }
-.searchInput {
-  box-sizing: border-box;
-  width: 100%;
-  height: var(--og-control-height);
-  padding: 0 calc(var(--og-control-height-small) + var(--og-space-3)) 0 calc(var(--og-icon-size) + var(--og-space-5));
-  border: 1px solid var(--og-border-widget);
-  border-radius: var(--og-radius);
-  background: var(--og-bg-sunken);
-  color: var(--og-text);
-  font: inherit;
-  outline: none;
-}
-.searchInput::placeholder { color: var(--og-text-dim); }
-.searchInput:hover { border-color: var(--og-border-strong); }
-.searchInput:focus { border-color: var(--og-focus-ring); box-shadow: 0 0 0 1px var(--og-focus-ring); }
-.searchInput::selection { background: var(--og-accent); color: var(--og-text-on-accent); }
-.searchClear { position: absolute; right: calc(var(--og-space-4) + var(--og-space-1)); display: flex; }
+/* ---- search: the shared field (src/app/ui/SearchField.tsx) in the panel's margins ---- */
+.search { display: flex; flex: none; align-items: center; padding: var(--og-space-3) var(--og-space-4); }
 
 /* ---- the list ---- */
 .list { position: relative; flex: 1; min-height: 0; overflow-y: auto; outline: none; }
@@ -143,6 +125,8 @@
   overflow-y: auto;
   user-select: text;
 }
+/* Before the first node is described the pane is its one line of hint, and the list has the room (NodeBrowser, `described`). */
+.details[data-rest]:not([data-sized]) { height: auto; }
 /* A height the user chose gives way only to what the list needs at the least. */
 .details[data-sized] { height: var(--library-details-height); min-height: calc(3 * var(--og-row-height)); max-height: calc(100% - var(--library-list-least)); }
 .detailsHint { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--og-text-dim); text-align: center; user-select: none; }
@@ -225,4 +209,3 @@
 .dialogExamples { max-height: min(640px, calc(100vh - 220px)); margin: calc(-1 * var(--og-space-3)) calc(-1 * var(--og-space-4)); }
 
 /* ---- the question about unsaved changes: the answer that discards stands apart from the other two ---- */
-.answerStart { margin-right: auto; }

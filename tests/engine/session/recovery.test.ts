@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 
 import type { GpuContext, GpuProfile, ViewportContent } from '../../../src/core/runtime.ts';
-import { createRecovery, LOSS_LIMIT, LOSS_WINDOW_MS, RETRY_DELAYS_MS } from '../../../src/core/session/recovery.ts';
+import { createRecovery, LOSS_LIMIT, LOSS_WINDOW_MS, openFirstDevice, RETRY_DELAYS_MS } from '../../../src/core/session/recovery.ts';
 import { createNodeGpu } from '../../../src/platform/node/gpu.ts';
 import { doc, endings, PREVIEW, resetSlow, slow, startSession } from './rig.ts';
 
@@ -279,4 +279,28 @@ test('recovery: dispose ends the wait, and a context that arrives afterwards is 
   arrive(late);
   assert.equal((await pending).ok, false);
   assert.equal(late.destroyed, true);
+});
+
+test('the first device: an adapter that is missing once is asked for again on the same waits; three failures are final', async () => {
+  const delaysMs = [0, 2, 4];
+  const good = fakeGpu();
+  let calls = 0;
+  // What the engine worker met when the GPU process ended while the application started (8.3 step 1).
+  const second = await openFirstDevice(async () => {
+    if (++calls === 1) throw new Error('No WebGPU adapter is available');
+    return good;
+  }, { delaysMs });
+  assert.equal(second, good);
+  assert.equal(calls, 2);
+
+  calls = 0;
+  await assert.rejects(openFirstDevice(async () => { throw new Error(`attempt ${++calls} failed`); }, { delaysMs }), /attempt 3 failed/);
+  assert.equal(calls, 3, 'one attempt for each wait, and no more');
+
+  // A device that arrives lost is destroyed and is one failure; nobody else knows it.
+  const dead = fakeGpu(true);
+  calls = 0;
+  assert.equal(await openFirstDevice(async () => (++calls === 1 ? dead : good), { delaysMs }), good);
+  assert.deepEqual([calls, dead.destroyed, good.destroyed], [2, true, false]);
+  await assert.rejects(openFirstDevice(async () => fakeGpu(true), { delaysMs }), /lost at once/);
 });

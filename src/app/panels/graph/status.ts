@@ -5,7 +5,7 @@
 import type { NodeRuntime } from '../../state/engine-store.ts';
 import type { NodeView } from './flow.ts';
 
-export type NodeStatusState = 'idle' | 'waiting' | 'running' | 'done' | 'cached' | 'skipped' | 'bypassed' | 'missing' | 'error';
+export type NodeStatusState = 'idle' | 'paused' | 'waiting' | 'running' | 'done' | 'cached' | 'skipped' | 'bypassed' | 'missing' | 'error';
 
 export interface NodeStatus {
   readonly state: NodeStatusState;
@@ -36,11 +36,19 @@ export const CYCLE_TEXT = 'Part of a cycle';
 const plain = (state: NodeStatusState, text: string, detail: string | null = null): NodeStatus => ({ state, text, detail, fraction: null, failed: false });
 const failure = (state: NodeStatusState, text: string, detail: string | null = null): NodeStatus => ({ state, text, detail, fraction: null, failed: true });
 
+export const PAUSED_TEXT = 'Paused';
+const PAUSED_DETAIL = 'Previews are paused: this node is computed when they are resumed';
+
 /**
  * `runtime` is the engine's record of the node, `current` whether that record is of the evaluation that runs
- * now, and `upstreamTitle` the title of the failed node a skipped node waits for.
+ * now, `upstreamTitle` the title of the failed node a skipped node waits for, and `paused` whether previews are
+ * paused (engineStore): a node without a result then says why it has none, as the inspector, the viewport and
+ * the status bar do. An export node never runs in a preview, so the pause is not what it waits for.
  */
-export function nodeStatus(view: NodeView, runtime: NodeRuntime | undefined, current: boolean, upstreamTitle: string | null = null): NodeStatus {
+export function nodeStatus(
+  view: NodeView, runtime: NodeRuntime | undefined, current: boolean, upstreamTitle: string | null = null, paused: boolean = false,
+): NodeStatus {
+  const resting = (): NodeStatus => (paused && !view.exports ? plain('paused', PAUSED_TEXT, PAUSED_DETAIL) : plain('idle', ''));
   if (!view.known) return failure('error', `Unknown node type "${view.type}"`);
   // The engine says this of a node only once it is asked for the node (5.8); the wires say it at once, in the engine's words.
   if (view.cycle) return failure('error', CYCLE_TEXT, 'The wires lead from this node back into it, so it can never be computed');
@@ -49,11 +57,11 @@ export function nodeStatus(view: NodeView, runtime: NodeRuntime | undefined, cur
   // an evaluation before the input was connected.
   // Not an error of the node: every node is in this state between being added and being wired.
   if (view.missing.length > 0) return plain('missing', `Missing input: ${view.missing.join(', ')}`);
-  if (!runtime) return plain('idle', '');
+  if (!runtime) return resting();
   switch (runtime.state) {
     case 'error': {
       const error = runtime.error;
-      if (error?.kind === 'missing-input') return plain('idle', '');
+      if (error?.kind === 'missing-input') return resting();
       // The one sentence of the error (5.8). Its detail, a stack or the GPU's whole message, is for the list of
       // errors and the inspector: on a node it would cover the graph.
       return failure('error', error?.message ?? 'Failed');
@@ -70,6 +78,6 @@ export function nodeStatus(view: NodeView, runtime: NodeRuntime | undefined, cur
       if (runtime.cached) return plain('cached', 'Cached', runtime.wallMs !== null ? `Cached; computed in ${formatDuration(runtime.wallMs)}` : null);
       return plain('done', runtime.wallMs !== null ? formatDuration(runtime.wallMs) : 'Done');
     default:
-      return current ? plain('waiting', 'Waiting') : plain('idle', '');
+      return current ? plain('waiting', 'Waiting') : resting();
   }
 }

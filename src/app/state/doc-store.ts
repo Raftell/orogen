@@ -38,6 +38,14 @@ export interface DocState {
   transact(label: string, recipe: (doc: DocDraft) => void, opts?: { mergeKey?: string; undoable?: boolean }): void;
   beginGesture(mergeKey: string): void;
   endGesture(): void;
+  /**
+   * Ends the gesture in progress and takes back what it changed: the document is as it was when the gesture
+   * began, the gesture's entry is not in the history, and `future` is what it was then, so that a drag that was
+   * taken back (Escape) can be neither undone nor redone and has cost no redo step. Without a gesture it does
+   * nothing. When an undoable transaction of another key was made while the gesture was in progress, that
+   * change stays and the gesture's changes with it: the gesture then only ends.
+   */
+  cancelGesture(): void;
   undo(): void;
   redo(): void;
   load(doc: GraphDoc, path: string | null): void;  // replaces the document, clears the history
@@ -46,6 +54,12 @@ export interface DocState {
    * document as it is now. A file that holds an earlier revision leaves the project unsaved.
    */
   markSaved(path: string, revision?: number): void;
+  /**
+   * No file holds the document as it is: a project that was restored from what a run before kept of it (8.6,
+   * recovery) is the project of its file with changes nobody saved. The history is not touched; no undo leads
+   * back to the file's state, which this run never held.
+   */
+  markUnsaved(): void;
 }
 
 /** Rule 3: transactions with one merge key that are closer together than this are one entry. */
@@ -109,6 +123,12 @@ export function createDocStore(options: DocStoreOptions): StoreApi<DocState> {
   let changedOutsideHistory = false;
   /** The entry the gesture in progress has made. A gesture never continues an entry that was there before it. */
   let gestureEntry: HistoryEntry | null = null;
+  /**
+   * What `cancelGesture` needs of the gesture in progress: the `future` and the selection it began with, the
+   * patches that take back what it has changed, newest first, and the entry its first transaction merged into
+   * by the 600 ms of rule 3, which is then no longer in the history and is put back.
+   */
+  let gestureStart: { readonly future: readonly HistoryEntry[]; readonly selection: readonly string[]; inverse: Patch[]; replaced: HistoryEntry | null } | null = null;
   let inRecipe = false;
 
   const sizeOf = (entry: HistoryEntry): number => sizes.get(entry) ?? 0;
@@ -124,6 +144,7 @@ export function createDocStore(options: DocStoreOptions): StoreApi<DocState> {
       // The state before the oldest entry is now the state after this one.
       saved = saved === entry ? 'base' : saved === 'base' ? null : saved;
       if (gestureEntry === entry) gestureEntry = null;
+      if (gestureStart?.replaced === entry) gestureStart.replaced = null;
     }
     if (dropped > 0) past.splice(0, dropped);
   }
@@ -164,8 +185,8 @@ export function createDocStore(options: DocStoreOptions): StoreApi<DocState> {
       const stray = forward.find((patch) => outsideHistory(patch) === undoable);
       if (stray) {
         throw new Error(undoable
-          ? `"${label}" changes ${stray.path.join('.')}: the view, the graph viewport, buildResolution and previewLevel are changed with undoable: false`
-          : `"${label}" is not undoable and changes ${stray.path.join('.')}: only the view, the graph viewport, buildResolution and previewLevel are changed that way`);
+          ? `"${label}" changes ${stray.path.join('.')}: what lies under ui (the view, the graph viewport, the viewport's own state), buildResolution and previewLevel are changed with undoable: false`
+          : `"${label}" is not undoable and changes ${stray.path.join('.')}: only what lies under ui, buildResolution and previewLevel are changed that way`);
       }
 
       const revision = state.revision + 1;
@@ -189,7 +210,17 @@ export function createDocStore(options: DocStoreOptions): StoreApi<DocState> {
       const added = patchBytes(forward) + patchBytes(inverse);
       sizes.set(entry, (merges ? sizeOf(top) : 0) + added);
       pastBytes += added;
-      if (state.gesture !== null && state.gesture === mergeKey) gestureEntry = entry;
+      if (state.gesture !== null && state.gesture === mergeKey) {
+        if (gestureStart) {
+          // The first transaction of the gesture went into an entry that was there before it: that entry comes back on a cancel.
+          if (merges && gestureEntry !== top) gestureStart.replaced = top;
+          gestureStart.inverse = [...inverse, ...gestureStart.inverse];
+        }
+        gestureEntry = entry;
+      } else if (gestureStart) {
+        // Another undoable change in the middle of a gesture: the gesture can no longer be taken back as a whole.
+        gestureStart = null;
+      }
 
       const past = merges ? [...state.past.slice(0, -1), entry] : [...state.past, entry];
       dropOldest(past);
@@ -200,13 +231,41 @@ export function createDocStore(options: DocStoreOptions): StoreApi<DocState> {
     beginGesture(mergeKey) {
       notInRecipe('beginGesture');
       gestureEntry = null;
+      gestureStart = { future: get().future, selection: ui.getState().selection, inverse: [], replaced: null };
       if (get().gesture !== mergeKey) set({ gesture: mergeKey });
     },
 
     endGesture() {
       notInRecipe('endGesture');
       gestureEntry = null;
+      gestureStart = null;
       if (get().gesture !== null) set({ gesture: null });
+    },
+
+    cancelGesture() {
+      notInRecipe('cancelGesture');
+      const state = get();
+      const entry = gestureEntry;
+      const start = gestureStart;
+      gestureEntry = null;
+      gestureStart = null;
+      if (state.gesture === null) return;
+      // Nothing was changed, the entry left the history (rule 7), or another change lies on top of it: the gesture ends.
+      if (!entry || !start || state.past[state.past.length - 1] !== entry) {
+        set({ gesture: null });
+        return;
+      }
+      const doc = applyPatches(state.doc, start.inverse);
+      const past = start.replaced ? [...state.past.slice(0, -1), start.replaced] : state.past.slice(0, -1);
+      pastBytes += (start.replaced ? sizeOf(start.replaced) : 0) - sizeOf(entry);
+      // A file written in the middle of the gesture holds a state that no undo leads back to.
+      if (saved === entry) saved = null;
+      const revision = state.revision + 1;
+      set({
+        doc, revision, past, future: start.future, gesture: null, unsaved: isUnsaved(past),
+        engineRevision: start.inverse.some(evaluatorReads) ? revision : state.engineRevision,
+      });
+      setSelection(ui, existing(start.selection, doc));
     },
 
     undo() {
@@ -218,6 +277,7 @@ export function createDocStore(options: DocStoreOptions): StoreApi<DocState> {
       const past = state.past.slice(0, -1);
       pastBytes -= sizeOf(entry);
       gestureEntry = null;
+      gestureStart = null;
       const revision = state.revision + 1;
       set({
         doc, revision, past, future: [...state.future, entry], gesture: null, unsaved: isUnsaved(past),
@@ -235,6 +295,7 @@ export function createDocStore(options: DocStoreOptions): StoreApi<DocState> {
       const past = [...state.past, entry];
       pastBytes += sizeOf(entry);
       gestureEntry = null;
+      gestureStart = null;
       const revision = state.revision + 1;
       set({
         doc, revision, past, future: state.future.slice(0, -1), gesture: null, unsaved: isUnsaved(past),
@@ -249,6 +310,7 @@ export function createDocStore(options: DocStoreOptions): StoreApi<DocState> {
       saved = 'base';
       changedOutsideHistory = false;
       gestureEntry = null;
+      gestureStart = null;
       // The revision goes on from where it was: the engine takes no revision that is not above every earlier one (7.1).
       const revision = get().revision + 1;
       set({ doc: freeze(doc, true), revision, engineRevision: revision, unsaved: false, path, past: [], future: [], gesture: null });
@@ -269,6 +331,12 @@ export function createDocStore(options: DocStoreOptions): StoreApi<DocState> {
       saved = past[past.length - 1] ?? 'base';
       changedOutsideHistory = false;
       set({ path, unsaved: false });
+    },
+
+    markUnsaved() {
+      notInRecipe('markUnsaved');
+      saved = null;
+      if (!get().unsaved) set({ unsaved: true });
     },
   }));
 }

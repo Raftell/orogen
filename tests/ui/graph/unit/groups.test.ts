@@ -8,7 +8,7 @@ import { commitMove, groupSelection, resizeGroup, setGroupColor } from '../../..
 import {
   BODY_PADDING, BORDER, FOOTER_HEIGHT, GROUP_HEADER_HEIGHT, GROUP_PADDING, HEADER_HEIGHT, LOD_FAR_ZOOM, LOD_MID_ZOOM, NODE_WIDTH, ROW_HEIGHT, THUMBNAIL_SIZE,
   boundsOf, containsRect, distanceToPolyline, groupRectAround, lodOf, nodeHeight, polylineMeetsRect, polylinesMeet, portY, sampleWire, segmentsMeet,
-  toFlow, toScreen, visibleRect, wireControls, wirePath, wirePathOn,
+  MID_TITLE_SIZE, MID_TITLE_STEP_ZOOM, TITLE_FULL_ZOOM, titleStepOf, toFlow, toScreen, viewportShowing, visibleRect, wireControls, wirePath, wirePathOn,
 } from '../../../../src/app/panels/graph/geometry.ts';
 import { groupContents, nodesIn, wireAtPoint, wiresCut, wireUnderNode } from '../../../../src/app/panels/graph/hits.ts';
 import { setSelection } from '../../../../src/app/state/ui-store.ts';
@@ -69,6 +69,42 @@ test('the viewport of the graph: where a point of the panel is in the graph, wha
   b.add('generate/volcano', { x: 1401, y: 0 });
   b.add('generate/canyon', { x: 0, y: 1101 });
   assert.deepEqual(nodesIn(b.now(), b.views(), visibleRect(viewport, { width: 800, height: 600 })), [near, edge], 'any part of a node in the panel makes it visible');
+});
+
+test('wherever a node\'s name is drawn it is at least 9 pixels high on screen: below a zoom of 0.75 in three steps', () => {
+  assert.deepEqual([titleStepOf(1), titleStepOf(TITLE_FULL_ZOOM), titleStepOf(LOD_FAR_ZOOM - 0.01), titleStepOf(Number.NaN)], [null, null, null, null], 'near, the name has the graph\'s size; far out it is not drawn');
+  assert.deepEqual(
+    [titleStepOf(LOD_FAR_ZOOM), titleStepOf(MID_TITLE_STEP_ZOOM - 0.001), titleStepOf(MID_TITLE_STEP_ZOOM), titleStepOf(LOD_MID_ZOOM - 0.001), titleStepOf(LOD_MID_ZOOM), titleStepOf(TITLE_FULL_ZOOM - 0.001)],
+    ['low', 'low', 'high', 'high', 'near', 'near'],
+  );
+  // Every zoom at which a name is drawn: the examples open at 0.40 and 0.36, where a name of 12 graph pixels was
+  // 4.8 and 4.3 on screen, and just above the middle band it was 6.6.
+  for (let zoom = LOD_FAR_ZOOM; zoom <= 2.5; zoom += 0.005) {
+    const step = titleStepOf(zoom);
+    const onScreen = (step === null ? 12 : MID_TITLE_SIZE[step]) * zoom;
+    assert.ok(onScreen >= 8.8, `at ${zoom.toFixed(3)} a name is ${onScreen.toFixed(1)} px on screen`);
+    if (step !== null) assert.ok(onScreen <= 12.2, `at ${zoom.toFixed(3)} a name is ${onScreen.toFixed(1)} px on screen`);
+  }
+  // The name of the step just above the middle band fits the header it stands in.
+  assert.ok(MID_TITLE_SIZE.near * 1.15 <= HEADER_HEIGHT);
+});
+
+test('a node that was added out of sight is brought into view by the least move, at the zoom the graph has', () => {
+  const viewport = { x: 0, y: 0, zoom: 0.5 };
+  const size = { width: 800, height: 400 };
+  // In view already: nothing moves, and the same object says so.
+  assert.equal(viewportShowing(viewport, size, { x: 100, y: 100, w: 224, h: 144 }), viewport);
+  // Cut at the right edge: moved left by what is missing, and the margin; the zoom stays.
+  const right = viewportShowing(viewport, size, { x: 1500, y: 100, w: 224, h: 144 }, 24);
+  assert.deepEqual(right, { x: 800 - (1500 + 224) * 0.5 - 24, y: 0, zoom: 0.5 });
+  // Above and left of what is shown: its top-left corner comes to the margin.
+  assert.deepEqual(viewportShowing(viewport, size, { x: -400, y: -300, w: 224, h: 144 }, 24), { x: 200 + 24, y: 150 + 24, zoom: 0.5 });
+  // Below: moved up by the least that shows its lower edge.
+  const below = viewportShowing(viewport, size, { x: 100, y: 900, w: 224, h: 144 }, 24);
+  assert.deepEqual([below.x, below.y], [0, 400 - (900 + 144) * 0.5 - 24]);
+  // Larger than the panel: shown from its top-left corner. A panel without a size is left alone.
+  assert.deepEqual(viewportShowing({ x: 0, y: 0, zoom: 2 }, size, { x: 50, y: 50, w: 600, h: 300 }, 24), { x: -100 + 24, y: -100 + 24, zoom: 2 });
+  assert.equal(viewportShowing(viewport, { width: 0, height: 0 }, { x: 5000, y: 5000, w: 10, h: 10 }), viewport);
 });
 
 test('a group holds the nodes that lie wholly inside its frame, and the groups that do', () => {

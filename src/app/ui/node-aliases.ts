@@ -92,7 +92,7 @@ export const ALIASES: Readonly<Record<string, readonly Alias[]>> = {
 
   'io/import-field': [...gaea('File'), ...wm('File Input'), ...houdini('HeightField File')],
   'io/import-color': gaea('File'),
-  'io/export-landscape': gaea('Unreal'),
+  'io/export-landscape': [...gaea('Unreal', 'Export'), ...wm('Height Output')],
   'io/export-layer': wm('Splat Converter'),
   'io/export-field': [...gaea('Export'), ...wm('Height Output'), ...houdini('HeightField Output')],
   'io/export-color': [...gaea('Export'), ...wm('Bitmap Output')],

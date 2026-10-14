@@ -56,6 +56,14 @@ test('render <type>: defaults', () => {
   assert.equal(DEFAULT_RES, 513);
 });
 
+test('--param: a plain word is the text it is, so that no shell has to keep JSON quotes', () => {
+  const params = (...args: string[]): unknown => (parseCommand(['render', 'ref/fbm', ...args], {}, CWD) as { params: unknown }).params;
+  assert.deepEqual(params('--param', 'mode=ridged'), [{ name: 'mode', value: 'ridged' }]);
+  assert.deepEqual(params('--param', 'mode=soft-light', '--param', 'kind=a_b2'), [{ name: 'mode', value: 'soft-light' }, { name: 'kind', value: 'a_b2' }]);
+  // What JSON reads keeps its JSON meaning: a word that is a JSON word is that value, and quoted text is text.
+  assert.deepEqual(params('--param', 'invert=true', '--param', 'mode="true"', '--param', 'size=12'), [{ name: 'invert', value: true }, { name: 'mode', value: 'true' }, { name: 'size', value: 12 }]);
+});
+
 test('render <type>: every option', () => {
   const command = parseCommand([
     'render', 'simulate/hydraulic-erosion', '--res', '4033', '--param', 'reach=0.05', '--param=mode="add"', '--param', 'offset=[0.5, -0.25]',
@@ -124,7 +132,8 @@ test('render: usage errors', () => {
   refused('render ref/fbm --param size', /--param "size" is not <name>=<json>/, 'render');
   refused('render ref/fbm --param =1', /--param "=1" is not <name>=<json>/, 'render');
   refused('render ref/fbm --param 9lives=1', /--param "9lives=1" is not <name>=<json>/, 'render');
-  refused('render ref/fbm --param mode=add', /--param mode: "add" is not JSON\. A number is written 0\.25, a text '"add"'/, 'render');
+  refused('render ref/fbm --param mode=add,mix', /--param mode: "add,mix" is not JSON\. A number is written 0\.25, a text add or '"two words"'/, 'render');
+  refused('render ref/fbm --param mode=-add', /is not JSON/, 'render');
   refused('render ref/fbm --param size=', /--param size: "" is not JSON/, 'render');
   refused('render ref/fbm --param size=null', /--param size: null is not a parameter value/, 'render');
 

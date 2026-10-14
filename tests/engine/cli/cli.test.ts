@@ -289,6 +289,35 @@ test('orogen render <project.orogen> --node: a node of a project at the project\
   assert.deepEqual([crop.width, crop.height], [100, 100]);
 });
 
+test('orogen render <project.orogen> --node: a colour of a node that reads no terrain is drawn over the terrain the project shows', () => {
+  const out = path.join(OUTPUT, 'project-colour');
+  const node = (id: string, type: string, params: Record<string, unknown> = {}): Record<string, unknown> => ({ id, type, version: 1, position: { x: 0, y: 0 }, params });
+  /** A terrain and a plain colour beside it, which reads nothing: the view decides whether the colour has a terrain to lie on. */
+  const write = (name: string, ui: object): string => {
+    const file = path.join(out, name);
+    fs.mkdirSync(out, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      format: 'orogen', version: 1,
+      settings: { terrainSize: 2048, heightRange: 512, seed: 3, buildResolution: 513, previewLevel: 2, seaLevel: 0 },
+      nodes: { noise: node('noise', 'ref/fbm', { octaves: 5 }), paint: node('paint', 'color/constant', { color: [0.8, 0.3, 0.1] }) },
+      edges: {}, groups: {}, ui,
+    }, null, 2));
+    return file;
+  };
+
+  const shown = rendered(orogen(['render', write('shown.orogen', { view: { height: { node: 'noise', port: 'out' } } }), '--node', 'paint', '--out', path.join(out, 'shown')]));
+  assert.deepEqual([shown.type, shown.res], ['color/constant', 129]);
+  assert.deepEqual(shown.files, ['out-129.png', 'out-129-3d.png'].map((name) => fileOf(path.join(out, 'shown'), 'color/constant', name)));
+  // The view is the noise with the colour over it: relief in the colour's own hue, on part of the picture.
+  const view = look(read(shown.files[1]!), 0, read(shown.files[1]!).width);
+  assert.ok(view.drawn > 0.2 && view.drawn < 0.95, `the 3d view covers ${(100 * view.drawn).toFixed(0)} % of its picture`);
+  assert.ok(view.tinted > 0.15 && view.spread >= 40, `it is the terrain in the colour: ${(100 * view.tinted).toFixed(0)} % of it is orange, over ${view.spread} levels`);
+
+  // A project that shows nothing has no terrain to offer: the colour alone, as before.
+  const bare = rendered(orogen(['render', write('bare.orogen', {}), '--node', 'paint', '--out', path.join(out, 'bare')]));
+  assert.deepEqual(bare.files, [fileOf(path.join(out, 'bare'), 'color/constant', 'out-129.png')]);
+});
+
 test('orogen render: a node that fails ends with exit code 1, its error on standard error, and the JSON line without pictures', () => {
   const out = path.join(OUTPUT, 'failed');
   const project = path.join(out, 'small.orogen');

@@ -3,7 +3,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron';
 
-import { CHANNELS, PLATFORM_GLOBAL, type LaunchInfo, type PlatformApi, type Preferences } from '../ipc.ts';
+import { CHANNELS, PLATFORM_GLOBAL, type LaunchInfo, type PathStat, type PlatformApi, type Preferences, type RecoveryRecord } from '../ipc.ts';
 import { toProjectPath } from '../main/files.ts';
 
 const launch = ipcRenderer.sendSync(CHANNELS.launchInfo) as LaunchInfo | null;
@@ -27,6 +27,10 @@ function subscribe<A extends unknown[]>(listeners: Set<(...args: A) => void>, li
 
 const menuListeners = new Set<(commandId: string) => void>();
 const closeListeners = new Set<() => void>();
+const openListeners = new Set<(path: string) => void>();
+ipcRenderer.on(CHANNELS.openRequested, (_event, file: unknown) => {
+  if (typeof file === 'string' && file !== '') tell(openListeners, file);
+});
 ipcRenderer.on(CHANNELS.menuCommand, (_event, commandId: unknown) => {
   if (typeof commandId === 'string') tell(menuListeners, commandId);
 });
@@ -51,6 +55,13 @@ const api: PlatformApi = {
   setPreferences: (patch: Partial<Preferences>) => ipcRenderer.invoke(CHANNELS.setPreferences, patch) as Promise<void>,
   setBuildActive: (active: boolean) => ipcRenderer.send(CHANNELS.setBuildActive, active === true),
   showInFolder: (file: string) => ipcRenderer.send(CHANNELS.showInFolder, file),
+  statPath: (file: string, projectPath: string | null = null) => ipcRenderer.invoke(CHANNELS.statPath, file, projectPath) as Promise<PathStat>,
+  openExternal: (url: string) => ipcRenderer.invoke(CHANNELS.openExternal, url) as Promise<boolean>,
+  openDocument: (name: string) => ipcRenderer.invoke(CHANNELS.openDocument, name) as Promise<boolean>,
+  openBuildFile: (file: string) => ipcRenderer.invoke(CHANNELS.openBuildFile, file) as Promise<boolean>,
+  readRecovery: () => ipcRenderer.invoke(CHANNELS.readRecovery) as Promise<RecoveryRecord | null>,
+  writeRecovery: (record) => ipcRenderer.invoke(CHANNELS.writeRecovery, record) as Promise<void>,
+  onOpenRequested: (listener) => subscribe(openListeners, listener),
   onMenuCommand: (listener) => subscribe(menuListeners, listener),
   onCloseRequested: (listener) => subscribe(closeListeners, listener),
   confirmClose: () => ipcRenderer.send(CHANNELS.confirmClose),

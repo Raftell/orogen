@@ -2,14 +2,17 @@
 // from: colours between the document and the screen, sizes and names, the menu bar and the dock layout.
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
 
 import { createCommandRegistry, type CommandSource } from '../../../../src/app/shell/commands.ts';
 import { adapterName, baseName, failedNodes, folderOf, formatBytes, formatDuration, isAbsolutePath, projectName, windowTitle } from '../../../../src/app/shell/format.ts';
 import { createKeymap } from '../../../../src/app/shell/keys.ts';
-import { initialSize, LAYOUT_VERSION, placementOrder, savedDock } from '../../../../src/app/shell/layout.ts';
+import { initialSize, LAYOUT_VERSION, PANEL_MIN, placementOrder, savedDock, withMinimums } from '../../../../src/app/shell/layout.ts';
 import { buildMenus } from '../../../../src/app/shell/menu.ts';
 import { fromDisplay, fromHex, linearToSrgb, srgbToLinear, toDisplay, toHex } from '../../../../src/app/ui/color.ts';
+import { ADD_NODE_EVENT, addNodeType, NODE_DRAG_TYPE, requestAddNode, startNodeDrag } from '../../../../src/app/ui/add-node.ts';
 import { isFailure, nodeErrorText, portLabel } from '../../../../src/app/ui/node-text.ts';
 import { nodes as productNodes } from '../../../../src/core/nodes/index.ts';
 import { createRegistry } from '../../../../src/core/runtime.ts';
@@ -96,7 +99,7 @@ test('the errors to show are those of the nodes the document holds, in its order
   const engine = reduceEngineEvents([
     { type: 'node-error', requestId: 1, error: error('gone') },
     { type: 'node-error', requestId: 1, error: error('second') },
-    { type: 'node-done', requestId: 1, nodeId: 'fine', cached: false, wallMs: 1, gpuMs: null, peakBytes: 0 },
+    { type: 'node-done', requestId: 1, nodeId: 'fine', cached: false, resolution: 257, wallMs: 1, gpuMs: null, peakBytes: 0 },
     { type: 'node-error', requestId: 1, error: error('first') },
   ]);
   const node = (id: string): GraphDoc['nodes'][string] => ({ id, type: 'io/import-field', version: 1, position: { x: 0, y: 0 }, params: {} });
@@ -193,6 +196,42 @@ test('the default layout adds each panel after the one it stands beside', () => 
   ]);
 });
 
+test('the default layout of the application docks the inspector apart: the library and the build panel are tabs below it, not behind it', () => {
+  // The placements as the five panel folders declare them: a PanelDef itself loads its component, which needs a window.
+  const ROOT = path.resolve(import.meta.dirname, '../../../..');
+  const registered = (['graph', 'viewport', 'inspector', 'library', 'build'] as const).map((id) => {
+    const declared = /\n  placement: \{([^}]*)\},/.exec(fs.readFileSync(path.join(ROOT, 'src/app/panels', id, 'index.ts'), 'utf8'));
+    assert.ok(declared, `the PanelDef of ${id} declares its placement`);
+    const member = (name: string): string | undefined => new RegExp(`${name}: '(\\w+)'`).exec(declared[1]!)?.[1];
+    return placed(id, { relativeTo: member('relativeTo') as PanelDef['id'] | undefined, direction: member('direction') as PanelDef['placement']['direction'] });
+  });
+  const steps = placementOrder(registered);
+  const of = (id: string) => steps.find((step) => step.id === id)!;
+  assert.deepEqual(of('viewport'), { id: 'viewport', relativeTo: null, direction: null });
+  assert.deepEqual(of('graph'), { id: 'graph', relativeTo: 'viewport', direction: 'below' });
+  assert.deepEqual(of('inspector'), { id: 'inspector', relativeTo: null, direction: 'right' });
+  assert.deepEqual(of('library'), { id: 'library', relativeTo: 'inspector', direction: 'below' });
+  assert.deepEqual(of('build'), { id: 'build', relativeTo: 'library', direction: 'within' });
+  // No panel shares the inspector's group: a node that is selected shows its parameters whatever else is in view.
+  assert.deepEqual(steps.filter((step) => step.direction === 'within').map((step) => step.relativeTo), ['library']);
+  // The inspector keeps the larger part of the column.
+  assert.deepEqual(initialSize('library', { width: 1600, height: 948 }), { initialHeight: 427 });
+});
+
+test('no group of the dock is made narrower than a property list needs, and a layout saved without the minimums is restored with them', () => {
+  assert.deepEqual(PANEL_MIN, { width: 220, height: 100 });
+  const dock = { grid: { root: {} }, panels: { graph: { id: 'graph', title: 'Graph' }, build: { id: 'build', minimumWidth: 300 }, odd: 7 } };
+  const restored = withMinimums(dock) as typeof dock;
+  assert.deepEqual(restored.panels, {
+    graph: { id: 'graph', title: 'Graph', minimumWidth: 220, minimumHeight: 100 },
+    build: { id: 'build', minimumWidth: 300, minimumHeight: 100 },
+    odd: 7,
+  });
+  assert.equal(restored.grid, dock.grid, 'the grid is the saved one');
+  assert.deepEqual(dock.panels.graph, { id: 'graph', title: 'Graph' }, 'the saved value is not written into');
+  assert.equal(withMinimums({ grid: {} }).panels, undefined);
+});
+
 test('placements that give no order are refused with the panels named', () => {
   assert.throws(() => placementOrder([placed('graph', { relativeTo: 'viewport' }), placed('viewport', { relativeTo: 'graph' })]), /"graph", "viewport" are placed relative to each other/);
   assert.throws(() => placementOrder([placed('graph', { relativeTo: 'viewport' })]), /"graph" is placed relative to "viewport", which is no other panel/);
@@ -221,4 +260,36 @@ test('the side column of the default layout is a share of the window within its 
   assert.deepEqual(initialSize('graph', { width: 1600, height: 900 }), { initialHeight: 450 });
   assert.deepEqual(initialSize('viewport', { width: 1600, height: 900 }), {});
   assert.deepEqual(initialSize('graph', { width: 0, height: 0 }), {}, 'a dock that has no size yet says nothing');
+});
+
+// ---- from the library into the graph (8.7 rule 8) ----
+
+test('the add-node drag and event are declared once, for the library and the graph alike', () => {
+  assert.deepEqual([NODE_DRAG_TYPE, ADD_NODE_EVENT], ['application/x-orogen-node', 'orogen:add-node']);
+
+  // The drag: the node type under the agreed type, readable as text for a drop elsewhere, and offered as a copy.
+  const data = new Map<string, string>();
+  const transfer = { setData: (type: string, value: string) => void data.set(type, value), effectAllowed: 'uninitialized' };
+  startNodeDrag(transfer, 'filter/blur');
+  assert.deepEqual([...data], [['application/x-orogen-node', 'filter/blur'], ['text/plain', 'filter/blur']]);
+  assert.equal(transfer.effectAllowed, 'copy');
+
+  // The event: what one side sends the other reads.
+  const target = new EventTarget();
+  const heard: (string | null)[] = [];
+  target.addEventListener(ADD_NODE_EVENT, (event) => heard.push(addNodeType(event)));
+  requestAddNode(target, 'generate/dunes');
+  target.dispatchEvent(new CustomEvent(ADD_NODE_EVENT, { detail: { type: 7 } }));
+  target.dispatchEvent(new CustomEvent(ADD_NODE_EVENT, { detail: null }));
+  target.dispatchEvent(new CustomEvent(ADD_NODE_EVENT, { detail: { type: '' } }));
+  target.dispatchEvent(new Event(ADD_NODE_EVENT));
+  assert.deepEqual(heard, ['generate/dunes', null, null, null, null]);
+
+  // Neither panel has a declaration of its own that could drift from the other's.
+  const ROOT = path.resolve(import.meta.dirname, '../../../..');
+  for (const folder of ['src/app/panels/graph', 'src/app/panels/library']) {
+    for (const file of fs.readdirSync(path.join(ROOT, folder)).filter((name) => /\.tsx?$/.test(name))) {
+      assert.doesNotMatch(fs.readFileSync(path.join(ROOT, folder, file), 'utf8'), /['"](application\/x-orogen-node|orogen:add-node)['"]/, `${folder}/${file}`);
+    }
+  }
 });

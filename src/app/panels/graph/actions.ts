@@ -6,7 +6,7 @@
 import type { StoreApi } from 'zustand/vanilla';
 
 import {
-  addNode, connect, copyNodes, disconnect, moveNodes, newId, pasteNodes, removeGroups, removeNodes, setGraphViewport, setGroup,
+  addNode, canBypass, connect, copyNodes, disconnect, inputsOf, moveNodes, newId, pasteNodes, removeGroups, removeNodes, setGraphViewport, setGroup,
   setNodeFlags, setView, validateConnection,
   type GraphDoc, type NodeRegistry, type PortRef, type ViewBinding,
 } from '../../../core/runtime.ts';
@@ -17,7 +17,7 @@ import { applyInsert, insertPlan, pendingConnection, portForWire, type Pending }
 import { createFlowMapper, shapeOfType, type NodeView } from './flow.ts';
 import { GROUP_MIN_HEIGHT, GROUP_MIN_WIDTH, groupRectAround, nodeHeight, nodeWidth, portY, type GraphViewport, type Point, type Rect } from './geometry.ts';
 import { groupContents, rectsOf } from './hits.ts';
-import { canBypass, inputsOf, nodeTitle, own, type PortTone } from './model.ts';
+import { nodeTitle, own, type PortTone } from './model.ts';
 import { graphStore, selectWiresAndGroups, type GraphUiState } from './state.ts';
 
 /** The members of CommandContext (runtime.md 8.8) these functions use. `local` is the panel's own store; a test gives one of its own. */
@@ -120,6 +120,69 @@ export function addNodeAt(ctx: GraphContext, type: string, position: Point, opti
   });
   selectWiresAndGroups(localOf(ctx), [], []);
   return id;
+}
+
+// ---- "add this node now" (8.7 rule 8) -----------------------------------------------------------------------------
+
+/** The room a node that is added beside another keeps to it: a wire between the two is drawn in it. */
+export const BESIDE_GAP = 72;
+/** The room a node the application places keeps to the box of every other node. */
+export const CLEAR_MARGIN = 16;
+/** The step by which a clear place is looked for, and how far: 40 steps in every direction. */
+const CLEAR_STEP = 24;
+const CLEAR_REACH = 40;
+
+/** Every offset of the search, nearest first; of two as near the one that stays in the column, and of those the lower. */
+const CLEAR_OFFSETS: readonly Point[] = (() => {
+  const offsets: Point[] = [];
+  for (let dy = -CLEAR_REACH; dy <= CLEAR_REACH; dy++) for (let dx = -CLEAR_REACH; dx <= CLEAR_REACH; dx++) offsets.push({ x: dx * CLEAR_STEP, y: dy * CLEAR_STEP });
+  return offsets.sort((a, b) => (a.x * a.x + a.y * a.y) - (b.x * b.x + b.y * b.y) || Math.abs(a.x) - Math.abs(b.x) || b.y - a.y);
+})();
+
+/**
+ * The corner nearest `corner` at which a box of `size` lies clear of the box of every node, with a margin: a
+ * node the application puts down itself covers no other, and none of its ports. Whole pixels. Where the graph is
+ * full as far as the search reaches, the corner as it was asked for.
+ */
+export function clearSpot(ctx: GraphContext, corner: Point, size: { readonly w: number; readonly h: number }): Point {
+  const doc = docOf(ctx);
+  const taken = rectsOf(doc, viewsOf(ctx), Object.keys(doc.nodes))
+    .map((rect) => ({ x: rect.x - CLEAR_MARGIN, y: rect.y - CLEAR_MARGIN, w: rect.w + 2 * CLEAR_MARGIN, h: rect.h + 2 * CLEAR_MARGIN }));
+  const from = whole(corner);
+  for (const offset of CLEAR_OFFSETS) {
+    const box = { x: from.x + offset.x, y: from.y + offset.y, w: size.w, h: size.h };
+    if (!taken.some((rect) => box.x < rect.x + rect.w && rect.x < box.x + box.w && box.y < rect.y + rect.h && rect.y < box.y + box.h)) return { x: box.x, y: box.y };
+  }
+  return from;
+}
+
+/**
+ * Adds a node that was asked for from outside the graph, by a double click or Enter in the library, where no
+ * place was pointed at. With one node selected whose first output the new node can take, the new node is put to
+ * the right of it and connected to it, the wire into the first of its inputs that takes what that output carries:
+ * a chain is built by adding its nodes one after the other. Otherwise the node goes where it covers no other,
+ * as near `center` (the middle of what the graph shows) as that allows. It is selected. One step of the history.
+ */
+export function addNodeNow(ctx: GraphContext, type: string, center: Point): string | null {
+  const def = ctx.registry.get(type);
+  if (!def) return null;
+  const shape = shapeOfType(def);
+  const size = { w: nodeWidth(shape), h: nodeHeight(shape) };
+  const doc = docOf(ctx);
+  const selected = selectedNodes(ctx);
+  const from = selected.length === 1 && selectedEdges(ctx).length === 0 && selectedGroups(ctx).length === 0 ? selected[0]! : null;
+  const view = from === null ? undefined : viewsOf(ctx).get(from);
+  const output = view?.known ? view.outputs[0] : undefined;
+  if (from !== null && view && output && inputsOf(def).length > 0) {
+    const pending: Pending = { from: { node: from, port: output.name } };
+    const port = portForWire(def, pending, output.tone);
+    const row = Math.max(0, inputsOf(def).findIndex((candidate) => candidate.name === port));
+    const place = doc.nodes[from]!.position;
+    // The wire runs level: the input it ends at is at the height of the output it comes from.
+    const beside = { x: place.x + view.width + BESIDE_GAP, y: place.y + portY(output.row) - portY(row) };
+    return addNodeAt(ctx, type, clearSpot(ctx, beside, size), { pending, tone: output.tone });
+  }
+  return addNodeAt(ctx, type, clearSpot(ctx, { x: center.x - size.w / 2, y: center.y - size.h / 2 }, size));
 }
 
 // ---- the selection ---------------------------------------------------------------------------------------------------
@@ -244,7 +307,10 @@ export function duplicateSelection(ctx: GraphContext): string[] {
 /** The selected nodes that can be bypassed (engine.md 4.14). */
 export function bypassable(ctx: GraphContext): string[] {
   const doc = docOf(ctx);
-  return selectedNodes(ctx).filter((id) => canBypass(ctx.registry.get(doc.nodes[id]!.type)));
+  return selectedNodes(ctx).filter((id) => {
+    const def = ctx.registry.get(doc.nodes[id]!.type);
+    return def !== undefined && canBypass(def);
+  });
 }
 
 /** Bypasses the selected nodes, or takes the bypass off when all of them have it. */

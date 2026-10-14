@@ -197,6 +197,8 @@ test('a node predicted above 100 ms is not run for its thumbnail alone, unless i
     }, { height: { node: p.view ?? 'level', port: 'out' } });
     let revision = 0;
     const idleRequests = (from: number) => t.of('request-start', from).filter((e) => e.purpose === 'thumbnails');
+    const resolutionOf = (requestId: number) => t.of('eval-start').find((e) => e.requestId === requestId)!.resolution;
+    const ABORTED = { level: 'skipped:aborted', far: 'skipped:aborted' };
 
     // 1. `far` has no timing: nothing predicts it slow, so the idle evaluation runs it.
     t.session.requestThumbnails(['far', 'side']);
@@ -209,8 +211,9 @@ test('a node predicted above 100 ms is not run for its thumbnail alone, unless i
     assert.deepEqual(endings(t.events, idleRequests(from)[0]!.requestId), { level: 'run', far: 'run', side: 'run' });
     const runsBefore = slow.runs.get(THUMBNAIL)!;
 
-    // 2. It took 100.5 ms there. With another parameter it is predicted slow and is not cached: it is left out,
-    // and `side` gets its thumbnail.
+    // 2. It took 100.5 ms there. With another parameter it is predicted slow and is not cached: it is left out
+    // at the thumbnail resolution, and `side` gets its thumbnail. It is then tried at the preview resolution,
+    // where it is not cached either and is predicted slower still: left out there as well, before anything ran.
     timings.set('far', { resolution: THUMBNAIL, wallMs: 100.5 });
     from = t.mark();
     t.session.setDocument(lab({ iterations: 9, side: 4 }), ++revision);
@@ -220,10 +223,12 @@ test('a node predicted above 100 ms is not run for its thumbnail alone, unless i
     await t.idle();
     assert.equal(second.side!.contentKey, keysB.side);
     const idle = idleRequests(from);
-    assert.equal(idle.length, 2, 'one evaluation that stopped before its first node, and one without the slow node');
-    assert.deepEqual(endings(t.events, idle[0]!.requestId), { level: 'skipped:aborted', far: 'skipped:aborted', side: 'skipped:aborted' });
+    assert.equal(idle.length, 3, 'one evaluation that stopped before its first node, one without the slow node, and one try at the preview resolution');
+    assert.deepEqual(idle.map((e) => resolutionOf(e.requestId)), [THUMBNAIL, THUMBNAIL, PREVIEW]);
+    assert.deepEqual(endings(t.events, idle[0]!.requestId), { ...ABORTED, side: 'skipped:aborted' });
     assert.deepEqual(endings(t.events, idle[1]!.requestId), { level: 'cached', side: 'run' });
-    assert.equal(slow.runs.get(THUMBNAIL), runsBefore, 'the slow node did not run');
+    assert.deepEqual(endings(t.events, idle[2]!.requestId), ABORTED, 'the try at the preview resolution ran nothing');
+    assert.deepEqual([slow.runs.get(THUMBNAIL), slow.runs.get(PREVIEW)], [runsBefore, undefined], 'the slow node did not run');
     assert.deepEqual(t.of('thumbnail', from).map((e) => e.nodeId), ['side'], 'its thumbnail stays stale');
 
     // 3. A view evaluation runs it, and the thumbnail comes with that.
@@ -261,6 +266,103 @@ test('a node predicted above 100 ms is not run for its thumbnail alone, unless i
       assert.deepEqual(endings(t.events, ran[0]!.requestId), { level: 'cached', far: 'run' });
     }
     assert.equal(slow.runs.get(THUMBNAIL), runsBefore + 2);
+  } finally {
+    await t.dispose();
+  }
+});
+
+test('a node behind a slow one gets its thumbnail at the preview resolution, where the view has the slow one cached', async () => {
+  resetSlow();
+  // `walk` is the simulation the view shows; `mask` and `tint` read it and are on no path of the view; `deep`
+  // is a second slow node behind it. Every timing is told, so the rule is held to these numbers.
+  const timings = new Map<string, { resolution: number; wallMs: number }>([['walk', { resolution: PREVIEW, wallMs: 4000 }]]);
+  const t = await startSession({ lastTiming: (id) => timings.get(id) ?? null });
+  try {
+    const lab = (p: { iterations?: number; gain?: number; view?: string } = {}) => doc({
+      level: { type: 'ref/constant', params: { value: 0.25 } },
+      walk: { type: 'ref/slow', params: { iterations: p.iterations ?? 12 }, inputs: { in: 'level.out' } },
+      mask: { type: 'ref/gain', params: { gain: p.gain ?? 2 }, inputs: { in: 'walk.out' } },
+      tint: { type: 'ref/gain', params: { gain: 5 }, inputs: { in: 'mask.out' } },
+      deep: { type: 'ref/slow', params: { iterations: 3 }, inputs: { in: 'walk.out' } },
+      last: { type: 'ref/gain', params: { gain: 7 }, inputs: { in: 'deep.out' } },
+    }, { height: { node: p.view ?? 'walk', port: 'out' } });
+    const idleRequests = (from: number) => t.of('request-start', from).filter((e) => e.purpose === 'thumbnails');
+    const resolutionOf = (requestId: number) => t.of('eval-start').find((e) => e.requestId === requestId)!.resolution;
+    let revision = 0;
+
+    // 1. The view shows the simulation. At the thumbnail resolution it would have to run again, 1 s by its
+    // timing: `mask` and `tint` are left out there. At the preview resolution it is cached: both are evaluated
+    // from it, and nothing slow runs.
+    t.session.requestThumbnails(['mask', 'tint']);
+    let from = t.mark();
+    t.session.setDocument(lab(), ++revision);
+    const keys = (await t.next('keys')).keys;
+    const got = await thumbnails(t, ['mask', 'tint'], from);
+    await t.idle();
+    assert.deepEqual([got.mask!.contentKey, got.mask!.resolution, got.tint!.contentKey, got.tint!.resolution], [keys.mask, PREVIEW, keys.tint, PREVIEW]);
+    let idle = idleRequests(from);
+    assert.deepEqual(idle.map((e) => resolutionOf(e.requestId)), [THUMBNAIL, PREVIEW], 'one try at the thumbnail resolution, then the preview resolution');
+    assert.deepEqual(endings(t.events, idle[0]!.requestId), { level: 'skipped:aborted', walk: 'skipped:aborted', mask: 'skipped:aborted', tint: 'skipped:aborted' });
+    assert.deepEqual(endings(t.events, idle[1]!.requestId), { level: 'cached', walk: 'cached', mask: 'run', tint: 'run' });
+    assert.deepEqual([...slow.runs], [[PREVIEW, 1]], 'the simulation ran once, for the view');
+    assert.equal(t.of('eval-end').find((e) => e.requestId === idle[1]!.requestId)!.status, 'ok');
+
+    // 2. A node behind a second slow node that nothing has cached is left out at both resolutions: no thumbnail,
+    // and no evaluation after the two tries.
+    timings.set('deep', { resolution: PREVIEW, wallMs: 500 });
+    from = t.mark();
+    t.session.requestThumbnails(['mask', 'tint', 'last']);
+    await t.idle();
+    idle = idleRequests(from);
+    assert.deepEqual(idle.map((e) => resolutionOf(e.requestId)), [THUMBNAIL, PREVIEW]);
+    assert.deepEqual(idle.map((e) => t.of('eval-end').find((end) => end.requestId === e.requestId)!.status), ['aborted', 'aborted']);
+    assert.deepEqual(t.of('thumbnail', from).map((e) => e.nodeId), []);
+    assert.deepEqual([...slow.runs], [[PREVIEW, 1]]);
+
+    // An edit beside the slow node, which runs a cheap node for the view: nothing is cached that was missing,
+    // so the node behind the slow one is not tried again. The one stale thumbnail is made, at the preview resolution.
+    from = t.mark();
+    t.session.setDocument(lab({ view: 'mask', gain: 6 }), ++revision);
+    const beside = await thumbnails(t, ['tint'], from);
+    await t.idle();
+    assert.equal(beside.tint!.resolution, PREVIEW);
+    idle = idleRequests(from);
+    const plans = idle.map((e) => t.of('eval-start').find((start) => start.requestId === e.requestId)!.plan.map((node) => node.nodeId));
+    assert.deepEqual(plans, [['level', 'walk', 'mask', 'tint'], ['level', 'walk', 'mask', 'tint']], 'neither idle evaluation asks for the node that was left out');
+    assert.deepEqual(idle.map((e) => resolutionOf(e.requestId)), [THUMBNAIL, PREVIEW]);
+    assert.deepEqual([...slow.runs], [[PREVIEW, 1]]);
+
+    // 3. Once a view evaluation has run that node, the cache holds it: the thumbnail that waited is made.
+    from = t.mark();
+    t.session.setDocument(lab({ view: 'deep', gain: 6 }), ++revision);
+    const made = await thumbnails(t, ['last'], from);
+    await t.idle();
+    assert.equal(made.last!.resolution, PREVIEW);
+    idle = idleRequests(from);
+    assert.deepEqual(idle.map((e) => resolutionOf(e.requestId)), [PREVIEW], 'asked again at the preview resolution alone');
+    assert.deepEqual(endings(t.events, idle[0]!.requestId), { level: 'cached', walk: 'cached', deep: 'cached', last: 'run' });
+
+    // 4. The idle evaluation at the preview resolution is aborted by an edit like any other, and made again.
+    let edited = false;
+    const stop = t.session.subscribe((e) => {
+      if (edited || e.type !== 'node-start' || e.nodeId !== 'tint') return;
+      const request = t.of('request-start').find((r) => r.requestId === e.requestId)!;
+      if (request.purpose !== 'thumbnails') return;
+      edited = true;
+      t.session.setDocument(lab({ view: 'deep', gain: 3 }), ++revision);
+    });
+    from = t.mark();
+    t.session.setDocument(lab({ view: 'deep', gain: 4 }), ++revision);
+    const again = await thumbnails(t, ['tint'], from);
+    await t.idle();
+    stop();
+    assert.equal(edited, true);
+    const purposes = t.of('request-start', from).map((e) => [e.revision, e.purpose]);
+    assert.deepEqual(purposes.slice(0, 3), [[revision - 1, 'view'], [revision - 1, 'thumbnails'], [revision - 1, 'thumbnails']], 'the view, the try at the thumbnail resolution, the preview resolution');
+    const interrupted = t.of('request-start', from)[2]!;
+    assert.equal(t.of('eval-end').find((e) => e.requestId === interrupted.requestId)!.status, 'aborted', 'the edit aborted the idle evaluation at the preview resolution');
+    assert.deepEqual([again.tint!.resolution, again.tint!.contentKey !== got.tint!.contentKey], [PREVIEW, true]);
+    assert.deepEqual([...slow.runs].sort(), [[PREVIEW, 2]], 'no slow node ever ran for a thumbnail');
   } finally {
     await t.dispose();
   }

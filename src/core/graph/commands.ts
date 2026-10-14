@@ -267,6 +267,18 @@ export function setView(doc: DocDraft, view: ViewBinding | null): void {
   if (!jsonEqual(doc.ui.view, view)) doc.ui.view = cloneJson(view);
 }
 
+/**
+ * What the viewport panel keeps with the project (7.5 rule 14): JSON of the panel's own, which the core carries
+ * and does not read. `null` or `undefined` removes it. No cache key takes it in.
+ */
+export function setViewportState(doc: DocDraft, value: unknown): void {
+  if (value === undefined || value === null) {
+    if (Object.hasOwn(doc.ui, 'viewport')) delete doc.ui.viewport;
+    return;
+  }
+  if (!jsonEqual(doc.ui.viewport, value)) doc.ui.viewport = cloneJson(value);
+}
+
 export function setGraphViewport(doc: DocDraft, viewport: { x: number; y: number; zoom: number }): void {
   requireFinite('A viewport', viewport.x, viewport.y, viewport.zoom);
   const next = { x: viewport.x, y: viewport.y, zoom: viewport.zoom };

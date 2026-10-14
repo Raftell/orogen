@@ -127,7 +127,7 @@ test('scale: a graph of 300 nodes is panned, zoomed, dragged and box-selected, a
     };
 
     // ---- everything is there, fitted, and drawn at the level of detail of its zoom ----
-    assert.equal(await app.eval<number>(`document.querySelectorAll('[data-node]').length`), 300);
+    assert.equal(await app.eval<number>(`document.querySelectorAll('[data-graph="root"] [data-node]').length`), 300);
     assert.equal(await app.eval<number>(`document.querySelectorAll('.react-flow__edge').length`), edgeCount);
     assert.equal(await app.eval<number>(`document.querySelectorAll('[data-group]').length`), 3);
     const fitted = await drawn(app);
@@ -220,7 +220,7 @@ test('scale: a graph of 300 nodes is panned, zoomed, dragged and box-selected, a
     await app.waitFor(`document.querySelectorAll('[data-thumbnail="drawn"]').length >= 4`, 60_000);
     const visible = await app.eval<number>(`(() => {
       const view = document.querySelector('[data-graph="root"]').getBoundingClientRect();
-      return [...document.querySelectorAll('[data-node]')].filter((node) => { const r = node.getBoundingClientRect(); return r.right > view.left && r.left < view.right && r.bottom > view.top && r.top < view.bottom; }).length;
+      return [...document.querySelectorAll('[data-graph="root"] [data-node]')].filter((node) => { const r = node.getBoundingClientRect(); return r.right > view.left && r.left < view.right && r.bottom > view.top && r.top < view.bottom; }).length;
     })()`);
     const thumbnails = await app.eval<number>(`document.querySelectorAll('[data-thumbnail="drawn"]').length`);
     t.diagnostic(`close up at a zoom of ${close.zoom.toFixed(2)}: ${visible} of the 300 nodes in view, ${thumbnails} thumbnails drawn`);
@@ -229,12 +229,18 @@ test('scale: a graph of 300 nodes is panned, zoomed, dragged and box-selected, a
     // The list it last gave the engine is the nodes in view: every one of them, and none that lies outside.
     const inView = (margin: number): string => `(() => {
       const view = document.querySelector('[data-graph="root"]').getBoundingClientRect();
-      return [...document.querySelectorAll('[data-node]')].filter((node) => {
+      return [...document.querySelectorAll('[data-graph="root"] [data-node]')].filter((node) => {
         const r = node.getBoundingClientRect();
         return r.right > view.left + ${margin} && r.left < view.right - ${margin} && r.bottom > view.top + ${margin} && r.top < view.bottom - ${margin};
       }).map((node) => node.getAttribute('data-node'));
     })()`;
-    await app.waitFor(`(() => { const last = window.graphAsked.at(-1); const inside = ${inView(3)}; return last !== undefined && last.length > 0 && inside.every((id) => last.includes(id)); })()`, PAGE_BACKSTOP_MS);
+    // The list follows the view a moment after it has come to rest: one asked for while the zoom still passed over more is not the last.
+    await app.waitFor(`(() => {
+      const last = window.graphAsked.at(-1);
+      const inside = ${inView(3)};
+      const around = new Set(${inView(-3)});
+      return last !== undefined && last.length > 0 && inside.every((id) => last.includes(id)) && last.every((id) => around.has(id));
+    })()`, PAGE_BACKSTOP_MS);
     const asked = await app.eval<string[]>(`window.graphAsked.at(-1)`);
     const around = new Set(await app.eval<string[]>(inView(-3)));
     assert.ok(asked.length >= 4 && asked.length < 40, `asked for ${asked.length} thumbnails with ${visible} nodes in view`);

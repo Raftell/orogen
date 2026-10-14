@@ -309,7 +309,7 @@ export default defineNode({
   title: 'Natural Color',
   category: 'color',
   description: 'Colors a terrain as a landscape: rock on steep ground, vegetation and soil by height and shelter, wet valley lines and snow.',
-  keywords: ['biome', 'texture', 'satellite', 'landscape', 'vegetation', 'rock', 'snow', 'colorize', 'satmap', 'albedo'],
+  keywords: ['biome', 'texture', 'satellite', 'landscape', 'vegetation', 'rock', 'snow', 'colorize', 'satmap', 'albedo', 'forest', 'grass'],
   inputs: [
     { name: 'in', type: 'field' },
     { name: 'flow', type: 'field', role: 'data', optional: true },

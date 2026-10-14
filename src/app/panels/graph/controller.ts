@@ -6,24 +6,19 @@
 import type { Connection, EdgeChange, FinalConnectionState, NodeChange, ReactFlowInstance, useStoreApi } from '@xyflow/react';
 import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 
-import { newId, validateConnection, type GraphDoc } from '../../../core/runtime.ts';
+import { inputsOf, newId, portLabel, validateConnection, type GraphDoc } from '../../../core/runtime.ts';
 import type { DocState } from '../../state/doc-store.ts';
 import { selectNodes, setSelection } from '../../state/ui-store.ts';
-import { commandItems, type AppServices, type CommandContext, type MenuItemSpec } from '../../ui/index.ts';
+import { ADD_NODE_EVENT, addNodeType, commandItems, NODE_DRAG_TYPE, type AppServices, type CommandContext, type MenuItemSpec } from '../../ui/index.ts';
 import {
-  addNodeAt, commitMove, connectPorts, copyText, cutText, disconnectEdges, pasteText, reconnectEdge, saveViewport, selectedGroups, selectedNodes, setGroupColor,
+  addNodeAt, addNodeNow, commitMove, connectPorts, copyText, cutText, disconnectEdges, pasteText, reconnectEdge, saveViewport, selectedGroups, selectedNodes, setGroupColor, viewsOf,
 } from './actions.ts';
 import { connectionRefs, portEnd, refusal, wireOntoNode, type Pending, type PortEnd } from './connect.ts';
-import { edgeFlowId, groupRect, nodeFlowId, parseFlowId, positionOf, type FlowGraph } from './flow.ts';
-import { MIN_ZOOM, boundsOf, containsRect, inputAnchor, lodOf, outputAnchor, toFlow, visibleRect, wirePathOn, type Point, type Rect } from './geometry.ts';
+import { edgeFlowId, groupRect, nodeFlowId, parseFlowId, positionOf, rectOfNode, type FlowGraph } from './flow.ts';
+import { MIN_ZOOM, boundsOf, containsRect, inputAnchor, lodOf, outputAnchor, titleStepOf, toFlow, viewportShowing, visibleRect, wirePathOn, type Point, type Rect } from './geometry.ts';
 import { groupContents, nodesIn, rectsOf, wireAtPoint, wiresCut, wireUnderNode, type GroupContents } from './hits.ts';
-import { CATEGORIES, nodeTitle, own, portLabel, inputsOf, type PortTone } from './model.ts';
+import { CATEGORIES, nodeTitle, own, type PortTone } from './model.ts';
 import { graphStore, selectWiresAndGroups, type GraphHost, type PaletteRequest } from './state.ts';
-
-/** The data-transfer type of a node dragged from the library, carrying the node type id as text (runtime.md 8.7). */
-export const NODE_DRAG_TYPE = 'application/x-orogen-node';
-/** The window event that adds a node now: a CustomEvent with detail { type } (runtime.md 8.7). */
-export const ADD_NODE_EVENT = 'orogen:add-node';
 
 /** How long the viewport rests before it is written to the document, and the visible nodes before their thumbnails are asked for. */
 const SAVE_DELAY_MS = 300;
@@ -158,19 +153,28 @@ export function createController(app: AppServices, flow: ReactFlowInstance, libr
   /** Whether the names of the groups were last drawn at the screen's size. */
   let titlesScaled = false;
   /**
-   * Far out the name of a group is drawn at the screen's size and not the graph's, so that a graph seen whole
-   * says what its parts are. Below GROUP_TITLE_MIN_ZOOM a name at that size would be larger than the group it
+   * Far out, and in the middle band, the name of a group is drawn at the screen's size and not the graph's, so
+   * that a graph seen whole says what its parts are: at the graph's size it would be under 7 pixels high there. Below GROUP_TITLE_MIN_ZOOM a name at that size would be larger than the group it
    * names. The scale is written on the few names themselves: a property of the graph's root that changed with
    * every step of a zoom had the style of every element under it computed again (measured with 300 nodes:
    * 33 ms a step in place of 4).
    */
   const sayZoom = (zoom: number): void => {
     if (!root) return;
-    const scaled = zoom > 0 && lodOf(zoom) === 'far' && zoom >= GROUP_TITLE_MIN_ZOOM;
+    const scaled = zoom > 0 && lodOf(zoom) !== 'near' && zoom >= GROUP_TITLE_MIN_ZOOM;
     if (!scaled && !titlesScaled) return;
     titlesScaled = scaled;
     root.toggleAttribute('data-group-titles', scaled);
     for (const title of root.querySelectorAll<HTMLElement>('[data-group] [data-role="title"]')) title.style.transform = scaled ? `scale(${1 / zoom})` : '';
+  };
+  /** The level of detail of a zoom, and the size step of the nodes' names in the middle band: attributes of the root, which change at a few zooms only. */
+  const sayLod = (zoom: number): void => {
+    if (!root) return;
+    const lod = lodOf(zoom);
+    if (root.getAttribute('data-lod') !== lod) root.setAttribute('data-lod', lod);
+    const step = titleStepOf(zoom);
+    if (step === null) root.removeAttribute('data-title-step');
+    else if (root.getAttribute('data-title-step') !== step) root.setAttribute('data-title-step', step);
   };
   /**
    * Whether the event happened in the graph itself. React hands the graph the events of what it renders
@@ -615,7 +619,7 @@ export function createController(app: AppServices, flow: ReactFlowInstance, libr
       // ---- the graph's viewport: level of detail, thumbnails, and the document's interface state ----
       const viewChanged = (): void => {
         const [, , zoom] = library.getState().transform;
-        root?.setAttribute('data-lod', lodOf(zoom));
+        sayLod(zoom);
         sayZoom(zoom);
         if (zoomLabel) zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
         // The palette lies where the graph was when it opened, and so does the wire drawn to it.
@@ -648,7 +652,7 @@ export function createController(app: AppServices, flow: ReactFlowInstance, libr
       const held = docOf().ui.graphViewport;
       if (held) void flow.setViewport(held, { duration: 0 });
       else fitPending = true;
-      root.setAttribute('data-lod', lodOf(flow.getZoom()));
+      sayLod(flow.getZoom());
       sayZoom(flow.getZoom());
       if (zoomLabel) zoomLabel.textContent = `${Math.round(flow.getZoom() * 100)}%`;
 
@@ -734,14 +738,20 @@ export function createController(app: AppServices, flow: ReactFlowInstance, libr
 
       // ---- "add this node now", from the library (8.7) ----
       listen(window, ADD_NODE_EVENT, (event: Event) => {
-        const type = (event as CustomEvent<{ readonly type?: unknown } | null>).detail?.type;
-        if (typeof type !== 'string') return;
+        const type = addNodeType(event);
+        if (type === null) return;
         if (!ctx.registry.get(type)) {
           app.notify({ level: 'warning', message: `Unknown node type "${type}"` });
           return;
         }
         const size = controller.size();
-        addNodeAt(ctx, type, toFlow(flow.getViewport(), { x: size.width / 2, y: size.height / 2 }), { centered: true });
+        const added = addNodeNow(ctx, type, toFlow(flow.getViewport(), { x: size.width / 2, y: size.height / 2 }));
+        // Beside the node it was connected to, which may lie at the edge of what is shown: the new node is brought into view.
+        const rect = added === null ? null : rectOfNode(docOf(), viewsOf(ctx), added);
+        if (rect === null) return;
+        const viewport = flow.getViewport();
+        const shown = viewportShowing(viewport, size, rect);
+        if (shown !== viewport) void flow.setViewport(shown, { duration: 0 });
       });
 
       // ---- keys that are held while the pointer works: Y cuts wires, Space pans; and Escape, which calls a drag off ----

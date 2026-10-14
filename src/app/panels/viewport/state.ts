@@ -11,10 +11,21 @@ export interface ViewportState extends ViewportModel {
   /** The canvas in CSS pixels. */
   readonly width: number;
   readonly height: number;
+  /**
+   * Whether the engine's last result for the view had a terrain or an overlay in it: a view that names nothing is
+   * shown too, as nothing (runtime.md 7.4 rule 5). Kept here and not in the component, which the dock makes anew
+   * when a layout is restored while the engine goes on.
+   */
+  readonly pictured: boolean;
+  /**
+   * Whether this state was restored from the document it shows (persist.ts). The component is made anew when the
+   * dock restores a layout, and the state outlives it: what a hand has made of the view since is not restored away.
+   */
+  readonly restored: boolean;
 }
 
 export function createViewportStore(): StoreApi<ViewportState> {
-  return createStore<ViewportState>()(() => ({ ...initialModel(), width: 1600, height: 1000 }));
+  return createStore<ViewportState>()(() => ({ ...initialModel(), width: 1600, height: 1000, pictured: false, restored: false }));
 }
 
 export const viewportStore: StoreApi<ViewportState> = createViewportStore();

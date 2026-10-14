@@ -335,7 +335,16 @@ test('gate: the GPU process killed in the middle of an edit, and the engine rest
       const box = field.getBoundingClientRect();
       for (let step = 0; step < 6; step++) field.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 1, clientX: box.left + box.width / 2 + 40 + step * 4, clientY: box.top + box.height / 2 }));
     })()`);
-    if (killed) await app.waitFor(`window.gateEvents.includes('device-ready')`, EVALUATION_BACKSTOP_MS);
+    if (killed) {
+      await app.waitFor(`window.gateEvents.includes('device-ready')`, EVALUATION_BACKSTOP_MS);
+      // "Is being recovered" was said while it was true: the notice left with the device's return, which is said once.
+      const shown = await app.eval<string[]>(`orogenTest.shell.state.getState().notices.map((notice) => notice.message)`);
+      assert.ok(!shown.includes('The graphics device was lost and is being recovered'), `the notice of the loss is withdrawn: ${shown.join(' | ')}`);
+      assert.deepEqual(
+        await app.eval<string[]>(`orogenTest.shell.state.getState().log.map((entry) => entry.message).filter((message) => /graphics device/.test(message))`),
+        ['The graphics device was lost and is being recovered', 'The graphics device is back'],
+      );
+    }
     await app.eval(`void shellTest.release(${quote(rain)})`);
     assert.equal(await app.eval<string | null>(`orogenTest.ctx.doc.getState().gesture`), null);
     assert.deepEqual(await app.eval<string[]>(`window.gateEvents`), killed ? ['device-lost', 'device-ready'] : []);

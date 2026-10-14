@@ -12,7 +12,7 @@ import type {
 } from '../../../src/core/runtime.ts';
 import { createSessionClient, serveSession } from '../../../src/core/session/protocol.ts';
 import { testGpu } from '../gpu/rig.ts';
-import { BACKSTOP_MS, doc, PREVIEW, resetSlow, startSession, THUMBNAIL } from './rig.ts';
+import { BACKSTOP_MS, doc, planOf, PREVIEW, resetSlow, slow, startSession, THUMBNAIL } from './rig.ts';
 
 const gpu = await testGpu();
 
@@ -51,7 +51,7 @@ function recordingSession() {
   const calls: Recorded[] = [];
   const listeners = new Set<(e: EngineEvent) => void>();
   /** What the methods that return a promise answer with next; a function is called, an Error is thrown. */
-  const answers: Record<string, unknown[]> = { inspect: [], build: [], pick: [], dispose: [] };
+  const answers: Record<string, unknown[]> = { inspect: [], build: [], plan: [], pick: [], dispose: [] };
   const answer = (method: string): Promise<unknown> => {
     const next = answers[method]!.shift();
     if (next instanceof Error) return Promise.reject(next);
@@ -67,6 +67,7 @@ function recordingSession() {
     setPreferences: tell('setPreferences'), retryDevice: tell('retryDevice'),
     inspect: (ref) => { calls.push({ method: 'inspect', args: [ref] }); return answer('inspect') as ReturnType<EngineSession['inspect']>; },
     build: (request) => { calls.push({ method: 'build', args: [request] }); return answer('build') as Promise<BuildResult>; },
+    plan: (planned) => { calls.push({ method: 'plan', args: [planned] }); return answer('plan') as Promise<BuildPlan>; },
     subscribe(listener) {
       listeners.add(listener);
       return () => void listeners.delete(listener);
@@ -119,29 +120,36 @@ test('every request crosses the channel: in order, with its arguments, and with 
     client.viewport.detach();
 
     const stats = { min: -1, max: 2.5, mean: 0.25, nonFinite: 3 };
-    const built: BuildResult = { requestId: 9, status: 'ok', problems: [], files: [{ path: 'Alps.r16', bytes: 132_161_282 }], manifest: 'Alps.json', report: 'Alps.report.json', outDir: '/out/alps' };
+    const built: BuildResult = {
+      requestId: 9, status: 'ok', problems: [], files: [{ path: 'Alps.r16', bytes: 132_161_282 }], manifest: 'Alps.json', report: 'Alps.report.json', outDir: '/out/alps',
+      peakPoolBytes: 1_234_567_890,
+    };
+    const planned = planOf(graph);
     const picked = { uv: [0.25, 0.75], height: 0.5, position: [1024, 3072, 512] } as const;
     const request: BuildRequest = { doc: graph, outDir: '/out/alps' };
     far.answers.inspect!.push(stats, null);
     far.answers.build!.push(built);
+    far.answers.plan!.push(planned);
     far.answers.pick!.push(picked, null);
     const answers = await Promise.all([
       client.inspect({ node: 'out', port: 'out' }), client.inspect({ node: 'gone', port: 'out' }),
-      client.build(request), client.viewport.pick(320, 240), client.viewport.pick(-5, 0),
+      client.build(request), client.plan(graph), client.viewport.pick(320, 240), client.viewport.pick(-5, 0),
     ]);
-    assert.deepEqual(answers, [stats, null, built, picked, null]);
+    assert.deepEqual(answers, [stats, null, built, planned, picked, null]);
+    assert.notEqual(answers[3], planned, 'a plan crosses as a structured clone');
 
     const received = (far.calls[10]!.args as [ArrayBuffer, unknown])[0];
     assert.deepEqual(far.calls.map((c) => c.method), [
       'setPreferences', 'setProject', 'setProject', 'requestThumbnails', 'setDocument', 'beginGesture', 'endGesture', 'setPaused',
       'cancelBuild', 'retryDevice', 'viewport.attach', 'viewport.resize', 'viewport.setCamera', 'viewport.setDisplay', 'viewport.detach',
-      'inspect', 'inspect', 'build', 'viewport.pick', 'viewport.pick',
+      'inspect', 'inspect', 'build', 'plan', 'viewport.pick', 'viewport.pick',
     ], 'messages are handled in the order sent');
     assert.deepEqual(far.calls.map((c) => c.args).filter((_, i) => i !== 10), [
       [prefs], [{ path: '/projects/alps.orogen' }], [{ path: null }], [['level', 'out']], [graph, 7], [], [], [true], [], [],
       [size], [camera], [display], [],
-      [{ node: 'out', port: 'out' }], [{ node: 'gone', port: 'out' }], [request], [320, 240], [-5, 0],
+      [{ node: 'out', port: 'out' }], [{ node: 'gone', port: 'out' }], [request], [graph], [320, 240], [-5, 0],
     ]);
+    assert.notEqual((far.calls[18]!.args as [GraphDoc])[0], graph, 'the document of a plan is a structured clone as well');
     // The document is a structured clone, not the object; the canvas was moved, not copied.
     assert.notEqual((far.calls[4]!.args as [GraphDoc])[0], graph);
     assert.ok(received instanceof ArrayBuffer && received.byteLength === 64, 'the canvas arrived');
@@ -150,7 +158,7 @@ test('every request crosses the channel: in order, with its arguments, and with 
 
     // One reply per method with a result, none for the others; ids increase with the calls.
     const replies = raw.filter((m): m is Extract<WorkerMessage, { id: number }> => 'id' in m);
-    assert.deepEqual(replies.map((m) => [m.id, m.ok]), [[16, true], [17, true], [18, true], [19, true], [20, true]]);
+    assert.deepEqual(replies.map((m) => [m.id, m.ok]), [[16, true], [17, true], [18, true], [19, true], [20, true], [21, true]]);
 
     // Replies find their call by id, whatever order they come in.
     let late!: (value: unknown) => void;
@@ -166,6 +174,8 @@ test('every request crosses the channel: in order, with its arguments, and with 
     await assert.rejects(client.build(request), (e: Error) => e instanceof Error && e.name === 'Error' && e.message === 'A build is already running');
     far.answers.inspect!.push(new TypeError('not a port'));
     await assert.rejects(client.inspect({} as PortRef), (e: Error) => e.name === 'TypeError' && e.message === 'not a port');
+    far.answers.plan!.push(new TypeError('plan: the argument is a GraphDoc'));
+    await assert.rejects(client.plan(null as unknown as GraphDoc), (e: Error) => e.name === 'TypeError' && e.message === 'plan: the argument is a GraphDoc');
 
     // A method without a result is answered only when it threw; a name that is no method is refused; other messages are ignored.
     const before = raw.length;
@@ -189,7 +199,7 @@ test('every request crosses the channel: in order, with its arguments, and with 
     }
     const refused = raw.slice(before).filter((m): m is Extract<WorkerMessage, { ok: false }> => 'id' in m && !m.ok);
     assert.deepEqual(refused.map((m) => [m.id, m.error.name, m.error.message]), [
-      [replies.length + 20, 'RangeError', 'revision -1 is not greater than 7'],
+      [replies.length + 21, 'RangeError', 'revision -1 is not greater than 7'],
       [900, 'TypeError', 'The engine session has no method "constructor"'],
       [901, 'TypeError', 'The engine session has no method "subscribe"'],
       [902, 'TypeError', 'The engine session has no method "viewport"'],
@@ -205,6 +215,7 @@ test('every request crosses the channel: in order, with its arguments, and with 
     client.setPaused(true);
     port1.postMessage({ id: 990, method: 'setPaused', args: [true] } satisfies ClientMessage);
     await assert.rejects(client.inspect({ node: 'out', port: 'out' }), /disposed/);
+    await assert.rejects(client.plan(graph), /disposed/);
     await new Promise<void>((resolve) => setImmediate(resolve));
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(far.calls.length, count, 'nothing is served after dispose');
@@ -231,7 +242,10 @@ test('every event crosses the channel as it was emitted, in order; thumbnail pix
       files: [{ path: 'Alps.r32', encoding: 'raw-f32', width: 513, height: 513, bytes: 1_052_676, nodeId: 'export' }],
       estimate: { planeBytes: 0, knownFileBytes: 1_052_676 },
     };
-    const result: BuildResult = { requestId: 4, status: 'errors', problems: [{ severity: 'error', code: 'E_NODE_FAILED', message: 'Erosion failed.', nodeId: 'n1' }], files: [], manifest: null, report: 'Alps.report.json', outDir: null };
+    const result: BuildResult = {
+      requestId: 4, status: 'errors', problems: [{ severity: 'error', code: 'E_NODE_FAILED', message: 'Erosion failed.', nodeId: 'n1' }], files: [], manifest: null,
+      report: 'Alps.report.json', outDir: null, peakPoolBytes: 3 * 2 ** 30,
+    };
     const rgba = new Uint8ClampedArray(128 * 128 * 4);
     for (let i = 0; i < rgba.length; i++) rgba[i] = (i * 7) % 256;
     const pixels = rgba.slice();
@@ -247,7 +261,7 @@ test('every event crosses the channel as it was emitted, in order; thumbnail pix
       { type: 'node-progress', requestId: 4, nodeId: 'n1', fraction: 0.75, etaMs: null },
       { type: 'node-preview', requestId: 4, nodeId: 'n1', ports: ['out'] },
       { type: 'eval-progress', requestId: 4, fraction: 0.25, etaMs: null },
-      { type: 'node-done', requestId: 4, nodeId: 'n1', cached: false, wallMs: 12.5, gpuMs: null, peakBytes: 4096 },
+      { type: 'node-done', requestId: 4, nodeId: 'n1', cached: false, resolution: 1009, wallMs: 12.5, gpuMs: null, peakBytes: 4096 },
       {
         type: 'node-error', requestId: 4,
         error: {
@@ -353,9 +367,27 @@ test('the real session behind the channel: the client drives it and receives the
     assert.equal((await next('node-error')).error.kind, 'missing-input');
     assert.deepEqual([(await next('node-skipped')).nodeId, (await next('node-skipped')).reason], ['below', 'upstream']);
 
+    // A plan is answered from the document alone, while a preview runs and while a build does, and is no event.
+    const eventsBefore = t.events.length;
+    let stepped = false;
+    let plannedWhileRunning: Promise<BuildPlan> | null = null;
+    slow.at = (i) => {
+      if (stepped || i !== 4) return;
+      stepped = true;
+      plannedWhileRunning = client.plan(GRAPH(0.625));
+    };
+    client.setDocument(GRAPH(0.625), 4);
+    assert.equal((await next('view-updated', (e) => e.revision === 4)).resolution, PREVIEW, 'the evaluation the plan was asked during ran through');
+    assert.deepEqual(await plannedWhileRunning!, planOf(GRAPH(0.625)));
+    slow.at = undefined;
+    assert.deepEqual(t.builds.planned.length, 1);
+    assert.notEqual(t.builds.planned[0], undefined);
+    assert.deepEqual(t.events.slice(eventsBefore).filter((e) => e.type === 'eval-end').map((e) => e.status), ['ok'], 'nothing was aborted for the plan');
+
     // A build, and a second one that is refused while it runs; then one that is cancelled.
     const first = client.build({ doc: GRAPH(0.75), outDir: '/out/terrain' });
     await assert.rejects(client.build({ doc: GRAPH(0.75), outDir: '/out/other' }), /A build is already running/);
+    assert.equal((await client.plan(GRAPH(0.75, {}))).resolution, 513, 'a plan is answered while a build runs');
     const built = await first;
     assert.deepEqual([built.status, built.outDir], ['ok', '/out/terrain']);
     assert.deepEqual(t.builds.calls.map((c) => c.means), [[2 * (0.75 + 12)]]);

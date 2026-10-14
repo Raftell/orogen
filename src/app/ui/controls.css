@@ -137,7 +137,9 @@
 .og-number-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--og-text-secondary); }
 .og-number-value { flex: 1 0 auto; text-align: right; }
 .og-number-unit { color: var(--og-text-secondary); }
-.og-number-secondary { flex: none; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
+/* The metric text gives way first, and says with an ellipsis that it was cut: a text that only shrank was clipped
+   in the middle of a letter at the field's edge. */
+.og-number-secondary { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--og-text-dim); font-size: var(--og-font-size-small); }
 .og-number[data-editing] { padding: 0; background: transparent; cursor: text; overflow: visible; }
 .og-number-input { font-variant-numeric: tabular-nums; }
 
@@ -305,8 +307,49 @@
 .og-color-popover .react-colorful__pointer { width: 14px; height: 14px; border-width: 2px; }
 .og-color-channels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--og-space-2); }
 
+/* ---- the search field ---- */
+.og-search { position: relative; display: flex; flex: 1; align-items: center; min-width: 0; }
+.og-search-icon { position: absolute; left: var(--og-space-3); color: var(--og-text-dim); pointer-events: none; }
+.og-search-input {
+  box-sizing: border-box;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  height: var(--og-control-height);
+  padding: 0 calc(var(--og-control-height-small) + var(--og-space-3)) 0 calc(var(--og-icon-size) + var(--og-space-5));
+  border: 1px solid var(--og-border-widget);
+  border-radius: var(--og-radius);
+  background: var(--og-bg-sunken);
+  color: var(--og-text);
+  font: inherit;
+  outline: none;
+}
+.og-search-input::placeholder { color: var(--og-text-dim); }
+.og-search-input:hover { border-color: var(--og-border-strong); }
+.og-search-input:focus { border-color: var(--og-focus-ring); box-shadow: 0 0 0 1px var(--og-focus-ring); }
+.og-search-input::selection { background: var(--og-accent); color: var(--og-text-on-accent); }
+.og-search-clear { position: absolute; right: var(--og-space-1); display: flex; }
+/* The first line of a palette: the palette is the frame, and the text is what it is opened to type. */
+.og-search[data-variant='plain'] { gap: var(--og-space-4); color: var(--og-text-dim); }
+.og-search[data-variant='plain'] .og-search-icon { position: static; }
+.og-search[data-variant='plain'] .og-search-input {
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--og-font-size-large);
+}
+
 /* ---- rows of a property list ---- */
+/* The row measures itself: the 280 below is PROPERTY_ROW_STACKS_BELOW of layout.tsx. */
+.og-row-box { container: og-row / inline-size; }
 .og-row { display: flex; align-items: center; gap: var(--og-space-4); min-height: var(--og-row-height); padding: var(--og-space-1) 0; }
+@container og-row (max-width: 279.98px) {
+  .og-row { flex-direction: column; align-items: stretch; gap: var(--og-space-1); padding: var(--og-space-2) 0; }
+  .og-row > .og-row-label { flex: none; }
+}
 .og-row-label {
   flex: 0 0 var(--og-label-width);
   min-width: 0;

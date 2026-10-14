@@ -115,3 +115,28 @@ export function createRecovery(reopenGpu: () => Promise<GpuContext>, options: Re
     },
   };
 }
+
+/**
+ * The first device of an engine (8.3 step 1), where there is no session yet to recover a loss: `open` is tried on
+ * the schedule of 7.8 rule 2, and a device that arrives lost is destroyed and counts as a failure. Rejects with
+ * what the last attempt failed with. An adapter that is missing for a moment (a GPU process that is starting
+ * again) is thus not final.
+ */
+export async function openFirstDevice(open: () => Promise<GpuContext>, options: RecoveryOptions = {}): Promise<GpuContext> {
+  const delays = options.delaysMs ?? RETRY_DELAYS_MS;
+  let last: unknown = new Error('no attempt was made');
+  for (const delay of delays) {
+    if (delay > 0) await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    let gpu: GpuContext;
+    try {
+      gpu = await open();
+    } catch (thrown) {
+      last = thrown;
+      continue;
+    }
+    if (!gpu.lost) return gpu;
+    last = new Error(`The new GPU device was lost at once${gpu.lostInfo?.message ? `: ${gpu.lostInfo.message}` : ''}`);
+    gpu.destroy();
+  }
+  throw last;
+}

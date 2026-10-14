@@ -55,14 +55,31 @@ test('a number may carry a unit that the field knows: 500m on a terrain 5 km wid
   near(parseEntry('0.05 + 250m', { units }), 0.1, 'a bare number is the stored value');
   near(parseEntry('+=500m', { units, current: 0.1 }), 0.2);
   near(parseEntry('25%', { units: { '%': 0.01 } }), 0.25);
+  // A length and a height are fractions of the terrain: a percentage of it is typed as one, whatever its size in metres.
+  near(parseEntry('5%', { units }), 0.05);
+  near(parseEntry('5 % + 250m', { units }), 0.1);
+  near(parseEntry('50%', { units: metricUnits(1008) }), 0.5);
   assert.equal(parseEntry('45°', { units: { '°': 1 } }), 45);
   assert.equal(parseEntry('500m'), null, 'a unit the field does not know is no entry');
   assert.equal(parseEntry('500ft', { units }), null);
   assert.deepEqual(metricUnits(0), {});
 });
 
+test('a comma between two digits is the decimal sign: what most keyboards outside the English-speaking world type', () => {
+  assert.equal(parseEntry('0,5'), 0.5);
+  assert.equal(parseEntry('1,5'), 1.5);
+  assert.equal(parseEntry('-12,25'), -12.25);
+  assert.equal(parseEntry('1,5 + 2,25'), 3.75);
+  assert.equal(parseEntry('+=0,5', { current: 1 }), 1.5);
+  assert.equal(parseEntry('2,5km', { units: metricUnits(5000) }), 0.5);
+  assert.equal(parseEntry('(1,5)*2'), 3);
+  // A point stays a point, and a number is not read twice.
+  assert.equal(parseEntry('0.5'), 0.5);
+  assert.equal(parseEntry('1,5e1'), 15);
+});
+
 test('what is no entry is null, and so is what has no finite value', () => {
-  for (const text of ['', '   ', 'abc', '1+', '(1+2', '1+2)', '2**3', '1 2', '--', '1,5', '=5', '5=', 'NaN', 'Infinity', '1/0', '0/0', '1e999']) {
+  for (const text of ['', '   ', 'abc', '1+', '(1+2', '1+2)', '2**3', '1 2', '--', ',5', '5,', '1,,5', '1, 5', '1.234,5', '1,234,567', '=5', '5=', 'NaN', 'Infinity', '1/0', '0/0', '1e999']) {
     assert.equal(parseEntry(text, { current: 1 }), null, JSON.stringify(text));
   }
   assert.equal(parseEntry('1+'.repeat(100) + '1'), null, 'an entry has a length');

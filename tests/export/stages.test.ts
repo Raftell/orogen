@@ -147,11 +147,16 @@ test('during a build the engine\'s ledger shows no allocation made by the pipeli
   await engine.trim();
   const before = engine.memory();
   let outputPeak = 0;
+  /** The most the ledger held at any event of the build, and the largest working set of a node. */
+  let ledgerPeak = 0, nodePeak = 0;
   const samples: { type: string; phase: string; working: number; held: number; reserved: number }[] = [];
-  const { result } = await direct(makeDoc(fullGraph()), {
+  const { result, sink } = await direct(makeDoc(fullGraph()), {
     resolution: 1009,
     onEvent(event, live) {
       if (event.type === 'eval-start') outputPeak = event.outputPeakBytes ?? 0;
+      const ledger = live.memory();
+      ledgerPeak = Math.max(ledgerPeak, ledger.workingBytes + ledger.cacheBytes + ledger.pinnedBytes + ledger.freeBytes + ledger.reservedBytes);
+      if (event.type === 'node-done' && !event.cached) nodePeak = Math.max(nodePeak, event.peakBytes);
       if (!event.type.startsWith('build-')) return;
       const m = live.memory();
       samples.push({ type: event.type, phase: event.type === 'build-progress' ? event.phase : '', working: m.workingBytes, held: m.pinnedBytes + m.cacheBytes, reserved: m.reservedBytes });
@@ -175,6 +180,16 @@ test('during a build the engine\'s ledger shows no allocation made by the pipeli
   assert.deepEqual(after.filter((s) => s.working !== 0 || s.held !== 0), []);
   // The plan said how much the planes take.
   assert.equal(planBuild(makeDoc(fullGraph()), engine.registry, { resolution: 1009 }).estimate.planeBytes, 2 * 2 * 1009 * 1009);
+
+  // One measured figure for all of it (3.10): the most the ledger held, in the result and in the report. It is
+  // no less than the ledger at any event a listener sees, and holds the working set of the largest node, which
+  // lies between two events; and it is within the budget, as everything the pool hands out is.
+  const peak = result.peakPoolBytes;
+  assert.ok(peak !== null && Number.isInteger(peak));
+  assert.equal(reportOf(sink, 'TestLand').peakPoolBytes, peak, 'the report states the same figure');
+  assert.ok(peak >= ledgerPeak, `the build measured ${peak} bytes and a listener saw ${ledgerPeak}`);
+  assert.ok(nodePeak >= 1009 * 1009 * 4 && peak >= nodePeak + before.reservedBytes, `the largest node held ${nodePeak} bytes beside ${before.reservedBytes} reserved, of ${peak}`);
+  assert.ok(peak <= engine.memory().budgetBytes);
 });
 
 test('cancelling before a build begins, in a stage and in the weights leaves the report and nothing else', async () => {

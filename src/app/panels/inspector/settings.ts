@@ -2,14 +2,11 @@
 // preview levels a build resolution has with the resolution each gives, and the numbers shown beside them.
 // No DOM and no React.
 
-import { previewResolution, setSettings, type DocDraft, type ProjectSettings } from '../../../core/runtime.ts';
+import { ladder, previewResolution, type ProjectSettings } from '../../../core/runtime.ts';
 import { formatMetres, type NumberRange, type NumberUnits } from '../../ui/number.ts';
 
 /** The landscape sizes of Unreal Engine that are build resolutions (engine.md 1.5). */
 export const UNREAL_RESOLUTIONS: readonly number[] = [1009, 2017, 4033, 8129];
-
-/** No ladder is longer (engine.md 1.5: a level is at least 33 vertices, a build resolution at most 8192). */
-const LEVELS_MAX = 12;
 
 export interface PreviewLevel {
   readonly level: number;
@@ -17,18 +14,22 @@ export interface PreviewLevel {
 }
 
 /**
- * The preview levels a build resolution defines, finest first. A level is defined when `setSettings` keeps it:
- * the document's own rule decides, and this file has no copy of it.
+ * The preview levels a build resolution defines, finest first: the core's own ladder (engine.md 1.5), of which
+ * level 0 is the build resolution itself (runtime.md 4.2).
  */
-export function previewLevels(settings: ProjectSettings): PreviewLevel[] {
-  const levels: PreviewLevel[] = [];
-  for (let level = 0; level <= LEVELS_MAX; level++) {
-    const draft = { settings: { ...settings } } as unknown as DocDraft;
-    setSettings(draft, { previewLevel: level });
-    if (draft.settings.previewLevel !== level) break;
-    levels.push({ level, resolution: previewResolution(draft.settings) });
-  }
-  return levels;
+export function previewLevels(settings: Pick<ProjectSettings, 'buildResolution'>): PreviewLevel[] {
+  return ladder(settings.buildResolution).map((resolution, level) => ({ level, resolution }));
+}
+
+/**
+ * What the previews are computed at, in words: '1009 × 1009, a quarter of the build's vertices per side', and
+ * for level 0 'the build resolution itself'.
+ */
+export function previewResolutionText(settings: ProjectSettings): string {
+  const resolution = previewResolution(settings);
+  const share = settings.previewLevel === 0 ? 'the build resolution itself'
+    : `1/${2 ** settings.previewLevel} of the build's ${resolutionLabel(settings.buildResolution)}`;
+  return `${resolutionLabel(resolution)}, ${share}`;
 }
 
 export const resolutionLabel = (resolution: number): string => `${resolution} × ${resolution}`;

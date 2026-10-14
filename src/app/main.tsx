@@ -9,7 +9,7 @@ import { createRoot } from 'react-dom/client';
 
 import { nodes } from '../core/nodes/index.ts';
 import { createRegistry, DEFAULT_PREFERENCES } from '../core/runtime.ts';
-import { createEngineClient } from './engine/client.ts';
+import { createEngineClient, ENGINE_WATCH } from './engine/client.ts';
 import { platform, type Preferences } from './platform.ts';
 import { panels } from './registry.ts';
 import { createShellDom } from './shell/dom.ts';
@@ -28,7 +28,7 @@ import type { CommandContext } from './ui/types.ts';
 const ENGINE_WORKER = './engine-worker.js';
 
 /** The preferences until the file is read: those of a first start. */
-const FIRST_START: Preferences = { gpu: DEFAULT_PREFERENCES, keymap: {}, layout: null, recent: [] };
+const FIRST_START: Preferences = { gpu: DEFAULT_PREFERENCES, keymap: {}, layout: null, recent: [], viewport: null, panels: {} };
 
 const root = createRoot(document.getElementById('root')!);
 
@@ -53,7 +53,7 @@ function start(): { readonly shell: Shell; readonly hooks: ShellTestHooks | null
   // Created by the top-level frame: only then has the worker Node's modules (8.2 rule 4).
   const createWorker = (): Worker => new Worker(ENGINE_WORKER, { name: 'orogen-engine' });
   let worker = createWorker();
-  const engine = createEngineClient({ port: worker, doc: docStore, engineState: engineStore, preferences: FIRST_START.gpu });
+  const engine = createEngineClient({ port: worker, doc: docStore, engineState: engineStore, preferences: FIRST_START.gpu, watch: ENGINE_WATCH });
   // 8.5: a worker that is gone, hangs or never started is replaced. Nothing the user made was in it; the client
   // tells the new session everything again, and the viewport panel gives it a canvas.
   const restartEngine = (): void => {

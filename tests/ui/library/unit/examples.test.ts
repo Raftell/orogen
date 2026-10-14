@@ -11,9 +11,8 @@ import { test } from 'node:test';
 import { nodes } from '../../../../src/core/nodes/index.ts';
 import { createRegistry, type GraphDoc } from '../../../../src/core/runtime.ts';
 import {
-  EXAMPLE_DESCRIPTION_MAX, EXAMPLE_TITLE_MAX, exampleDoc, gridMove, parseExampleIndex, projectName, summarize, summaryText,
+  EXAMPLE_DESCRIPTION_MAX, EXAMPLE_TITLE_MAX, exampleDoc, gridMove, parseExampleIndex, summarize, summaryText,
 } from '../../../../src/app/panels/library/examples.ts';
-import { projectName as shellProjectName } from '../../../../src/app/shell/format.ts';
 
 const FOLDER = path.resolve(import.meta.dirname, '../../../../examples');
 const registry = createRegistry(nodes);
@@ -109,12 +108,6 @@ test('the arrow keys move through the cards as they lie: along the list in one c
   assert.deepEqual(['down', 'right', 'up', 'left', 'first', 'last'].map((move) => gridMove(6, 3, -1, move as 'down')), [0, 0, 5, 5, 0, 5]);
   assert.deepEqual([gridMove(6, 3, 4, 'first'), gridMove(6, 3, 1, 'last'), gridMove(6, 3, 99, 'down')], [0, 5, 0]);
   assert.deepEqual([gridMove(0, 3, -1, 'down'), gridMove(1, 0, 0, 'down'), gridMove(3, 2.9, 0, 'down')], [-1, 0, 2], 'no card; a column count that is none counts as one');
-});
-
-test('the project is named in the question as the shell names it', () => {
-  const paths = [null, '/home/a/ridge.orogen', 'C:\\Terrains\\Ridge.OROGEN', 'ridge.orogen', '/a/b/notes.txt', '/a/.orogen', '/a/b.c/alps', 'D:\\x/y\\z.orogen'];
-  for (const path of paths) assert.equal(projectName(path), shellProjectName(path), String(path));
-  assert.deepEqual([projectName(null), projectName('/home/a/ridge.orogen')], ['Untitled', 'ridge']);
 });
 
 test('the alpine range is the chain the library promises: range, fluvial, hydraulic and thermal erosion, snow, color, and four named layers', () => {

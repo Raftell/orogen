@@ -30,6 +30,9 @@ export function changeView(ctx: Pick<CommandContext, 'doc'>, label: string, next
 /** The level of the sea as the picture has it: the project's, while the sea is shown. */
 const seaOf = (ctx: Pick<CommandContext, 'doc'>): number | null => (viewportStore.getState().display.showSea ? ctx.doc.getState().doc.settings.seaLevel : null);
 
+/** Mean heights that are this near to each other, as shares of the height range, frame the same picture: the camera's distance differs by a thousandth. */
+export const SAME_MIDDLE = 0.01;
+
 /** Ends the wait of the framing before this one for the terrain's heights; null when none waits. */
 let stopWaiting: (() => void) | null = null;
 
@@ -61,6 +64,10 @@ export function frameTerrain(ctx: Pick<CommandContext, 'doc' | 'engine'>, which:
     ctx.engine.inspect(height).then((stats) => {
       if (!current()) return;
       if (stats && stats.nonFinite === 0) {
+        // Framed around nearly these heights already: a second framing would move the camera by less than is seen,
+        // a moment after whoever asked for it has looked at where it is.
+        const known = viewportStore.getState().framedMiddle;
+        if (known !== null && Math.abs(stats.mean - known) < SAME_MIDDLE) return;
         frame(viewportStore, terrain, stats.mean, seaOf(ctx), { orbit: true, top: false });
         return;
       }

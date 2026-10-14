@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { PLATFORM_GLOBAL, type PlatformApi, type Preferences } from '../../../../src/platform/electron/ipc.ts';
-import { hasPlatform, platform } from '../../../../src/app/platform.ts';
+import { hasPlatform, panelKeep, platform } from '../../../../src/app/platform.ts';
 
 const root = globalThis as { [PLATFORM_GLOBAL]?: PlatformApi };
 
@@ -30,6 +30,13 @@ function fakeBridge(calls: Call[], preferences: Preferences): PlatformApi {
     setPreferences: async (patch) => { said('setPreferences', patch); },
     setBuildActive: (active) => said('setBuildActive', active),
     showInFolder: (path) => said('showInFolder', path),
+    statPath: async (path, projectPath) => { said('statPath', path, projectPath); return { exists: true, isFile: true, size: 12, mtimeMs: 1 }; },
+    openExternal: async (url) => { said('openExternal', url); return true; },
+    openDocument: async (name) => { said('openDocument', name); return name === 'unreal-import.md'; },
+    openBuildFile: async (path) => { said('openBuildFile', path); return false; },
+    readRecovery: async () => { said('readRecovery'); return null; },
+    writeRecovery: async (record) => { said('writeRecovery', record); },
+    onOpenRequested: () => () => undefined,
     onMenuCommand: (listener) => { menu.add(listener); return () => void menu.delete(listener); },
     onCloseRequested: () => () => undefined,
     confirmClose: () => said('confirmClose'),
@@ -53,7 +60,9 @@ test('an async function may return the bridge: it is no promise, with or without
 
 test('with the bridge every member is the preload script\'s: values, calls with their arguments and results, subscriptions', async () => {
   const calls: Call[] = [];
-  const preferences: Preferences = { gpu: { vramBytes: null, budgetFraction: 0.5 }, keymap: { 'graph.fit': 'Home' }, layout: null, recent: ['/projects/a.orogen'] };
+  const preferences: Preferences = {
+    gpu: { vramBytes: null, budgetFraction: 0.5 }, keymap: { 'graph.fit': 'Home' }, layout: null, recent: ['/projects/a.orogen'], viewport: null, panels: { library: { recent: ['generate/perlin'] } },
+  };
   const bridge = fakeBridge(calls, preferences);
   root[PLATFORM_GLOBAL] = bridge;
   try {
@@ -72,6 +81,10 @@ test('with the bridge every member is the preload script\'s: values, calls with 
     await platform.setPreferences({ recent: [] });
     platform.setBuildActive(true);
     platform.showInFolder('/out');
+    assert.deepEqual(await platform.statPath('heights.png', '/projects/a.orogen'), { exists: true, isFile: true, size: 12, mtimeMs: 1 });
+    assert.equal(await platform.openExternal('https://example.com/'), true);
+    assert.deepEqual([await platform.openDocument('unreal-import.md'), await platform.openDocument('no-such-page.md')], [true, false]);
+    assert.equal(await platform.openBuildFile('/out/Land.report.json'), false);
     platform.confirmClose();
     assert.deepEqual(calls, [
       { method: 'openProjectDialog', args: [] },
@@ -85,6 +98,11 @@ test('with the bridge every member is the preload script\'s: values, calls with 
       { method: 'setPreferences', args: [{ recent: [] }] },
       { method: 'setBuildActive', args: [true] },
       { method: 'showInFolder', args: ['/out'] },
+      { method: 'statPath', args: ['heights.png', '/projects/a.orogen'] },
+      { method: 'openExternal', args: ['https://example.com/'] },
+      { method: 'openDocument', args: ['unreal-import.md'] },
+      { method: 'openDocument', args: ['no-such-page.md'] },
+      { method: 'openBuildFile', args: ['/out/Land.report.json'] },
       { method: 'confirmClose', args: [] },
     ]);
 
@@ -106,4 +124,71 @@ test('with the bridge every member is the preload script\'s: values, calls with 
     delete root[PLATFORM_GLOBAL];
   }
   assert.equal(hasPlatform(), false);
+});
+
+// ---- what a panel keeps (8.6) ----
+
+/** A stand-in for the two calls a panel's entry goes through, with the main process's rule for `panels`: a patch replaces the entries it names. */
+function preferenceFile(panels: Record<string, unknown> = {}): { panels: Record<string, unknown>; writes: unknown[]; fail: boolean; api: Pick<PlatformApi, 'getPreferences' | 'setPreferences'> } {
+  const file = {
+    panels, writes: [] as unknown[], fail: false,
+    api: {
+      getPreferences: async () => {
+        if (file.fail) throw new Error('the file cannot be read');
+        return { panels: file.panels } as unknown as Preferences;
+      },
+      setPreferences: async (patch: Partial<Preferences>) => {
+        file.writes.push(patch);
+        if (file.fail) throw new Error('the disk is full');
+        file.panels = { ...file.panels, ...patch.panels };
+      },
+    },
+  };
+  return file;
+}
+
+const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+test('panelKeep reads the entry of its panel and writes that entry alone, so two panels never drop each other\'s', async () => {
+  const file = preferenceFile({ library: { recent: ['generate/perlin'] }, build: { folders: { '/p/a.orogen': '/out' } } });
+  const library = panelKeep('library', file.api, 0);
+  const build = panelKeep('build', file.api, 0);
+  assert.deepEqual(await library.read(), { recent: ['generate/perlin'] });
+  assert.deepEqual(await build.read(), { folders: { '/p/a.orogen': '/out' } });
+  assert.equal(await panelKeep('graph', file.api, 0).read(), null, 'a panel that kept nothing reads null');
+
+  library.write({ recent: ['filter/blur', 'generate/perlin'] });
+  build.write({ folders: {} });
+  await tick();
+  assert.deepEqual(file.writes, [{ panels: { library: { recent: ['filter/blur', 'generate/perlin'] } } }, { panels: { build: { folders: {} } } }]);
+  assert.deepEqual(file.panels, { library: { recent: ['filter/blur', 'generate/perlin'] }, build: { folders: {} } });
+});
+
+test('panelKeep writes once for a burst of changes, with the last value', async () => {
+  const file = preferenceFile();
+  const keep = panelKeep('library', file.api, 20);
+  for (let height = 100; height <= 160; height += 20) keep.write({ detailsHeight: height });
+  assert.deepEqual(file.writes, [], 'nothing is written while the value still changes');
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.deepEqual(file.writes, [{ panels: { library: { detailsHeight: 160 } } }]);
+});
+
+test('a preferences file that cannot be read or written costs a panel its memory and nothing else', async () => {
+  const file = preferenceFile({ library: { recent: ['generate/perlin'] } });
+  file.fail = true;
+  const keep = panelKeep('library', file.api, 0);
+  assert.equal(await keep.read(), null);
+  const original = console.warn;
+  const said: unknown[] = [];
+  console.warn = (...args: unknown[]) => { said.push(args[0]); };
+  try {
+    keep.write({ recent: [] });
+    await tick();
+    await tick();
+  } finally {
+    console.warn = original;
+  }
+  assert.deepEqual(said, ['[orogen] what the library panel keeps could not be saved']);
+  // An entry that is no object, and a file of another build without the member, read as nothing kept.
+  assert.equal(await panelKeep('library', { getPreferences: async () => ({}) as unknown as Preferences, setPreferences: async () => undefined }, 0).read(), null);
 });

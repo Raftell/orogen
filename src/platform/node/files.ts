@@ -1,13 +1,16 @@
 import fs from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
-import { FileError } from '../../core/runtime.ts';
+import { FileError, retryBusy } from '../../core/runtime.ts';
 import type { FileSink, FileSource, FileWriter } from '../../core/runtime.ts';
 
 // One read or write call of the operating system is limited to 2 GiB - 1.
 const MAX_IO_BYTES = 1 << 30;
 // How often a watched file's identity is compared (runtime.md 6.1 rule 5).
 const WATCH_INTERVAL_MS = 250;
+
+/** Where a file that another program holds for a moment is refused, and is free a moment later (retryBusy). */
+const WINDOWS = process.platform === 'win32';
 
 type FileCode = FileError['code'];
 
@@ -207,7 +210,8 @@ export function NodeFileSink(rootFolder: string): FileSink {
           try {
             await handle.sync();
             await handle.close();
-            await fs.promises.rename(partial, file);
+            // 6.2: a scanner or an indexer that holds the new file for a moment does not fail the build.
+            await retryBusy(() => fs.promises.rename(partial, file), WINDOWS);
           } catch (error) {
             throw await fail(error);
           }

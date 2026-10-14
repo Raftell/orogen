@@ -11,6 +11,11 @@ export function launchSwitches(platform: string, software: boolean): LaunchSwitc
   const switches: LaunchSwitch[] = [
     { name: 'enable-webgpu-developer-features' },
     { name: 'disable-renderer-backgrounding' },
+    // 7.8 rule 3. Without these two Chromium answers a GPU process that ended twice within about two minutes by
+    // refusing the page every adapter for that long, and one that ended more often by leaving hardware
+    // acceleration for good: the session's own rule (three losses in 120 s) is then the only one in force.
+    { name: 'disable-gpu-process-crash-limit' },
+    { name: 'disable-domain-blocking-for-3d-apis' },
   ];
   // `enable-features` is appended exactly once with the full list: a second appendSwitch replaces the first.
   const features: string[] = [];

@@ -18,10 +18,18 @@ import {
 import { baseName, projectName } from './format.ts';
 import { createKeymap, formatKey, type Keymap, type KeyPlatform } from './keys.ts';
 import { buildMenus, type MenuModel } from './menu.ts';
-import { createProjectService, type ProjectService, type UnsavedAnswer } from './project.ts';
+import { createProjectService, type ChangedAnswer, type Leaving, type ProjectService, type UnsavedAnswer } from './project.ts';
 
 export type ShellDialog =
   | { readonly kind: 'unsaved'; readonly project: string }
+  | { readonly kind: 'building'; readonly leaving: Leaving }
+  /** The project file was changed by another program since this application read or wrote it. */
+  | { readonly kind: 'changed'; readonly file: string }
+  /** A run before this one kept a project with unsaved changes: `project` is its name, `savedAt` when it was kept. */
+  | { readonly kind: 'recover'; readonly project: string; readonly savedAt: number }
+  /** A page of the user documentation, shown in the application: its name in docs/user. */
+  | { readonly kind: 'help'; readonly page: string }
+  | { readonly kind: 'about' }
   | { readonly kind: 'preferences' }
   | { readonly kind: 'errors' }
   | { readonly kind: 'gallery' }
@@ -54,6 +62,21 @@ export interface ShellState {
 /** Notices shown at once, and entries the log keeps. */
 export const NOTICES_SHOWN = 5;
 export const LOG_KEPT = 200;
+/** How long a build that was told to stop is waited for before the project is left all the same. */
+export const BUILD_STOP_BACKSTOP_MS = 15_000;
+
+export const DEVICE_LOST_NOTICE = 'The graphics device was lost and is being recovered';
+export const DEVICE_BACK_NOTICE = 'The graphics device is back';
+/** Said when the engine has a software adapter after it had the graphics card: everything still works, a hundred times slower. */
+export const SOFTWARE_ADAPTER_NOTICE = 'The engine is now on a software adapter, without the graphics card: previews and builds are many times slower. Restart Orogen to get the graphics card back';
+
+/** What the shell asks of the dock while it is there. */
+export interface DockAccess {
+  /** Brings the panel's tab to the front of its group and gives the panel the focus. */
+  show(id: PanelId): void;
+  /** Whether the panel is in view: the tab in front of its group. */
+  visible(id: PanelId): boolean;
+}
 
 /** What only a window can do. */
 export interface ShellHost {
@@ -79,6 +102,10 @@ export interface ShellOptions {
   readonly host: ShellHost;
   readonly keyPlatform?: KeyPlatform;
   readonly now?: () => number;
+  /** Default BUILD_STOP_BACKSTOP_MS. */
+  readonly buildStopBackstopMs?: number;
+  /** How long an unsaved project rests before it is kept for recovery; default RECOVERY_DELAY_MS of project.ts. */
+  readonly recoveryDelayMs?: number;
 }
 
 export interface Shell {
@@ -107,9 +134,17 @@ export interface Shell {
   closeDialog(): void;
   /** Answers the question the dialog of kind 'unsaved' asks. */
   answerUnsaved(answer: UnsavedAnswer): void;
+  /** Answers the question the dialog of kind 'building' asks: true stops the build and goes on, false keeps the project. */
+  answerBuilding(stop: boolean): void;
+  /** Answers the question the dialog of kind 'changed' asks. */
+  answerChanged(answer: ChangedAnswer): void;
+  /** Answers the question the dialog of kind 'recover' asks: true restores what was kept, false gives it up. */
+  answerRecover(restore: boolean): void;
   resetLayout(): void;
   /** The dock, while it is there: what `AppServices.showPanel` reaches. Null when it is gone. */
-  attachDock(dock: { show(id: PanelId): void } | null): void;
+  attachDock(dock: DockAccess | null): void;
+  /** The dock tells that a panel came into view: a notice that repeats what the panel shows leaves (`Notice.panel`). */
+  panelShown(id: PanelId): void;
   /** Starts listening to the engine and the main process. Returns the function that stops it. */
   connect(): () => void;
 }
@@ -132,16 +167,31 @@ export function createShell(options: ShellOptions): Shell {
     layoutResets: 0,
   }));
 
+  let dock: DockAccess | null = null;
   let noticeId = 0;
-  function notify(notice: Notice): void {
+  /** Shows the notice and returns its id; null for one that is only logged, because its panel is in view. */
+  function notify(notice: Notice): number | null {
     const { notices, log } = state.getState();
-    const last = notices[notices.length - 1];
+    const entry = [...log, { ...notice, time: now() }].slice(-LOG_KEPT);
+    // What a panel shows in its own place is said here for whoever cannot see that panel, and once (`Notice.panel`).
+    const others = notice.panel === undefined ? notices : notices.filter((held) => held.panel !== notice.panel);
+    if (notice.panel !== undefined && dock?.visible(notice.panel) === true) {
+      state.setState({ notices: others.length === notices.length ? notices : others, log: entry });
+      return null;
+    }
+    const last = others[others.length - 1];
     const repeated = last !== undefined && last.level === notice.level && last.message === notice.message;
     const shown: ShownNotice = repeated ? { ...last, count: last.count + 1 } : { ...notice, id: ++noticeId, count: 1 };
-    state.setState({
-      notices: [...(repeated ? notices.slice(0, -1) : notices), shown].slice(-NOTICES_SHOWN),
-      log: [...log, { ...notice, time: now() }].slice(-LOG_KEPT),
-    });
+    state.setState({ notices: [...(repeated ? others.slice(0, -1) : others), shown].slice(-NOTICES_SHOWN), log: entry });
+    return shown.id;
+  }
+  function dismissNotice(id: number | null): void {
+    const { notices } = state.getState();
+    if (id !== null && notices.some((notice) => notice.id === id)) state.setState({ notices: notices.filter((notice) => notice.id !== id) });
+  }
+  function panelShown(id: PanelId): void {
+    const { notices } = state.getState();
+    if (notices.some((notice) => notice.panel === id)) state.setState({ notices: notices.filter((notice) => notice.panel !== id) });
   }
 
   // ---- the question about unsaved changes ----
@@ -160,8 +210,91 @@ export function createShell(options: ShellOptions): Shell {
       state.setState({ dialog: { kind: 'unsaved', project: projectName(doc.getState().path) }, palette: null });
     });
   }
+  // ---- the question about a build that runs ----
+  let buildingAnswer: ((stop: boolean) => void) | null = null;
+  function answerBuilding(stop: boolean): void {
+    const resolve = buildingAnswer;
+    buildingAnswer = null;
+    if (state.getState().dialog?.kind === 'building') state.setState({ dialog: null });
+    resolve?.(stop);
+  }
+  function askBuilding(leaving: Leaving): Promise<boolean> {
+    answerUnsaved('cancel');
+    answerBuilding(false);
+    return new Promise<boolean>((resolve) => {
+      // A build that ends while the question stands has answered it: there is nothing left to stop.
+      const stop = engineState.subscribe((next) => {
+        if (!next.build.running && buildingAnswer !== null) answerBuilding(true);
+      });
+      buildingAnswer = (answer) => {
+        stop();
+        resolve(answer);
+      };
+      state.setState({ dialog: { kind: 'building', leaving }, palette: null });
+    });
+  }
+  /** Cancels the build; resolves when it has ended, or after the backstop: a hung engine keeps nobody from their project. */
+  function stopBuild(): Promise<void> {
+    if (!engineState.getState().build.running) return Promise.resolve();
+    engine.cancelBuild();
+    return new Promise<void>((resolve) => {
+      let stop: () => void = () => undefined;
+      const done = (): void => {
+        clearTimeout(timer);
+        stop();
+        resolve();
+      };
+      const timer = setTimeout(done, options.buildStopBackstopMs ?? BUILD_STOP_BACKSTOP_MS);
+      stop = engineState.subscribe((next) => {
+        if (!next.build.running) done();
+      });
+      if (!engineState.getState().build.running) done();
+    });
+  }
+
+  // ---- the question about a file that another program changed ----
+  let changedAnswer: ((answer: ChangedAnswer) => void) | null = null;
+  function answerChanged(answer: ChangedAnswer): void {
+    const resolve = changedAnswer;
+    changedAnswer = null;
+    if (state.getState().dialog?.kind === 'changed') state.setState({ dialog: null });
+    resolve?.(answer);
+  }
+  function askChanged(file: string): Promise<ChangedAnswer> {
+    answerChanged('cancel');
+    return new Promise<ChangedAnswer>((resolve) => {
+      changedAnswer = resolve;
+      state.setState({ dialog: { kind: 'changed', file }, palette: null });
+    });
+  }
+  // ---- the question about what a run before kept ----
+  let recoverAnswer: ((restore: boolean) => void) | null = null;
+  function answerRecover(restore: boolean): void {
+    const resolve = recoverAnswer;
+    recoverAnswer = null;
+    if (state.getState().dialog?.kind === 'recover') state.setState({ dialog: null });
+    resolve?.(restore);
+  }
+  function askRecover(kept: { readonly path: string | null; readonly savedAt: number }): Promise<boolean> {
+    answerRecover(false);
+    // The project the application started with may have been opened with problems: its list waits behind this
+    // question, and is shown again when the project stays.
+    const behind = state.getState().dialog;
+    return new Promise<boolean>((resolve) => {
+      recoverAnswer = (restore) => {
+        if (!restore && behind?.kind === 'problems' && state.getState().dialog === null) state.setState({ dialog: behind });
+        resolve(restore);
+      };
+      state.setState({ dialog: { kind: 'recover', project: projectName(kept.path), savedAt: kept.savedAt }, palette: null });
+    });
+  }
+
   function showDialog(dialog: ShellDialog): void {
     if (dialog.kind !== 'unsaved') answerUnsaved('cancel');
+    if (dialog.kind !== 'building') answerBuilding(false);
+    if (dialog.kind !== 'changed') answerChanged('cancel');
+    // What was kept is not given up because another dialog came: it is asked about again at the next start.
+    if (dialog.kind !== 'recover' && recoverAnswer !== null) return;
     state.setState({ dialog, palette: null });
   }
 
@@ -180,6 +313,12 @@ export function createShell(options: ShellOptions): Shell {
     recent: () => state.getState().preferences.recent,
     setRecent: (recent) => setPreferences({ recent }),
     askUnsaved,
+    building: () => engineState.getState().build.running,
+    askBuilding,
+    stopBuild,
+    askChanged,
+    askRecover,
+    ...(options.recoveryDelayMs === undefined ? {} : { recoveryDelayMs: options.recoveryDelayMs }),
     notify,
     showProblems: (file, problems) => showDialog({ kind: 'problems', file, problems }),
     showFailure: (title, message) => showDialog({ kind: 'failure', title, message }),
@@ -211,6 +350,8 @@ export function createShell(options: ShellOptions): Shell {
         host.restartEngine();
         notify({ level: 'info', message: 'The engine was restarted' });
       },
+      // The pages are shown in the application (8.8 rule 7): no program of the system has to know Markdown.
+      openHelp: (name) => showDialog({ kind: 'help', page: name }),
     }),
     ...panelSources(panels),
   ]);
@@ -231,38 +372,74 @@ export function createShell(options: ShellOptions): Shell {
     return keymap.value;
   }
 
-  let dock: { show(id: PanelId): void } | null = null;
   const services: AppServices = {
     ctx,
     showPanel(id) {
       dock?.show(id);
     },
+    openDocument: (document) => project.openDocument(document),
     keyLabel(commandId) {
       const key = currentKeymap().keysOf(commandId)[0];
       return key === undefined ? null : formatKey(key, keyPlatform);
     },
     commandTitle: (commandId) => commands.get(commandId)?.def.title ?? null,
     enabled: (commandId) => runner.enabled(commandId),
-    notify,
+    notify: (notice) => { notify(notice); },
   };
 
+  /** The notice that says the device is being recovered, while a recovery is under way; and whether one is. */
+  let lostNotice: number | null = null;
+  let recovering = false;
+  /** Whether the engine had the graphics card in this run, and whether its last device was a software adapter. */
+  let hardwareSeen = false;
+  let onSoftware = false;
   function onEngineEvent(event: EngineEvent): void {
     if (event.type === 'engine-error') {
+      // A recovery that failed says so in the engine's words: "is being recovered" is no longer true.
+      if (event.fatal && recovering) {
+        dismissNotice(lostNotice);
+        lostNotice = null;
+        recovering = false;
+      }
       notify({ level: event.fatal ? 'error' : 'warning', message: event.fatal ? `The engine stopped: ${event.message}` : event.message });
     } else if (event.type === 'device-lost') {
-      notify({ level: 'warning', message: 'The graphics device was lost and is being recovered', detail: event.message });
+      recovering = true;
+      lostNotice = notify({ level: 'warning', message: DEVICE_LOST_NOTICE, detail: event.message });
+    } else if (event.type === 'device-ready') {
+      // A recovery, or a restarted engine, that ends on a software adapter after the graphics card was in use
+      // (Chromium gives up hardware acceleration after losses, 7.8 rule 3): the status says "Ready", everything
+      // works, and a change that took 60 ms takes seconds. Said once, with what brings the card back.
+      const software = event.caps.software === true;
+      if (software && hardwareSeen && !onSoftware) notify({ level: 'warning', message: SOFTWARE_ADAPTER_NOTICE });
+      onSoftware = software;
+      if (!software) hardwareSeen = true;
+      // The first device of a session is no news. One that is back is said once, in place of the notice it ends.
+      if (!recovering) return;
+      recovering = false;
+      dismissNotice(lostNotice);
+      lostNotice = null;
+      notify({ level: 'info', message: DEVICE_BACK_NOTICE });
+    } else if (event.type === 'build-start') {
+      // A build is the heaviest thing the engine does, and the engine lives in the page's process: what the
+      // project has of unsaved changes is kept for recovery before it runs (8.6).
+      void project.keepNow();
+      // What was said of the build before is of a build that is being replaced.
+      panelShown('build');
     } else if (event.type === 'build-result') {
+      // The build panel shows the outcome with everything that belongs to it. The notice is for whoever has
+      // another panel in front: one at the most, and none that lies over the panel's own words (`Notice.panel`).
       const { result } = event;
       const errors = result.problems.filter((problem) => problem.severity === 'error');
       const detail = result.problems.map((problem) => `${problem.severity}: ${problem.message}`).join('\n') || undefined;
+      const panel = 'build' as const;
       if (result.status === 'ok') {
-        notify({ level: 'info', message: `Build finished: ${result.files.length} file${result.files.length === 1 ? '' : 's'}${result.outDir ? ` in ${baseName(result.outDir)}` : ''}`, detail });
+        notify({ level: 'info', message: `Build finished: ${result.files.length} file${result.files.length === 1 ? '' : 's'}${result.outDir ? ` in ${baseName(result.outDir)}` : ''}`, detail, panel });
       } else if (result.status === 'aborted') {
-        notify({ level: 'info', message: 'Build cancelled' });
+        notify({ level: 'info', message: 'Build cancelled', panel });
       } else if (result.status === 'device-lost') {
-        notify({ level: 'error', message: 'Build stopped: the graphics device was lost', detail });
+        notify({ level: 'error', message: 'Build stopped: the graphics device was lost', detail, panel });
       } else {
-        notify({ level: 'error', message: `Build failed: ${errors[0]?.message ?? 'a node could not be evaluated'}`, detail });
+        notify({ level: 'error', message: `Build failed: ${errors[0]?.message ?? 'a node could not be evaluated'}`, detail, panel });
       }
     }
   }
@@ -278,8 +455,8 @@ export function createShell(options: ShellOptions): Shell {
     keyPlatform,
     keymap: currentKeymap,
     menus: () => buildMenus(commands, currentKeymap()),
-    notify,
-    dismissNotice: (id) => state.setState({ notices: state.getState().notices.filter((notice) => notice.id !== id) }),
+    notify: (notice) => { notify(notice); },
+    dismissNotice,
     setPreferences,
     adoptPreferences(preferences) {
       state.setState({ preferences });
@@ -290,14 +467,22 @@ export function createShell(options: ShellOptions): Shell {
     closePalette: () => state.setState({ palette: null }),
     showDialog,
     closeDialog() {
-      if (state.getState().dialog?.kind === 'unsaved') answerUnsaved('cancel');
+      const kind = state.getState().dialog?.kind;
+      if (kind === 'unsaved') answerUnsaved('cancel');
+      else if (kind === 'building') answerBuilding(false);
+      else if (kind === 'changed') answerChanged('cancel');
+      else if (kind === 'recover') answerRecover(false);
       else state.setState({ dialog: null });
     },
     answerUnsaved,
+    answerBuilding,
+    answerChanged,
+    answerRecover,
     resetLayout: () => runner.run('view.resetLayout'),
     attachDock(handle) {
       dock = handle;
     },
+    panelShown,
 
     connect() {
       const stops = [
@@ -312,14 +497,17 @@ export function createShell(options: ShellOptions): Shell {
           else console.warn(`[orogen] the menu sent "${commandId}", which is no command`);
         }),
         platform.onCloseRequested(() => {
-          project.mayDiscard().then(
-            (go) => { if (go) platform.confirmClose(); },
-            (thrown: unknown) => {
-              console.error('[orogen] the window could not ask about unsaved changes', thrown);
-              platform.confirmClose();
-            },
-          );
+          project.mayLeave('close').then(
+            // Closed with the user's consent: nothing is kept for the next start to offer.
+            (go) => (go ? project.closing().then(() => platform.confirmClose()) : undefined),
+          ).catch((thrown: unknown) => {
+            console.error('[orogen] the window could not ask about unsaved changes', thrown);
+            platform.confirmClose();
+          });
         }),
+        // 8.2 rule 8: the project file a second start was given is opened here, after the questions of 8.8 rule 9.
+        platform.onOpenRequested((file) => { void project.openPath(file); }),
+        () => project.dispose(),
       ];
       return () => { for (const stop of stops) stop(); };
     },

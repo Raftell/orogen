@@ -5,7 +5,7 @@ import fuzzysort from 'fuzzysort';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 
-import { Icon } from '../ui/index.ts';
+import { SearchField } from '../ui/index.ts';
 import type { PaletteMode } from './app-commands.ts';
 import { folderOf, projectName } from './format.ts';
 import { formatKey } from './keys.ts';
@@ -119,21 +119,19 @@ function PaletteList(props: { readonly shell: Shell; readonly mode: PaletteMode 
       <div className="og-palette-backdrop" data-chrome="" onPointerDown={close} />
       <div className="og-palette" role="dialog" aria-label={mode === 'recent' ? 'Open Recent' : 'Command Palette'} data-chrome="" data-ui="palette" data-mode={mode}>
         <div className="og-palette-input-row">
-          <Icon name="search" />
-          <input
+          <SearchField
+            variant="plain"
             className="og-palette-input"
-            type="text"
-            spellCheck={false}
-            autoComplete="off"
             autoFocus
             role="combobox"
             aria-expanded="true"
             aria-controls="og-palette-list"
             aria-activedescendant={rows[index] ? `og-palette-item-${index}` : undefined}
+            aria-label={mode === 'recent' ? 'Open a recent project' : 'Command name'}
             placeholder={mode === 'recent' ? 'Open a recent project' : 'Type the name of a command'}
             value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
+            onChange={(text) => {
+              setQuery(text);
               setSelected(0);
             }}
             onKeyDown={onKeyDown}

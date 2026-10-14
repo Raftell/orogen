@@ -47,7 +47,7 @@ test (section 6) once on your engine version before you trust an import.
 3. Heightmap File: choose `<Name>Height.png`. Unreal imports 16-bit greyscale PNG and 16-bit `.r16` heightmaps (confirmed). The `.r16` file holds the same data; that Unreal reads it as little-endian is third party, so prefer the PNG.
 4. Leave Flip Y Axis off. The option exists (confirmed); what it does to a single file is unconfirmed.
 5. If Unreal asks whether to use the tiled image path, answer No. Unreal asks this when it considers the heightmap tiled (confirmed); an Orogen build is one file.
-6. Compare the layout the panel shows with `landscape.layout` in the manifest and correct the panel if it differs: Section Size = `quadsPerSection` (for 8129: 127x127 quads), Sections Per Component = 1x1 or 2x2 for `sectionsPerComponent` 1 or 2, Number of Components = `components` (32 x 32), Overall Resolution = `resolution` (8129 x 8129). These values are confirmed for the four sizes Orogen offers; that the panel fills them in by itself is unconfirmed.
+6. Compare the layout the panel shows with `landscape.layout` in the manifest and correct the panel if it differs: Section Size = `quadsPerSection`, Sections Per Component = 1x1 or 2x2 for `sectionsPerComponent` 1 or 2, Number of Components = `components`, Overall Resolution = `resolution`. As an example, a build at 8129 has 127x127 quads, 32 x 32 components and 8129 x 8129; your build has the values of its own manifest. These values are confirmed for the four sizes Orogen offers; that the panel fills them in by itself is unconfirmed.
 7. Scale: type `landscape.transform.scaleCm` x, y and z (derived).
 8. Location: type `landscape.transform.uiLocationCm`. This assumes the panel's Location is the centre of the landscape in X and Y, which is unconfirmed; step 13 checks it. Leave Rotation at 0.
 9. Material: choose your landscape material.
@@ -89,8 +89,8 @@ already exists. Two facts bear on it:
 
 ## 5. A worked example
 
-`examples/ridge.orogen` is a mountain range on a terrain 2000 m wide with a height range of 500 m and the sea
-level at height 0. It builds at 1009 × 1009 vertices, with one weight-blended layer, `Rock`, on its steep
+`docs/user/examples/ridge.orogen` is a mountain range on a terrain 2000 m wide with a height range of 500 m and
+the sea level at height 0. It builds at 1009 × 1009 vertices, with one weight-blended layer, `Rock`, on its steep
 ground, and a normal texture.
 
 ```
@@ -296,4 +296,6 @@ These are the unconfirmed statements an import depends on, and what settles each
 | 12 | The defaults of World Partition Grid Size and Region Size; what Region Size 4 does on 5.8; what Flip Y Axis does to a single file | section 2 | watching the import |
 
 Also unverified, because Orogen itself has not been run there: building on Windows with a graphics card
-([Getting started](getting-started.md)).
+([Getting started](getting-started.md)), and whether a number copied from Orogen arrives whole in a field of
+Unreal's panel on a Windows whose regional format uses a decimal comma. Orogen writes every number with a
+point. [First run on Windows](first-run-on-windows.md) lists both among the first things to try.

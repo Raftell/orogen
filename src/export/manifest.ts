@@ -108,6 +108,7 @@ export interface BuildReport {
   }[];
   weightsMs: number | null;                      // duration of phase 3
   commitMs: number | null;                       // duration of phase 4: every file closed and the manifest written; null when the build did not reach it
+  peakPoolBytes: number | null;                  // the most the pool's ledger held at once while the build ran: GPU memory, in bytes; null when no engine ran
   height: null | {
     measuredMin: number; measuredMax: number;    // normalised heights
     valueMin: number; valueMax: number;          // normalised heights mapped to codes 0 and 65535

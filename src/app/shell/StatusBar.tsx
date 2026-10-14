@@ -21,18 +21,26 @@ function runningNode(state: EngineState): string | null {
 function Device(props: { readonly shell: Shell }) {
   const { shell } = props;
   const device = useStore(shell.ctx.engineState, (state) => state.device);
-  const paused = useStore(shell.state, (state) => state.paused);
-  const text = device.state === 'starting' ? 'Starting graphics device'
-    : device.state === 'lost' ? 'Graphics device lost, recovering'
-      : device.state === 'failed' ? 'Graphics device failed'
-        : paused ? 'Previews paused' : 'Ready';
+  // The store of the engine is what every panel reads the pause from; the shell's own member is the same pause.
+  const pausedHere = useStore(shell.state, (state) => state.paused);
+  const paused = useStore(shell.ctx.engineState, (state) => state.paused) || pausedHere;
+  // 8.5: an engine that answers nothing sends no event either. "Ready" would be the last thing it said.
+  const silent = useStore(shell.ctx.engineState, (state) => state.silent) && device.state !== 'starting' && device.state !== 'failed';
+  const text = silent ? 'Engine not responding'
+    : device.state === 'starting' ? 'Starting graphics device'
+      : device.state === 'lost' ? 'Graphics device lost, recovering'
+        : device.state === 'failed' ? 'Graphics device failed'
+          : paused ? 'Previews paused' : 'Ready';
   return (
     <>
-      <div className="og-status-item" data-status="device" data-state={device.state} title={device.message ?? undefined}>
-        <span className="og-status-dot" data-state={device.state} />
-        <span className={device.state === 'failed' ? 'og-status-error' : paused && device.state === 'ready' ? 'og-status-warning' : 'og-status-strong'}>{text}</span>
+      <div className="og-status-item" data-status="device" data-state={device.state} data-silent={silent ? '' : undefined} title={silent ? 'The engine has not answered for several seconds. Engine > Restart Engine starts another; the project is not in the engine, so nothing of it is lost.' : device.message ?? undefined}>
+        <span className="og-status-dot" data-state={silent ? 'failed' : device.state} />
+        <span className={device.state === 'failed' || silent ? 'og-status-error' : paused && device.state === 'ready' ? 'og-status-warning' : 'og-status-strong'}>{text}</span>
         {device.state === 'failed' ? (
           <button type="button" className="og-status-button" data-command="engine.retryDevice" onClick={() => shell.runner.run('engine.retryDevice')}>Retry</button>
+        ) : null}
+        {silent ? (
+          <button type="button" className="og-status-button" data-command="engine.restart" onClick={() => shell.runner.run('engine.restart')}>Restart Engine</button>
         ) : null}
       </div>
       {device.caps ? (
@@ -81,15 +89,17 @@ function View(props: { readonly shell: Shell }) {
   // and the viewport's own word for a picture behind them is "Out of date" as well.
   const computing = useStore(engineState, (state) => state.evaluation !== null && (state.evaluation.purpose === 'view' || state.evaluation.purpose === 'draft'));
   const sent = useStore(doc, (state) => state.engineRevision);
+  const paused = useStore(engineState, (state) => state.paused);
   if (!view) return null;
   // 7.3 rule 7: what is shown is behind the document, or coarser than the preview. Behind with nothing being
-  // computed: the newer document could not be shown (rule 6), and the nodes that failed say why.
+  // computed: the newer document could not be shown (rule 6), and the nodes that failed say why. Behind because
+  // previews are paused is no fault: it is said as what it is, in every panel alike.
   const behind = view.revision < sent;
-  const state = view.draft ? 'Draft' : !behind ? null : computing ? 'Updating' : 'Out of date';
+  const state = view.draft ? 'Draft' : !behind ? null : computing ? 'Updating' : paused ? 'Paused' : 'Out of date';
   return (
-    <div className="og-status-item" data-status="view" data-behind={behind ? '' : undefined} data-draft={view.draft ? '' : undefined}>
+    <div className="og-status-item" data-status="view" data-behind={behind ? '' : undefined} data-draft={view.draft ? '' : undefined} data-paused={paused ? '' : undefined}>
       <span>{view.resolution} × {view.resolution}</span>
-      {state ? <span className={state === 'Out of date' ? 'og-status-warning' : 'og-status-strong'}>{state}</span> : null}
+      {state ? <span className={state === 'Out of date' || state === 'Paused' ? 'og-status-warning' : 'og-status-strong'}>{state}</span> : null}
     </div>
   );
 }

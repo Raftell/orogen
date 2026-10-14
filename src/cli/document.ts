@@ -250,8 +250,8 @@ export interface RenderPlan {
   /**
    * The terrain a mask, a data field or a colour is drawn over when the node's first output is none: the output
    * connected to the node's first height input, or, for a node without one, the terrain its mask or its colour
-   * was made of. null: the node's first output is a height, over which its other outputs are drawn, or the node
-   * reads no terrain at all.
+   * was made of; in a project, the terrain the project shows. null: the node's first output is a height, over
+   * which its other outputs are drawn, or there is no terrain to draw it over.
    */
   readonly terrain: PortRef | null;
   /** The document is the connected variant: optional inputs and the mask of a maskable node are connected (testing.md 2.4). */
@@ -403,6 +403,15 @@ export function projectDocument(registry: NodeRegistry, text: string, nodeId: st
     // An edge from a node of unknown type, or from an output its type lacks, is one the evaluator ignores.
     if (edge && source && source.id !== nodeId && registry.get(source.type)?.outputs.some((port) => port.name === edge.from.port)) {
       terrain = { node: edge.from.node, port: edge.from.port };
+    }
+  }
+  // A node that reads no terrain, a blend of two colour maps for one, is drawn over the terrain the project
+  // shows (runtime.md 7.4), where that is an output of another node the evaluator would find.
+  if (terrain === null && def && needsTerrain(def)) {
+    const viewed = doc.ui.view?.height;
+    const source = viewed && typeof viewed.node === 'string' && Object.hasOwn(doc.nodes, viewed.node) ? doc.nodes[viewed.node] : undefined;
+    if (viewed && source && source.id !== nodeId && registry.get(source.type)?.outputs.some((port) => port.name === viewed.port)) {
+      terrain = { node: viewed.node, port: viewed.port };
     }
   }
 

@@ -48,6 +48,17 @@ test('parseDoc throws DocFormatError for text that is no project of this version
   fails(JSON.stringify(file({ version: 1.5 })), /written by a newer version of Orogen/);
 });
 
+test('a byte order mark before the text is no part of it: a file an editor on Windows saved opens as it is', () => {
+  const text = JSON.stringify(file());
+  const plain = parseDoc(text, registry);
+  const marked = parseDoc(`\uFEFF${text}`, registry);
+  assert.deepEqual(marked.problems, []);
+  assert.equal(serializeDoc(marked.doc), serializeDoc(plain.doc));
+  // The mark is skipped where it is one: at the very start, once.
+  assert.throws(() => parseDoc(`\uFEFF\uFEFF${text}`, registry), DocFormatError);
+  assert.throws(() => parseDoc('\uFEFF', registry), /not JSON/);
+});
+
 // ---- nesting -------------------------------------------------------------------------------------------------------
 
 /** `depth` objects or arrays inside one another around the number 1, as text. */

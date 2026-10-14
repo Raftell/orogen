@@ -1,8 +1,9 @@
 import { own, type Edge, type GraphDoc, type PortRef } from './doc.ts';
-import { inputsOf } from './ports.ts';
+import { canBypass, inputsOf, type PortDef } from './ports.ts';
 import type { NodeRegistry } from './registry.ts';
 
-const inputKey = (to: PortRef): string => JSON.stringify([to.node, to.port]);
+/** The key of an input in `inputSources`. */
+export const inputKey = (to: PortRef): string => JSON.stringify([to.node, to.port]);
 
 /** Rule 1 of runtime.md 4.3: `from` names an output of an existing node of a known type, `to` an input of another. null when it holds. */
 export function endpointProblem(doc: GraphDoc, registry: NodeRegistry, from: PortRef, to: PortRef): string | null {
@@ -90,6 +91,27 @@ function classify(doc: GraphDoc, registry: NodeRegistry): { readonly used: reado
  */
 export function usedEdges(doc: GraphDoc, registry: NodeRegistry): Edge[] {
   return classify(doc, registry).used.map(([, edge]) => edge);
+}
+
+/** For every input the evaluator finds connected, by `inputKey`, the output it reads (4.3 rule 5). */
+export function inputSources(doc: GraphDoc, registry: NodeRegistry): Map<string, PortRef> {
+  return new Map(usedEdges(doc, registry).map((edge) => [inputKey(edge.to), edge.from]));
+}
+
+/**
+ * The missing-input rule (runtime.md 5.3 step 2): the declared inputs of a node that are not optional and that
+ * the evaluator finds unconnected, in declaration order. The first is the one its `missing-input` error names.
+ * None for a node the document lacks, for one of an unknown type, and for one whose bypass takes effect, which
+ * reads nothing but what it passes on (5.6). `sources` is `inputSources(doc, registry)`: whoever asks for many
+ * nodes of one document makes it once.
+ */
+export function missingInputs(
+  doc: GraphDoc, registry: NodeRegistry, nodeId: string, sources: ReadonlyMap<string, PortRef> = inputSources(doc, registry),
+): PortDef[] {
+  const node = own(doc.nodes, nodeId);
+  const def = node ? registry.get(node.type) : undefined;
+  if (!node || !def || (node.bypass === true && canBypass(def))) return [];
+  return def.inputs.filter((port) => !port.optional && !sources.has(inputKey({ node: nodeId, port: port.name })));
 }
 
 /** The nodes that lie on a cycle of used edges: the evaluator reports `Part of a cycle` on each (5.8). */
@@ -219,7 +241,7 @@ export function outputKind(doc: GraphDoc, registry: NodeRegistry, ref: PortRef):
     const key = inputKey(at);
     if (visited.has(key)) return null;
     visited.add(key);
-    sources ??= new Map(usedEdges(doc, registry).map((edge) => [inputKey(edge.to), edge.from]));
+    sources ??= inputSources(doc, registry);
     const from = sources.get(inputKey({ node: at.node, port: port.type.sameAs }));
     if (!from) return null;
     at = from;

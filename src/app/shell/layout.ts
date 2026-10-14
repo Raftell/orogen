@@ -73,7 +73,30 @@ export function savedDock(value: unknown, panelIds: readonly string[]): Record<s
 export const DEFAULT_SHARE: Readonly<Partial<Record<PanelId, { readonly width?: number; readonly height?: number }>>> = {
   inspector: { width: 0.23 },
   graph: { height: 0.5 },
+  // Under the inspector, in its column: the parameters of a node keep the larger part.
+  library: { height: 0.45 },
 };
+
+/**
+ * The least a group of the dock is made by dragging a divider, in CSS pixels. Below this width the rows of a
+ * property list have no room for a label and a control, and a panel shows a tab and little else below the height.
+ */
+export const PANEL_MIN = { width: 220, height: 100 } as const;
+
+/**
+ * A dock layout in dockview's form with the minimum sizes on every panel that has none: a layout that was saved
+ * by a build without them is restored with them. The value given is not changed.
+ */
+export function withMinimums(dock: Record<string, unknown>): Record<string, unknown> {
+  if (!isRecord(dock.panels)) return dock;
+  const panels: Record<string, unknown> = {};
+  for (const [id, panel] of Object.entries(dock.panels)) {
+    panels[id] = isRecord(panel)
+      ? { ...panel, minimumWidth: typeof panel.minimumWidth === 'number' ? panel.minimumWidth : PANEL_MIN.width, minimumHeight: typeof panel.minimumHeight === 'number' ? panel.minimumHeight : PANEL_MIN.height }
+      : panel;
+  }
+  return { ...dock, panels };
+}
 /** The narrowest and widest a side column starts at, in CSS pixels. */
 export const SIDE_COLUMN = { min: 300, max: 440 } as const;
 

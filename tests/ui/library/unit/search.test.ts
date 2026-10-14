@@ -8,7 +8,7 @@ import { test } from 'node:test';
 
 import { nodes } from '../../../../src/core/nodes/index.ts';
 import { createRegistry } from '../../../../src/core/runtime.ts';
-import { ALIASES } from '../../../../src/app/panels/library/aliases.ts';
+import { ALIASES } from '../../../../src/app/ui/node-aliases.ts';
 import { catalogOf } from '../../../../src/app/panels/library/catalog.ts';
 import {
   createSearchIndex, FIELD_WEIGHT, matchText, searchCatalog, searchRows, titleRuns, type SearchHit,
@@ -132,6 +132,44 @@ test('the table of other names holds registered product nodes, and no name a tit
     .filter((alias) => alias.tool === 'Gaea' && !new RegExp(`\\b${alias.name}\\b`).test(report))
     .map((alias) => `${type}: ${alias.name}`));
   assert.deepEqual(unknown, [], 'Gaea names that docs/research/gaea-features.md does not list');
+});
+
+test('what a Gaea user types is found: plurals, British spelling, and the words for what a terrain is covered with', () => {
+  const first = (query: string): string | undefined => find(query)[0]?.entry.type;
+  // The plural of a name the table holds in the singular, and of a keyword.
+  assert.deepEqual(new Set(types('satmaps').slice(0, 2)), new Set(['color/gradient-map', 'color/natural']));
+  assert.deepEqual(new Set(types('SatMaps').slice(0, 2)), new Set(['color/gradient-map', 'color/natural']));
+  assert.equal(first('deposits'), 'simulate/sediment');
+  // The word found as typed counts for more than the word without its plural.
+  assert.ok(find('satmap')[0]!.score > find('satmaps')[0]!.score);
+  assert.deepEqual(types('colour'), types('color'), 'British spelling');
+  assert.equal(first('forest'), 'color/natural');
+  assert.equal(first('grass'), 'color/natural');
+  assert.equal(first('splatmap'), 'io/export-layer');
+  assert.ok(types('hills').includes('generate/fractal-noise'), 'a terrain for "hills", not only the shading named Hillshade');
+  // A doubled letter by a slip of the hand is read without it, below every sure match.
+  assert.deepEqual(new Set(types('errosion').slice(0, 3)), new Set(['simulate/fluvial-erosion', 'simulate/hydraulic-erosion', 'simulate/thermal-erosion']));
+  assert.ok(find('errosion')[0]!.score < find('erosion')[0]!.score);
+  assert.equal(first('moutain'), 'generate/mountain');
+});
+
+test('"export" and "output" find the node that exports the terrain first, and the export nodes together', () => {
+  assert.equal(types('export')[0], 'io/export-landscape');
+  assert.equal(types('output')[0], 'io/export-landscape');
+  assert.deepEqual(new Set(types('export').slice(0, 6)), new Set(['io/export-landscape', 'io/export-color', 'io/export-field', 'io/export-mask', 'io/export-layer', 'io/export-normal']));
+  assert.ok(types('output').slice(0, 6).every((type) => type.startsWith('io/export-')));
+  // A node that makes a colour stands before the node that writes one, when both are found by a part of their title.
+  const color = types('color');
+  assert.ok(color.indexOf('color/natural') < color.indexOf('io/export-color'), color.slice(0, 5).join(', '));
+});
+
+test('several words are found in any order, each where it stands', () => {
+  for (const query of ['export landscape', 'landscape export']) assert.equal(types(query)[0], 'io/export-landscape', query);
+  assert.equal(types('erosion hydraulic')[0], 'simulate/hydraulic-erosion');
+  assert.equal(types('unreal landscape')[0], 'io/export-landscape');
+  // Words one field holds together count for more than the same words spread over two.
+  assert.ok(find('hydraulic erosion')[0]!.score > find('erosion hydraulic')[0]!.score);
+  assert.deepEqual(find('erosion zzqx'), [], 'every word must be found');
 });
 
 test('the rows of a search are its hits in order, each with what a row draws', () => {

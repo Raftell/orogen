@@ -249,10 +249,12 @@ test('thumbnails: the nodes of the view get theirs as a by-product, the others f
       assert.notEqual(state.thumbnailKeys[id], state.keys[id]);
       assert.equal(state.nodes[id]!.state, 'idle', 'the idle evaluation that held it was aborted before its first node');
     }
+    // Two idle evaluations were aborted for the slow node, which is cached nowhere (runtime.md 7.3 rules 9 and 10): the
+    // one at the thumbnail resolution, and the try at the preview resolution, where a view would have left it cached.
     const aborted = of(app.received, 'eval-end').filter((event) => event.status === 'aborted');
-    assert.equal(aborted.length, 1, 'one thumbnail evaluation was aborted for the slow node');
+    assert.equal(aborted.length, 2, 'the thumbnail evaluation and its try at the preview resolution were aborted for the slow node');
     const purposes = new Map(of(app.received, 'request-start').map((event) => [event.requestId, event.purpose]));
-    assert.equal(purposes.get(aborted[0]!.requestId), 'thumbnails');
+    assert.deepEqual(aborted.map((event) => purposes.get(event.requestId)), ['thumbnails', 'thumbnails']);
 
     // That evaluation named the nodes of the view too, and ran none of them: they are what the view request left them.
     const skipped = of(app.received, 'node-skipped').filter((event) => event.requestId === aborted[0]!.requestId).map((event) => event.nodeId);

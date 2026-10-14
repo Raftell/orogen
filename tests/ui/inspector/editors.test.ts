@@ -347,7 +347,7 @@ test('editors: the stops of a gradient are dragged, added, passed over each othe
     await key(app, 'Escape');
     await app.eval(`void inspectorTest.up(${quote(stopAt(6))}, ${quote(along(0.9))})`);
     assert.ok(JSON.stringify(await stops()) === JSON.stringify(before), 'the gradient is as it was before the drag');
-    assert.equal((await past(app)).length, steps);
+    assert.deepEqual([(await past(app)).length, await app.eval<number>(`orogenTest.ctx.doc.getState().future.length`)], [steps, 0], 'nothing to undo and nothing to redo');
 
     // ---- a stop dragged well away from the bar is removed, in one entry; Delete removes the focused one ----
     await apart();

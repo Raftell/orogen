@@ -6,7 +6,7 @@ export default defineNode({
   title: 'Landscape Layer',
   category: 'io',
   description: 'Exports a mask as an Unreal landscape target layer.',
-  keywords: ['unreal', 'weightmap', 'splat', 'paint layer'],
+  keywords: ['unreal', 'weightmap', 'splat', 'paint layer', 'export', 'output', 'splatmap', 'mask'],
   inputs: [{ name: 'in', type: 'field', role: 'mask' }],
   outputs: [],
   params: [

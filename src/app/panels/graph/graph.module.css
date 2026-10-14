@@ -186,6 +186,7 @@
 /* Red: the node itself failed. Amber: it cannot run yet, for want of a wire or of a node before it. */
 .node[data-status='error'] .status { color: var(--og-error); }
 .node[data-status='missing'] .status,
+.node[data-status='paused'] .status,
 .node[data-status='skipped'] .status { color: var(--og-warning); }
 .dot { flex: none; box-sizing: border-box; width: 6px; height: 6px; border-radius: 50%; background: var(--og-text-disabled); }
 .node[data-status='done'] .dot { background: var(--og-ok); }
@@ -196,6 +197,7 @@
 .node[data-status='missing'] .dot,
 .node[data-status='skipped'] .dot { background: var(--og-warning); }
 .node[data-status='bypassed'] .dot { border: 1.5px solid var(--og-text-dim); background: transparent; }
+.node[data-status='paused'] .dot { border: 1.5px solid var(--og-warning); background: transparent; }
 
 /* ---- ports: the dot is the library's handle ---- */
 
@@ -296,15 +298,41 @@
 .root[data-lod='far'] .dot,
 .root[data-lod='far'] .title,
 .root[data-lod='far'] .badges,
+.root[data-lod='mid'] .badges,
 .root[data-lod='far']:not([data-group-titles]) .frameTitle,
 .root[data-lod='far'] .thumbnail canvas { display: none; }
 /*
- * Far out the nodes are blocks without names, and what says what they are is the group they stand in: its name is
- * drawn at the screen's size, from the middle of the group's header, which leaves the nodes below it free.
+ * In the middle band a name at the graph's own size is 4 to 6 pixels high on screen: no name could be read in an
+ * example that opens there. A node's name is drawn larger instead, 9 to 12 pixels on screen in two steps
+ * (geometry.ts, MID_TITLE_SIZE), in a band over the top of the node and cut at its width. What the band covers
+ * is not text: the labels of the ports are not drawn at this zoom.
  */
-.root[data-lod='far'][data-group-titles] .frameHeader { overflow: visible; }
+.root[data-lod='mid'] .header { overflow: visible; }
+.root[data-lod='mid'] .title {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  right: 0;
+  left: 0;
+  box-sizing: border-box;
+  padding: 0 var(--og-space-4);
+  border-radius: inherit;
+  background: inherit;
+  font-size: var(--graph-mid-title);
+  line-height: 1.15;
+}
+.root[data-title-step='low'] { --graph-mid-title: 30px; }
+.root[data-title-step='high'] { --graph-mid-title: 22px; }
+/* Just above the middle band the name still fits its header at a size that reads: 9 to 12 pixels on screen up to a zoom of 0.75. */
+.root[data-title-step='near'] .title { font-size: 16px; line-height: 1.15; }
+/*
+ * Far out the nodes are blocks without names, and what says what they are is the group they stand in: its name is
+ * drawn at the screen's size, from the middle of the group's header, which leaves the nodes below it free. In the
+ * middle band the group's name is drawn the same way, beside the names of its nodes.
+ */
+.root[data-group-titles] .frameHeader { overflow: visible; }
 /* The scale itself is written on each name by the controller (sayZoom): it is the inverse of the zoom. */
-.root[data-lod='far'][data-group-titles] .frameTitle {
+.root[data-group-titles] .frameTitle {
   flex: none;
   overflow: visible;
   transform-origin: left center;
@@ -402,27 +430,8 @@
   font: var(--og-font-weight) var(--og-font-size) / var(--og-line-height) var(--og-font-ui);
   user-select: none;
 }
-.paletteSearch {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--og-space-4);
-  padding: var(--og-space-3) var(--og-space-5);
-  border-bottom: 1px solid var(--og-divider);
-  color: var(--og-text-dim);
-}
-.paletteInput {
-  flex: 1;
-  min-width: 0;
-  height: var(--og-control-height);
-  border: 0;
-  background: transparent;
-  color: var(--og-text);
-  font: inherit;
-  font-size: var(--og-font-size-large);
-  outline: none;
-}
-.paletteInput::placeholder { color: var(--og-text-dim); }
+/* The field itself is the shared search field (src/app/ui/SearchField.tsx), in its plain form. */
+.paletteSearch { display: flex; flex: none; align-items: center; padding: var(--og-space-3) var(--og-space-5); border-bottom: 1px solid var(--og-divider); }
 .paletteWire { flex: none; max-width: 45%; overflow: hidden; color: var(--og-text-dim); font-size: var(--og-font-size-small); text-overflow: ellipsis; white-space: nowrap; }
 .paletteMain { display: flex; flex: 1; min-height: 0; }
 .paletteCategories {

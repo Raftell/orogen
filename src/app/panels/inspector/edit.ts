@@ -6,7 +6,7 @@ import type { StoreApi } from 'zustand/vanilla';
 
 import type { NodeDef, ParamDef } from '../../../core/api.ts';
 import {
-  resetParam, setNodeFlags, setParam, setSettings, type DocDraft, type NodeInstance, type NodeRegistry, type ProjectSettings,
+  resetParam, setNodeFlags, setParam, setSettings, withBuildResolution, type DocDraft, type NodeInstance, type NodeRegistry, type ProjectSettings,
 } from '../../../core/runtime.ts';
 import type { DocState } from '../../state/doc-store.ts';
 import { paramLabel } from './model.ts';
@@ -63,13 +63,15 @@ export function setFlagsOf(ctx: Pick<EditContext, 'doc'>, ids: readonly string[]
 
 /**
  * One project setting. The build resolution and the preview level are no undo steps (runtime.md 8.5 rule 5); the
- * others are, and merge like a parameter.
+ * others are, and merge like a parameter. A new build resolution takes the preview level with it that keeps the
+ * previews nearest to the resolution they had (4.2): a smaller build does not blur them, a larger one does not
+ * make them four times as heavy.
  */
 export function setSettingOf(ctx: Pick<EditContext, 'doc'>, name: SettingName, value: number): void {
-  const patch: Partial<ProjectSettings> = { [name]: value };
-  ctx.doc.getState().transact(`Project: ${SETTING_LABELS[name]}`, (draft) => setSettings(draft, patch), isUndoableSetting(name)
-    ? { mergeKey: settingKey(name) }
-    : { undoable: false });
+  ctx.doc.getState().transact(`Project: ${SETTING_LABELS[name]}`, (draft) => {
+    const patch: Partial<ProjectSettings> = name === 'buildResolution' ? withBuildResolution(draft.settings, value) : { [name]: value };
+    setSettings(draft, patch);
+  }, isUndoableSetting(name) ? { mergeKey: settingKey(name) } : { undoable: false });
 }
 
 /** A seed as the dice button draws it: any integer of the seed's range, 0 .. 2^32 − 1. */
@@ -86,26 +88,19 @@ export interface Gesture {
 
 /**
  * The gesture of one control. Everything transacted with `key` between `begin` and `end` is one history entry.
- * A drag that was taken back leaves none: its entry, which by then changes nothing, is undone, so that the next
- * undo is the step before the drag.
+ * A drag that was taken back leaves nothing: `cancelGesture` (runtime.md 8.5 rule 4) puts the document back,
+ * drops the entry and leaves what could be redone before the drag as it was.
  */
 export function createGesture(doc: StoreApi<DocState>, key: string): Gesture {
-  /** The length of the history when the gesture began; null while none is in progress. */
-  let before: number | null = null;
   return {
     begin() {
-      const state = doc.getState();
-      before = state.past.length;
-      state.beginGesture(key);
+      doc.getState().beginGesture(key);
     },
     end(kept = true) {
-      const began = before;
-      before = null;
       const state = doc.getState();
-      if (state.gesture === key) state.endGesture();
-      if (kept || began === null) return;
-      const { past, undo } = doc.getState();
-      if (past.length === began + 1 && past[past.length - 1]!.mergeKey === key) undo();
+      if (state.gesture !== key) return;
+      if (kept) state.endGesture();
+      else state.cancelGesture();
     },
   };
 }

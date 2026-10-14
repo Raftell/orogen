@@ -63,7 +63,7 @@ test('a command belongs to the owner its id begins with', () => {
     'shell binds Mod+B to "build.start", which nobody declares',
   ]);
   assert.deepEqual(faults([{ ...SHELL, commands: [...SHELL.commands, command('graph.new')] }, GRAPH, BUILD]), [
-    'shell declares the command "graph.new": its commands begin with "file.", "edit.", "view.", "engine."',
+    'shell declares the command "graph.new": its commands begin with "file.", "edit.", "view.", "engine.", "help."',
   ]);
   assert.deepEqual(faults([{ owner: 'graph', commands: [command('Graph Delete')], keys: [] }]), ['graph declares the command "Graph Delete": an id is "<owner>.<name>"']);
   assert.deepEqual(faults([{ owner: 'graph', commands: [command('graph.fit', { title: ' ' })], keys: [] }]), ['graph declares the command "graph.fit" without a title']);

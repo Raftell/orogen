@@ -7,7 +7,7 @@ import { mock, test } from 'node:test';
 import { applyPatches, enablePatches, produceWithPatches, type Patch } from 'immer';
 import {
   addNode, connect, copyNodes, disconnect, moveNodes, newDoc, parseDoc, pasteNodes, removeGroups, removeNodes, resetParam,
-  serializeDoc, setGraphViewport, setGroup, setNodeFlags, setParam, setSettings, setView,
+  serializeDoc, setGraphViewport, setGroup, setNodeFlags, setParam, setSettings, setView, setViewportState,
   type DocDraft, type GraphDoc, type NodeInstance, type ViewBinding,
 } from '../../src/core/runtime.ts';
 import { combine, everyKind, registry } from './graph-fixtures.ts';
@@ -572,7 +572,7 @@ test('setSettings: a change of buildResolution or previewLevel touches those two
 
 // ---- ui --------------------------------------------------------------------------------------------------------
 
-test('setView and setGraphViewport are the only commands that write under ui', () => {
+test('setView, setGraphViewport and setViewportState are the only commands that write under ui', () => {
   const { doc, g, c } = sample();
   const view: ViewBinding = { height: { node: g, port: 'out' }, overlay: { ref: { node: c, port: 'out' }, as: 'heat', opacity: 0.5 }, locked: true };
   const t = transact(doc, (d) => setView(d, view));
@@ -594,9 +594,22 @@ test('setView and setGraphViewport are the only commands that write under ui', (
   assert.equal(panned.doc.ui.view, doc.ui.view);
   noChange(panned.doc, (d) => setGraphViewport(d, { x: 10, y: 20, zoom: 1.5 }));
   assert.throws(() => transact(doc, (d) => setGraphViewport(d, { x: 0, y: 0, zoom: NaN })), TypeError);
+
+  // The viewport panel's own value: carried as it is, copied, removed by null, and kept through a file.
+  const kept = { version: 1, mode: 'top', sun: [195, 38], nested: { any: ['thing'] } };
+  const stored = transact(doc, (d) => setViewportState(d, kept));
+  assert.deepEqual(stored.doc.ui.viewport, kept);
+  assert.notEqual(stored.doc.ui.viewport, kept);
+  assert.ok(stored.patches.every((p) => p.path[0] === 'ui' && p.path[1] === 'viewport'));
+  assert.equal(stored.doc.ui.view, doc.ui.view);
+  noChange(stored.doc, (d) => setViewportState(d, structuredClone(kept)));
+  assert.deepEqual(parseDoc(serializeDoc(stored.doc), registry).doc.ui.viewport, kept);
+  const removed = transact(stored.doc, (d) => setViewportState(d, null));
+  assert.equal('viewport' in removed.doc.ui, false);
+  noChange(removed.doc, (d) => setViewportState(d, undefined));
 });
 
-test('no command but setView and setGraphViewport produces a patch under ui', () => {
+test('no command but setView, setGraphViewport and setViewportState produces a patch under ui', () => {
   const { doc, g, s, c, gs } = sample();
   const fragment = copyNodes(doc, [s, c]);
   const recipes: readonly ((d: DocDraft) => void)[] = [

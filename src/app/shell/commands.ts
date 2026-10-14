@@ -8,7 +8,7 @@ import { isKey, type KeymapCommand, type KeyScope, type OwnedBinding } from './k
 
 /** The owner name of the shell's own list. Its commands begin with one of SHELL_PREFIXES (rule 1). */
 export const SHELL_OWNER = 'shell';
-export const SHELL_PREFIXES: readonly string[] = ['file', 'edit', 'view', 'engine'];
+export const SHELL_PREFIXES: readonly string[] = ['file', 'edit', 'view', 'engine', 'help'];
 export const PANEL_IDS: readonly PanelId[] = ['graph', 'viewport', 'inspector', 'library', 'build'];
 
 /** What one owner brings: a panel (its id is the owner) or the shell. */

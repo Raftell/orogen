@@ -10,26 +10,29 @@ import { createDocStore } from '../../../../src/app/state/doc-store.ts';
 import { createUiStore } from '../../../../src/app/state/ui-store.ts';
 import { addedType, cleanRecent, pushRecent, RECENT_MAX } from '../../../../src/app/panels/library/recent.ts';
 import {
-  cleanDetailsHeight, createLibraryStore, DETAILS_HEIGHT, noteUsed, QUERY_MAX, setActive, setDetailsHeight, setQuery, STORAGE_KEY, toggleSection, typeOfRow, watchAddedNodes,
-  type LibraryStorage,
+  cleanDetailsHeight, cleanKept, createLibraryStore, DETAILS_HEIGHT, noteUsed, QUERY_MAX, setActive, setDetailsHeight, setQuery, toggleSection, typeOfRow, watchAddedNodes,
 } from '../../../../src/app/panels/library/state.ts';
+import type { PanelKeep } from '../../../../src/app/platform.ts';
 
 const registry = createRegistry(nodes);
 
-function memoryStorage(initial?: string): LibraryStorage & { readonly writes: string[]; text(): string | null } {
-  let held: string | null = initial ?? null;
-  const writes: string[] = [];
+/** The panel's entry of the preferences as a test holds it: what was written, in order, and what a read answers. */
+function memoryKeep(initial: unknown = null): PanelKeep & { readonly writes: unknown[]; value(): unknown } {
+  let held: unknown = initial;
+  const writes: unknown[] = [];
   return {
     writes,
-    text: () => held,
-    getItem: (key) => (key === STORAGE_KEY ? held : null),
-    setItem(key, value) {
-      assert.equal(key, STORAGE_KEY);
-      held = value;
-      writes.push(value);
+    value: () => held,
+    read: async () => held,
+    write(value) {
+      held = structuredClone(value);
+      writes.push(held);
     },
   };
 }
+
+/** A turn of the event loop: what the read of the entry needs to arrive. */
+const turn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 test('the list holds each type once, newest first, and at most eight', () => {
   assert.deepEqual(pushRecent([], 'a'), ['a']);
@@ -101,13 +104,15 @@ test('a node counts as used when one transaction adds it, by whatever hand; undo
   assert.deepEqual(seen.filter((type) => type !== null), ['filter/blur', 'generate/fractal-noise', 'simulate/sea']);
 });
 
-test('the store follows the document, and keeps the tab, the folded sections, the recent nodes and the height of the details for the next start', () => {
-  const storage = memoryStorage();
-  const store = createLibraryStore(storage);
+test('the store follows the document, and keeps the tab, the folded sections, the recent nodes and the height of the details for the next start, in the preferences', async () => {
+  const keep = memoryKeep();
+  const store = createLibraryStore(keep);
   assert.deepEqual(
     { ...store.getState() },
-    { tab: 'nodes', collapsed: [], recent: [], detailsHeight: null, query: '', active: null, example: null, gallery: false, confirm: null, searchRequests: 0, mounted: false },
+    { tab: 'nodes', collapsed: [], recent: [], detailsHeight: null, query: '', active: null, example: null, gallery: false, searchRequests: 0, mounted: false },
   );
+  await turn();
+  assert.deepEqual(keep.writes, [], 'reading the entry writes nothing');
 
   const doc = createDocStore({ ui: createUiStore() });
   const stop = watchAddedNodes(store, doc, (type) => !type.startsWith('ref/'));
@@ -134,10 +139,10 @@ test('the store follows the document, and keeps the tab, the folded sections, th
   store.setState({ tab: 'examples' });
 
   // The height the user gave the details: a whole number of pixels within its limits, written when it changes.
-  let writes = storage.writes.length;
+  let writes = keep.writes.length;
   setDetailsHeight(store, 300.4);
   setDetailsHeight(store, 300);
-  assert.deepEqual([store.getState().detailsHeight, storage.writes.length], [300, writes + 1]);
+  assert.deepEqual([store.getState().detailsHeight, keep.writes.length], [300, writes + 1]);
   setDetailsHeight(store, 5);
   assert.equal(store.getState().detailsHeight, DETAILS_HEIGHT.min);
   setDetailsHeight(store, 1e9);
@@ -148,20 +153,41 @@ test('the store follows the document, and keeps the tab, the folded sections, th
   assert.deepEqual([cleanDetailsHeight('240'), cleanDetailsHeight(null), cleanDetailsHeight(Infinity), cleanDetailsHeight(239.5)], [null, null, null, 240]);
 
   // What a search and a selection are is not kept: writes happen for the kept members only.
-  writes = storage.writes.length;
+  writes = keep.writes.length;
   setQuery(store, 'blur');
   setActive(store, 'search:filter/blur');
   store.setState({ example: 'alpine-range', gallery: true });
-  assert.equal(storage.writes.length, writes);
-  assert.deepEqual(JSON.parse(storage.text()!), { tab: 'examples', collapsed: ['io'], recent: ['filter/blur', 'generate/dunes'], detailsHeight: 240 });
+  assert.equal(keep.writes.length, writes);
+  assert.deepEqual(keep.value(), { tab: 'examples', collapsed: ['io'], recent: ['filter/blur', 'generate/dunes'], detailsHeight: 240 });
 
-  const next = createLibraryStore(storage);
+  // The next start: the entry arrives a moment after the store is made, and is what the panel then shows.
+  const next = createLibraryStore(keep);
+  assert.deepEqual([next.getState().tab, next.getState().recent], ['nodes', []], 'until the preferences are read the panel is at its first state');
+  await turn();
   assert.deepEqual([next.getState().tab, next.getState().collapsed, next.getState().recent, next.getState().detailsHeight, next.getState().query, next.getState().active],
     ['examples', ['io'], ['filter/blur', 'generate/dunes'], 240, '', null]);
+  assert.equal(keep.writes.length, writes, 'taking what was kept is no change to write');
   setDetailsHeight(next, null);
-  assert.equal(createLibraryStore(storage).getState().detailsHeight, null);
+  const third = createLibraryStore(keep);
+  await turn();
+  assert.equal(third.getState().detailsHeight, null);
   noteUsed(next, 'simulate/snow');
   assert.deepEqual(next.getState().recent, ['simulate/snow', 'filter/blur', 'generate/dunes']);
+});
+
+test('what the user changed before the preferences were read stays, and is written with what was kept of the rest', async () => {
+  const keep = memoryKeep({ tab: 'examples', collapsed: ['io'], recent: ['filter/blur'], detailsHeight: 240 });
+  const store = createLibraryStore(keep);
+  // Faster than the file: a node is added and a section folded before the entry has arrived.
+  noteUsed(store, 'generate/dunes');
+  toggleSection(store, 'select');
+  assert.deepEqual(keep.writes, [], 'what the last run kept is not replaced by what this one started with');
+  await turn();
+  assert.deepEqual(
+    [store.getState().tab, store.getState().collapsed, store.getState().recent, store.getState().detailsHeight],
+    ['examples', ['select'], ['generate/dunes'], 240],
+  );
+  assert.deepEqual(keep.writes, [{ tab: 'examples', collapsed: ['select'], recent: ['generate/dunes'], detailsHeight: 240 }]);
 });
 
 test('a search text is cut at its greatest length', () => {
@@ -175,18 +201,25 @@ test('a search text is cut at its greatest length', () => {
   assert.equal(store.getState().query, 'blur');
 });
 
-test('a storage that holds something else, refuses, or is missing leaves the panel at its first state', () => {
-  for (const text of ['', 'null', '[]', '{', '"x"', '{"tab":3,"collapsed":"all","recent":{},"detailsHeight":"tall"}']) {
-    const store = createLibraryStore(memoryStorage(text));
-    assert.deepEqual([store.getState().tab, store.getState().collapsed, store.getState().recent, store.getState().detailsHeight], ['nodes', [], [], null], JSON.stringify(text));
+test('an entry that holds something else, cannot be read, or is missing leaves the panel at its first state', async () => {
+  for (const value of ['', null, [], '{', 'x', 7, { tab: 3, collapsed: 'all', recent: {}, detailsHeight: 'tall' }]) {
+    assert.deepEqual(cleanKept(value), { tab: 'nodes', collapsed: [], recent: [], detailsHeight: null }, JSON.stringify(value));
   }
-  const partly = createLibraryStore(memoryStorage('{"tab":"examples","collapsed":["io",4,"select"],"recent":["a/b","a/b",7],"detailsHeight":1e6}'));
-  assert.deepEqual([partly.getState().tab, partly.getState().collapsed, partly.getState().recent, partly.getState().detailsHeight], ['examples', ['io', 'select'], ['a/b'], DETAILS_HEIGHT.max]);
+  assert.deepEqual(
+    cleanKept({ tab: 'examples', collapsed: ['io', 4, 'select'], recent: ['a/b', 'a/b', 7], detailsHeight: 1e6 }),
+    { tab: 'examples', collapsed: ['io', 'select'], recent: ['a/b'], detailsHeight: DETAILS_HEIGHT.max },
+  );
+  const partly = createLibraryStore(memoryKeep({ tab: 'examples', recent: 'none' }));
+  await turn();
+  assert.deepEqual([partly.getState().tab, partly.getState().collapsed, partly.getState().recent, partly.getState().detailsHeight], ['examples', [], [], null]);
 
-  const refusing: LibraryStorage = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('full'); } };
-  const store = createLibraryStore(refusing);
+  // A preferences file that cannot be read answers null (src/app/platform.ts): the panel works, and keeps what it is given from then on.
+  const unread = memoryKeep(null);
+  const store = createLibraryStore(unread);
+  await turn();
   noteUsed(store, 'filter/blur');
   assert.deepEqual(store.getState().recent, ['filter/blur']);
+  assert.deepEqual(unread.value(), { tab: 'nodes', collapsed: [], recent: ['filter/blur'], detailsHeight: null });
   const none = createLibraryStore(null);
   toggleSection(none, 'io');
   assert.deepEqual(none.getState().collapsed, ['io']);

@@ -248,3 +248,112 @@ test('project: a file with problems opens and they are shown; a file that is no 
     assert.deepEqual((await app.eval<Preferences>(`orogenTest.ctx.platform.getPreferences()`)).recent, [odd], 'what did not open is no recent project');
   });
 });
+
+test('project: while a build runs, a new project, another project and an example are asked about first; "Keep Building" keeps everything, "Stop Build" goes on when the build has ended', async (t) => {
+  await withApp({}, async (app) => {
+    await ready(app);
+    await docked(app);
+    await settled(app);
+    const QUESTION = '[data-dialog="building"]';
+    /** A build that runs, as engineStore has it between `build-start` and `build-end`. The questions read nothing else. */
+    const building = (running: boolean): Promise<void> => app.eval<void>(`void (() => {
+      const store = orogenTest.ctx.engineState;
+      store.setState({ ...store.getState(), build: { ...store.getState().build, running: ${running}, requestId: 4242 } }, true);
+    })()`);
+    await app.eval(`void (() => {
+      window.cancels = 0;
+      const cancel = orogenTest.ctx.engine.cancelBuild;
+      orogenTest.ctx.engine.cancelBuild = () => { window.cancels++; cancel(); };
+    })()`);
+    const cancels = (): Promise<number> => app.eval<number>(`window.cancels`);
+    const project = (): Promise<[number, string | null, number]> => app.eval(`[orogenTest.ctx.doc.getState().doc.settings.seed, orogenTest.ctx.doc.getState().path, Object.keys(orogenTest.ctx.doc.getState().doc.nodes).length]`);
+    await setSeed(app, 5);
+    const before = await project();
+
+    // ---- File > New: the question, with its two answers; the one that keeps everything is the default ----
+    await building(true);
+    await run(app, 'file.new');
+    await appears(app, QUESTION);
+    assert.equal(await app.eval<string>(`shellTest.text(${quote(`${QUESTION} .og-dialog-title`)})`), 'A build is running. Stop it and start a new project?');
+    assert.match(await app.eval<string>(`shellTest.text(${quote(`${QUESTION} .og-dialog-description`)})`), /A build that is stopped changes nothing in its output folder/);
+    assert.deepEqual(
+      await app.eval(`[...document.querySelectorAll(${quote(`${QUESTION} [data-action]`)})].map((button) => [button.getAttribute('data-action'), button.textContent, button.getAttribute('data-variant')])`),
+      [['stop', 'Stop Build and Continue', 'danger'], ['stay', 'Keep Building', 'primary']],
+    );
+    t.diagnostic(`capture: ${await capture(app, 'project-build-running')}`);
+    await press(app, `${QUESTION} [data-action="stay"]`);
+    await vanishes(app, QUESTION);
+    assert.deepEqual([await project(), await cancels(), await exists(app, '[data-dialog="unsaved"]')], [before, 0, false], 'nothing happened: the build runs and the project is the project');
+
+    // ---- File > Open: the same question before any file dialog; Escape is "Keep Building" ----
+    const other = path.join(FOLDER, 'never-opened.orogen');
+    await answerOpen(app, other);
+    await run(app, 'file.open');
+    await appears(app, QUESTION);
+    assert.equal(await app.eval<string>(`shellTest.text(${quote(`${QUESTION} .og-dialog-title`)})`), 'A build is running. Stop it and open another project?');
+    await key(app, 'Escape', {}, QUESTION);
+    await vanishes(app, QUESTION);
+    assert.deepEqual(await app.eval<(string | null)[]>(`orogenTest.shell.answers.openProjectDialog`), [other], 'the file dialog was not opened');
+    await app.eval(`void orogenTest.shell.answers.openProjectDialog.splice(0)`);
+
+    // ---- an example of the library goes the same way: it is opened by the project service ----
+    await app.eval(`void orogenTest.ctx.run('library.showExamples')`);
+    await appears(app, '[data-library="examples"][data-place="panel"] [data-example="first-terrain"] [data-action="open"]');
+    await press(app, '[data-library="examples"][data-place="panel"] [data-example="first-terrain"] [data-action="open"]');
+    await appears(app, QUESTION);
+    await press(app, `${QUESTION} [data-action="stay"]`);
+    await vanishes(app, QUESTION);
+    assert.deepEqual([await project(), await cancels()], [before, 0]);
+
+    // ---- "Stop Build": the build is cancelled, and what was asked for happens when it has ended, not before ----
+    await run(app, 'file.new');
+    await appears(app, QUESTION);
+    await press(app, `${QUESTION} [data-action="stop"]`);
+    await vanishes(app, QUESTION);
+    await app.waitFor(`window.cancels === 1`, PAGE_BACKSTOP_MS);
+    assert.deepEqual([await project(), await exists(app, '[data-dialog="unsaved"]')], [before, false], 'the project is not left while its build still runs');
+    await building(false);
+    // Then the question about the unsaved changes, as without a build.
+    await appears(app, '[data-dialog="unsaved"]');
+    await press(app, '[data-dialog="unsaved"] [data-action="discard"]');
+    await app.waitFor(`orogenTest.ctx.doc.getState().doc.settings.seed !== 5 && !orogenTest.ctx.doc.getState().unsaved`, PAGE_BACKSTOP_MS);
+    assert.deepEqual((await project()).slice(1), [null, 1], 'the new project: one terrain, no file');
+    assert.equal(await cancels(), 1);
+    await settled(app);
+  });
+});
+
+test('project: a real build that runs is stopped by "Stop Build", ends cancelled with nothing put in place, and the new project follows', async () => {
+  const out = path.join(FOLDER, 'stopped-build');
+  await withApp({}, async (app) => {
+    await ready(app);
+    await docked(app);
+    await settled(app);
+    // The largest size: a build of it lasts long enough to be met while it runs.
+    await app.eval(`void orogenTest.ctx.doc.getState().transact('Build resolution', (draft) => { draft.settings.buildResolution = 8129; draft.settings.previewLevel = 3; }, { undoable: false })`);
+    await app.eval(`void orogenTest.ctx.doc.getState().transact('Add Landscape', (draft) => {
+      const source = Object.keys(draft.nodes)[0];
+      draft.nodes.landscape = { id: 'landscape', type: 'io/export-landscape', version: 1, position: { x: 320, y: 0 }, params: {} };
+      draft.edges.out = { id: 'out', from: { node: source, port: 'out' }, to: { node: 'landscape', port: 'in' } };
+    })`);
+    await settled(app);
+    await app.eval(`void orogenTest.shell.answers.chooseFolder.push(${quote(out)})`);
+    await run(app, 'build.start');
+    await app.waitFor(`orogenTest.ctx.engineState.getState().build.running === true`, PAGE_BACKSTOP_MS);
+    const requestId = await app.eval<number>(`orogenTest.ctx.engineState.getState().build.requestId`);
+
+    await run(app, 'file.new');
+    await appears(app, '[data-dialog="building"]');
+    assert.equal(await app.eval<boolean>(`orogenTest.ctx.engineState.getState().build.running`), true, 'the build goes on while the question stands');
+    await press(app, '[data-dialog="building"] [data-action="stop"]');
+    await vanishes(app, '[data-dialog="building"]');
+    // The build ends cancelled, and only then is the question about the project's changes asked.
+    await appears(app, '[data-dialog="unsaved"]');
+    const ended = await app.eval<{ running: boolean; requestId: number; lastStatus: string | null }>(`(() => { const { running, requestId, lastStatus } = orogenTest.ctx.engineState.getState().build; return { running, requestId, lastStatus }; })()`);
+    assert.deepEqual(ended, { running: false, requestId, lastStatus: 'aborted' });
+    assert.equal(fs.existsSync(out), false, 'nothing was put in place');
+    await press(app, '[data-dialog="unsaved"] [data-action="discard"]');
+    await app.waitFor(`orogenTest.ctx.doc.getState().doc.settings.buildResolution === 4033 && Object.keys(orogenTest.ctx.doc.getState().doc.nodes).length === 1 && !orogenTest.ctx.doc.getState().unsaved`, PAGE_BACKSTOP_MS);
+    await settled(app);
+  });
+});

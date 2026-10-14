@@ -4,7 +4,7 @@ import type { ParamValue } from '../graph/param-types.ts';
 import { normalizeParams } from '../graph/params.ts';
 import { canBypass, inputsOf, type PortDef } from '../graph/ports.ts';
 import type { NodeRegistry } from '../graph/registry.ts';
-import { cycleNodes, usedEdges } from '../graph/validate.ts';
+import { cycleNodes, inputKey, inputSources, missingInputs } from '../graph/validate.ts';
 import type { NodeError } from './errors.ts';
 import type { EvalTarget } from './evaluator.ts';
 
@@ -46,8 +46,6 @@ export interface EvalPlan {
   readonly byId: ReadonlyMap<string, PlanNode>;
 }
 
-const inputKey = (node: string, port: string): string => JSON.stringify([node, port]);
-
 function conversionFor(port: PortDef, source: 'field' | 'color' | undefined): Conversion {
   if (source === undefined || port.type === 'any' || port.type === source) return '';
   return port.type === 'color' ? 'grey' : 'luma';
@@ -72,8 +70,7 @@ export function buildPlan(doc: GraphDoc, registry: NodeRegistry, targets: readon
     roots.push(id as string);
   }
 
-  const sourceOf = new Map<string, PortRef>();
-  for (const edge of usedEdges(doc, registry)) sourceOf.set(inputKey(edge.to.node, edge.to.port), edge.from);
+  const sourceOf = inputSources(doc, registry);
   const onCycle = cycleNodes(doc, registry);
 
   interface Draft {
@@ -89,7 +86,7 @@ export function buildPlan(doc: GraphDoc, registry: NodeRegistry, targets: readon
     const def = registry.get(instance.type) ?? null;
     const bypassed = def !== null && instance.bypass === true && canBypass(def);
     const ports = def === null ? [] : bypassed ? [def.inputs[0]!] : inputsOf(def);
-    return { nodeId, instance, def, bypassed, reads: ports.map((port) => ({ port, from: sourceOf.get(inputKey(nodeId, port.name)) ?? null })) };
+    return { nodeId, instance, def, bypassed, reads: ports.map((port) => ({ port, from: sourceOf.get(inputKey({ node: nodeId, port: port.name })) ?? null })) };
   };
 
   // Depth-first post-order without recursion: a chain of thousands of nodes must not exhaust the stack. A node
@@ -127,7 +124,7 @@ export function buildPlan(doc: GraphDoc, registry: NodeRegistry, targets: readon
     const outputKinds: Record<string, 'field' | 'color'> = {};
     for (const port of def?.outputs ?? []) {
       if (port.type === 'field' || port.type === 'color') outputKinds[port.name] = port.type;
-      else if (typeof port.type === 'object') outputKinds[port.name] = kindOf(sourceOf.get(inputKey(nodeId, port.type.sameAs)) ?? null) ?? 'field';
+      else if (typeof port.type === 'object') outputKinds[port.name] = kindOf(sourceOf.get(inputKey({ node: nodeId, port: port.type.sameAs })) ?? null) ?? 'field';
       else outputKinds[port.name] = 'field';
     }
 
@@ -142,9 +139,9 @@ export function buildPlan(doc: GraphDoc, registry: NodeRegistry, targets: readon
     } else if (onCycle.has(nodeId)) {
       error = fail('cycle', 'Part of a cycle');
     } else if (!d.bypassed) {
-      const missing = d.reads.find(({ port, from }) => !port.optional && from === null);
+      const missing = missingInputs(doc, registry, nodeId, sourceOf)[0];
       if (missing) {
-        error = fail('missing-input', `missing input "${missing.port.name}"`);
+        error = fail('missing-input', `missing input "${missing.name}"`);
       } else {
         const normalized = normalizeParams(def, instance.params);
         if (normalized.error !== null) error = fail('param', normalized.error);

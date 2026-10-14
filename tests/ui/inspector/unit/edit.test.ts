@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import type { StoreApi } from 'zustand/vanilla';
 
 import { nodes } from '../../../../src/core/nodes/index.ts';
-import { addNode, connect, createRegistry, type DocDraft, type EngineSession, type GraphDoc } from '../../../../src/core/runtime.ts';
+import { addNode, connect, createRegistry, previewResolution, type DocDraft, type EngineSession, type GraphDoc } from '../../../../src/core/runtime.ts';
 import { commands, keys, menu } from '../../../../src/app/panels/inspector/commands.ts';
 import {
   createGesture, paramKey, randomSeed, resetParamsOf, setFlagsOf, setParamOf, setSettingOf, settingKey, targetLabel, type EditTarget,
@@ -176,8 +176,21 @@ test('a drag that Escape took back leaves the document and the history as they w
   assert.equal(r.param(r.ids.noise, 'size'), 0.25);
   assert.ok(JSON.stringify(r.doc.getState().doc) === JSON.stringify(saved), 'the document is what it was before the drag');
   assert.equal(r.doc.getState().gesture, null);
+  assert.equal(r.doc.getState().future.length, 0, 'and none to redo: the drag left no entry that changes nothing');
   r.doc.getState().undo();
   assert.equal(r.param(r.ids.noise, 'octaves'), 8, 'the next undo is the step before the drag');
+
+  // What could be redone before the drag still can: a drag that is taken back has cost no redo step.
+  assert.equal(r.doc.getState().future.length, 1);
+  gesture.begin();
+  for (const value of [0.6, 0.7]) setParamOf(r.ctx, r.target(r.ids.noise), size, value);
+  assert.equal(r.doc.getState().future.length, 0, 'while it lasts, the drag is a change like any other');
+  setParamOf(r.ctx, r.target(r.ids.noise), size, 0.25);
+  gesture.end(false);
+  assert.deepEqual([r.doc.getState().future.length, r.doc.getState().past.length, r.param(r.ids.noise, 'octaves')], [1, 0, 8]);
+  r.doc.getState().redo();
+  assert.equal(r.param(r.ids.noise, 'octaves'), 4, 'the redo that was there before the drag');
+  r.doc.getState().undo();
 
   // A drag that never changed anything, taken back, undoes nothing.
   r.doc.getState().redo();
@@ -246,19 +259,29 @@ test('the settings are edited like parameters, except the two that are no undo s
   setSettingOf(r.ctx, 'seed', 2 ** 40);
   assert.deepEqual([r.doc.getState().doc.settings.terrainSize, r.doc.getState().doc.settings.seed], [1, 2 ** 32 - 1]);
 
-  // The build resolution and the preview level: no entry, and the history stays as it is (8.5 rule 5).
+  // The build resolution and the preview level: no entry, and the history stays as it is (8.5 rule 5). A new build
+  // resolution takes the preview level with it that keeps the previews at the resolution they had, or the nearest
+  // its ladder has (4.2): 4033 at level 2 is 1009, and stays 1009.
   const entries = r.labels().length;
+  const held = (): number[] => {
+    const now = r.doc.getState().doc.settings;
+    return [now.buildResolution, now.previewLevel, previewResolution(now)];
+  };
+  assert.deepEqual(held(), [4033, 2, 1009]);
   setSettingOf(r.ctx, 'buildResolution', 1009);
-  assert.deepEqual([r.doc.getState().doc.settings.buildResolution, r.doc.getState().doc.settings.previewLevel], [1009, 2]);
-  setSettingOf(r.ctx, 'previewLevel', 4);
+  assert.deepEqual(held(), [1009, 0, 1009], 'a smaller build does not blur the previews');
+  setSettingOf(r.ctx, 'buildResolution', 8129);
+  assert.deepEqual(held(), [8129, 3, 1017], 'and a larger one does not make them four times as heavy');
+  setSettingOf(r.ctx, 'buildResolution', 4033);
+  assert.deepEqual(held(), [4033, 2, 1009], 'and back');
+  setSettingOf(r.ctx, 'previewLevel', 6);
   setSettingOf(r.ctx, 'buildResolution', 2017);
-  assert.deepEqual([r.doc.getState().doc.settings.buildResolution, r.doc.getState().doc.settings.previewLevel], [2017, 4]);
-  setSettingOf(r.ctx, 'previewLevel', 5);
-  setSettingOf(r.ctx, 'buildResolution', 1009);
-  assert.equal(r.doc.getState().doc.settings.previewLevel, 4, 'a level the new resolution lacks is lowered to its last');
+  assert.deepEqual(held(), [2017, 5, 64], 'the coarsest previews stay the coarsest');
+  setSettingOf(r.ctx, 'previewLevel', 9);
+  assert.equal(r.doc.getState().doc.settings.previewLevel, 5, 'a level the resolution lacks is lowered to its last');
   assert.equal(r.labels().length, entries);
   r.doc.getState().undo();
-  assert.deepEqual([r.doc.getState().doc.settings.seed, r.doc.getState().doc.settings.buildResolution], [77, 1009], 'undo steps over them');
+  assert.deepEqual([r.doc.getState().doc.settings.seed, r.doc.getState().doc.settings.buildResolution], [77, 2017], 'undo steps over them');
 });
 
 test('a seed drawn by the dice is an unsigned 32-bit integer, and not always the same', () => {

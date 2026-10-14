@@ -7,7 +7,7 @@ export default defineNode({
   title: 'Color Texture',
   category: 'io',
   description: 'Exports a color map, or three channels of data, as a texture that covers the landscape, for use in its material.',
-  keywords: ['unreal', 'texture', 'albedo', 'diffuse', 'base color', 'packed masks', 'linear', 'srgb', 'png'],
+  keywords: ['unreal', 'texture', 'albedo', 'diffuse', 'base color', 'packed masks', 'linear', 'srgb', 'png', 'export', 'output'],
   inputs: [{ name: 'in', type: 'color' }],
   outputs: [],
   params: [

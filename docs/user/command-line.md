@@ -7,7 +7,10 @@ node src/cli/main.ts <subcommand> [options]
 ```
 
 It is one process that computes on the graphics card. Every command on this page was run on the development
-machine (Linux) while this page was written; none of them has been run on Windows by the authors.
+machine (Linux) while this page was written. On Windows the project's automated checks run `probe`, `render`,
+`gallery`, `build` and `unreal-test` as part of the engine's tests, on the software adapter; nobody has typed
+them into a Windows shell, and what this page says of PowerShell and Command Prompt comes from how those shells
+are documented to pass arguments.
 
 ```
 orogen probe [--profile <core|max>] [--adapter <substring>]
@@ -25,6 +28,12 @@ orogen unreal-test --check <file> [--res <n>]
 `orogen --help` prints this list, and `orogen help <subcommand>` or `orogen <subcommand> --help` the line of
 one subcommand. An option is written `--name value` or `--name=value`.
 
+**On Windows.** A path is written as Windows writes it, `D:\Build\Ridge`, or with `/`; one with a space goes
+in double quotes. An environment variable is set for the session before the command: in PowerShell
+`$env:OROGEN_GPU_ADAPTER = 'NVIDIA'`, in Command Prompt `set OROGEN_GPU_ADAPTER=NVIDIA`. Every variable has an
+option that does the same, and the option is the simpler way. `npm run orogen -- <subcommand> ...` starts the
+same program, and PowerShell is known to take the `--` for itself: use the form with `node`.
+
 ## Options that several subcommands share
 
 | Option | Default | Meaning |
@@ -32,7 +41,7 @@ one subcommand. An option is written `--name value` or `--name=value`.
 | `--profile <core or max>` | the environment variable `OROGEN_GPU_PROFILE`, else `max` | How the graphics device is opened. `max` asks the card for its own limits, stores some internal state more compactly and times the work on the card. `core` uses only what every WebGPU device has, and is what the project's automated checks run with. The example of this guide builds to identical files under both |
 | `--adapter <substring>` | `OROGEN_GPU_ADAPTER`, else the system's default adapter | A part of the adapter's name, with the same capitals. Use it when a machine has several adapters |
 | `--out <dir>` | for `render` and `gallery`: `OROGEN_TEST_OUTPUT`, else `test-output` | Where files are written. A relative path is taken from the folder you are in. `build` and `unreal-test` have no default: they need `--out` |
-| `--budget-mb <n>` | 2457 | The most graphics memory Orogen's fields may take, in MiB (`render`, `gallery`, `build`). The command line cannot ask the card how much memory it has, so the default is the same on every card. A terrain with a large simulation at 8129 × 8129 needs more: pass what your card can spare, for example `--budget-mb 6000` on a card with 10 GB |
+| `--budget-mb <n>` | 60 % of the card's memory where the graphics library reports it; 2457 where it does not | The most graphics memory Orogen's fields may take, in MiB (`render`, `gallery`, `build`). On the development machine the library reports no amount, so the default there is 2457; whether it reports one on Windows is not known. A terrain with a large simulation at 8129 × 8129 needs more than 2457: pass what your card can spare, for example `--budget-mb 6000` on a card with 10 GB |
 | `--res <n>` | see each subcommand | A resolution, in vertices per side |
 
 ## Exit codes
@@ -76,7 +85,7 @@ height range of 1024 m, project seed 1, sea level 0.25.
 | Option | Meaning |
 | --- | --- |
 | `--res <n>` | default 513. Any preview or build resolution: 129, 257, 513, 1009, 2017, 4033, 8129 and the halvings of a build resolution down to 33 |
-| `--param <name>=<json>` | sets a parameter by its name in the [node reference](nodes.md); repeat it for several. The value is JSON: a number is `0.25`, a switch `true`, a pair `[0.5,0.5]`, and a text or a choice a JSON string. In bash that is `--param mode='"ridged"'`; in other shells the double quotes must reach the program, which was not tried on Windows. A value outside the parameter's range is refused |
+| `--param <name>=<json>` | sets a parameter by its name in the [node reference](nodes.md); repeat it for several. The value is JSON: a number is `0.25`, a switch `true`, a pair `[0.5,0.5]`. A choice, or a text of one word (letters, digits, `-` and `_`, beginning with a letter), is written as it is in every shell: `--param mode=ridged`. Any other text is a JSON string, whose double quotes must reach the program: in bash `--param file='"C:/My Maps/heights.png"'`; on Windows (untried) in Command Prompt `--param "file=\"C:/My Maps/heights.png\""`, in PowerShell 7.3 or later `--param 'file="C:/My Maps/heights.png"'`, and in Windows PowerShell 5 `--param 'file=\"C:/My Maps/heights.png\"'`. A value outside the parameter's range is refused |
 | `--max-params` | puts every number parameter at the top of its range, before any `--param` |
 | `--seed <n>` | sets the node's seed |
 | `--connected` | also connects the node's optional inputs and, for a maskable node, its mask |
@@ -84,7 +93,9 @@ height range of 1024 m, project seed 1, sea level 0.25.
 
 **A node of a project** (third line) is drawn with the parameters and connections the project stores.
 `--node` takes the node's id. The default resolution is the project's preview resolution, and `--param`,
-`--max-params`, `--seed` and `--connected` are refused.
+`--max-params`, `--seed` and `--connected` are refused. A colour map of a node that reads no terrain itself,
+the last blend of two colour maps for one, is drawn over the terrain the project shows in its viewport, as it
+was when the project was saved.
 
 Files, under the output folder:
 
@@ -107,7 +118,8 @@ command prints one line of JSON with the time, the peak graphics memory and the 
 ```
 
 An export node has no output and cannot be rendered (`has no outputs: there is nothing to draw`, exit code
-2). An import node needs its file: `--param file='"C:/Maps/heights.png"'`.
+2). An import node needs its file: `--param file='"C:/Maps/heights.png"'` in bash. Write the path with `/`:
+inside JSON a `\` begins an escape, so `C:\Maps` would have to be written `C:\\Maps`.
 
 The command prints no progress while it works. A simulation rendered at 4033 or 8129 can need more graphics
 memory than the default budget: see `--budget-mb` above.
@@ -167,6 +179,9 @@ orogen build:   commit 100 %
 orogen build: done in 0.54 s: 8 files, 5.7 MB; peak GPU pool 15.4 MB, peak process memory 390.5 MB
 D:\Build\Ridge\Ridge.orogen.json
 ```
+
+The count of files is of what the manifest lists, the manifest included. The report, `Ridge.report.json`, lies
+in the folder as well and is not counted: the folder holds nine files.
 
 | Exit code | Meaning for a build |
 | --- | --- |

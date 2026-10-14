@@ -10,6 +10,7 @@ export type EvalEvent =
       readonly fraction: number; readonly label?: string; readonly etaMs: number | null }
   | { readonly type: 'node-preview'; readonly requestId: number; readonly nodeId: string; readonly ports: readonly string[] }
   | { readonly type: 'node-done'; readonly requestId: number; readonly nodeId: string; readonly cached: boolean;
+      readonly resolution: number;                                              // of the evaluation: what the three figures were measured at
       readonly wallMs: number; readonly gpuMs: number | null; readonly peakBytes: number }
   | { readonly type: 'node-error'; readonly requestId: number; readonly error: NodeError }
   | { readonly type: 'node-skipped'; readonly requestId: number; readonly nodeId: string;

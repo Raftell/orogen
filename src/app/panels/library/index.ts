@@ -1,6 +1,9 @@
 // The library panel (runtime.md 8.7): the node catalogue by category with a search, the recently used nodes, and
-// the example projects. It reads the node registry and changes no document, with one exception: opening an
-// example replaces the project, as File > Open does. Adding a node is the graph's work (add-node.ts).
+// the example projects. It reads the node registry and changes no document: an example is opened by the shell's
+// project service, as File > Open opens a file, and adding a node is the graph's work (src/app/ui/add-node.ts).
+//
+// A command that shows something in the panel brings its tab to the front first (`showPanel`), so it works with
+// any tab in front; one that acts on what the panel shows is disabled while the panel is hidden.
 
 import type { CommandDef, PanelDef } from '../../ui/index.ts';
 import { addNode, panelShown, requestExample, revealPanel, selectedNodeType } from './actions.ts';
@@ -74,9 +77,9 @@ const commands: readonly CommandDef[] = [
     title: 'Open Selected Example',
     // The selection of the list that is shown: the Examples tab, or the dialog of "Open Example…".
     enabled: () => state().example !== null && (state().tab === 'examples' || state().gallery),
-    run(ctx) {
+    async run(ctx) {
       const { example } = state();
-      if (example !== null) requestExample(ctx, example);
+      if (example !== null) await requestExample(ctx, example);
     },
   },
   {
@@ -93,7 +96,8 @@ export const panel: PanelDef = {
   title: 'Library',
   component: LibraryPanel,
   keepMounted: false,
-  placement: { relativeTo: 'inspector', direction: 'within' },
+  // Under the inspector, not behind it: a node that is selected shows its parameters while the library stays open.
+  placement: { relativeTo: 'inspector', direction: 'below' },
   commands,
   keys: [
     { key: 'Mod+F', command: 'library.search', scope: 'library' },

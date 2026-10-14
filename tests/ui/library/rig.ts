@@ -6,7 +6,7 @@
 
 import type { GraphDoc } from '../../../src/core/runtime.ts';
 import type { AppDriver } from '../../helpers/index.ts';
-import { appears, docked, install as installShell, quote, ready, sleep } from '../shell/rig.ts';
+import { appears, docked, install as installShell, PAGE_BACKSTOP_MS, panelSize, quote, ready, sleep, tallest } from '../shell/rig.ts';
 
 export { PAGE_BACKSTOP_MS, EVALUATION_BACKSTOP_MS, appears, vanishes, exists, key, press, quote, run, settled, sleep, withApp, openMenu, closeMenu, choose } from '../shell/rig.ts';
 
@@ -98,7 +98,8 @@ const PAGE = `(() => {
       selected: row.getAttribute('aria-selected') === 'true',
       open: row.getAttribute('aria-expanded'),
     })),
-    state: () => JSON.parse(localStorage.getItem('orogen.library') ?? 'null'),
+    /** What the panel keeps for the next run: its entry of the preferences file (runtime.md 8.6), written a moment after it changes. */
+    state: () => orogenTest.ctx.platform.getPreferences().then((preferences) => preferences.panels.library ?? null),
   };
   window.addEventListener('orogen:add-node', (event) => api.added.push(event.detail));
   window.libraryTest = api;
@@ -114,12 +115,22 @@ export async function install(app: AppDriver): Promise<void> {
 export const pressTab = (app: AppDriver, title: string): Promise<void> =>
   app.eval<void>(`void shellTest.press([...document.querySelectorAll('.dv-tab')].find((tab) => tab.textContent === ${quote(title)}))`);
 
-/** The application with a device and its dock, and the Library panel in front of its group. */
+/**
+ * The application with a device and its dock, and the Library panel in front of its group with all the height
+ * of its column: what these tests look at is the panel, and the default layout gives it less than half the
+ * column (tests/ui/shell/layout.test.ts looks at that).
+ */
 export async function showLibrary(app: AppDriver): Promise<void> {
   await ready(app);
   await docked(app);
   await pressTab(app, 'Library');
   await appears(app, '[data-panel="library"] [data-library="root"]');
+  await tallest(app, 'library');
+}
+
+/** Waits until the preferences file holds `value` as `member` of the library's entry; `null` also for an entry that is not there. */
+export async function keeps(app: AppDriver, member: 'tab' | 'collapsed' | 'recent' | 'detailsHeight', value: unknown): Promise<void> {
+  await app.waitFor(`libraryTest.state().then((kept) => JSON.stringify(kept?.[${quote(member)}] ?? null) === ${quote(JSON.stringify(value ?? null))})`, PAGE_BACKSTOP_MS);
 }
 
 export interface ListRow {
@@ -138,24 +149,10 @@ export const focus = (app: AppDriver, selector: string): Promise<void> => app.ev
 export const text = (app: AppDriver, selector: string): Promise<string> => app.eval<string>(`shellTest.text(${quote(selector)})`);
 export const height = (app: AppDriver, selector: string): Promise<number> => app.eval<number>(`shellTest.rect(${quote(selector)}).height`);
 
-/**
- * Gives the group of the Library tab a width, as a drag of the sash beside it does: the layout the dock would
- * save, with that width, restored.
- */
+/** Gives the column of the Library panel a width, as a drag of the sash beside it does, and returns the width the panel has then. */
 export async function setLibraryWidth(app: AppDriver, width: number): Promise<number> {
-  await app.eval(`(() => {
-    const saved = JSON.parse(JSON.stringify(orogenTest.shell.layout()));
-    const columns = saved.dock.grid.root.data;
-    const group = columns.find((column) => column.type === 'leaf' && column.data.views.includes('library'));
-    const other = columns.find((column) => column !== group);
-    if (!group || !other) throw new Error('The Library tab is not in a column of its own beside the others');
-    other.size += group.size - ${width};
-    group.size = ${width};
-    return orogenTest.shell.dock.restore(saved);
-  })()`);
   await appears(app, '[data-panel="library"] [data-library="root"]');
-  await app.waitFor(`Math.abs(shellTest.rect('[data-panel="library"]').width - ${width}) <= 4`, 15_000);
-  return app.eval<number>(`shellTest.rect('[data-panel="library"]').width`);
+  return (await panelSize(app, 'library', { width })).width;
 }
 
 /**

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import {
-  addNodeAt, canToggleViewLock, clearSelection, deleteSelection, disconnectEdges, freeSpot, hasSelection, insertTarget, renameGroup, renameNode, renameTarget,
+  addNodeAt, addNodeNow, BESIDE_GAP, canToggleViewLock, CLEAR_MARGIN, clearSelection, clearSpot, deleteSelection, disconnectEdges, freeSpot, hasSelection, insertTarget, renameGroup, renameNode, renameTarget,
   saveViewport, selectAll, selectContents, toggleBypass, toggleCollapsed, toggleViewLock, useAsTerrain,
 } from '../../../../src/app/panels/graph/actions.ts';
 import { commands, keys, menu } from '../../../../src/app/panels/graph/commands.ts';
@@ -36,12 +36,103 @@ test('adding a node selects it, places it on whole pixels and never exactly on a
   assert.deepEqual(b.now().nodes[first]!.position, { x: 11, y: 20 });
   assert.deepEqual(b.ui.getState().selection, [first]);
   const second = addNodeAt(b, 'generate/mountain-range', { x: 11, y: 20 })!;
-  assert.deepEqual(b.now().nodes[second]!.position, { x: 35, y: 44 }, 'the event of the library adds every node at the centre: they do not pile up');
+  assert.deepEqual(b.now().nodes[second]!.position, { x: 35, y: 44 }, 'a second paste or drop at one point does not hide the first');
   assert.deepEqual(freeSpot(b.now(), { x: 11, y: 20 }), { x: 59, y: 68 });
   assert.deepEqual(freeSpot(b.now(), { x: 500, y: 0 }), { x: 500, y: 0 });
   assert.deepEqual(b.labels(), ['Add Mountain Range', 'Add Mountain Range']);
   // The parameters are stored at their defaults (4.6), so the node is the node the inspector shows.
   assert.equal(typeof b.now().nodes[first]!.params.seed, 'number');
+});
+
+/** Whether the boxes of two nodes of the document share a point. */
+function overlap(b: Bench, one: string, other: string): boolean {
+  const rect = (id: string) => {
+    const view = b.views().get(id)!;
+    const at = b.now().nodes[id]!.position;
+    return { x: at.x, y: at.y, w: view.width, h: view.height };
+  };
+  const p = rect(one), q = rect(other);
+  return p.x < q.x + q.w && q.x < p.x + p.w && p.y < q.y + q.h && q.y < p.y + p.h;
+}
+
+test('"add this node now" with a node selected: the new node is connected to it and stands to its right, covering nothing', () => {
+  // The default project: one Mountain Range at the origin, selected as a click on it leaves it.
+  const b = bench();
+  const range = b.add('generate/mountain-range', { x: 0, y: 0 });
+  setSelection(b.ui, [range]);
+  const steps = b.labels().length;
+  const center = { x: 112, y: 72 };   // the middle of what the graph shows lies on the range, as it does at first start
+
+  const erosion = addNodeNow(b, 'simulate/fluvial-erosion', center)!;
+  assert.deepEqual(wiring(b.now()), [`${range}.out>${erosion}.in`], 'the selected node\'s output feeds the new node');
+  const rangeView = b.views().get(range)!;
+  const placed = b.now().nodes[erosion]!.position;
+  assert.equal(placed.x, rangeView.width + BESIDE_GAP, 'to the right of the selected node, with room for the wire');
+  assert.equal(placed.y, 0, 'the wire runs level: first output to first input');
+  assert.equal(overlap(b, range, erosion), false);
+  assert.deepEqual(b.ui.getState().selection, [erosion], 'the new node is selected: the next one continues the chain');
+  assert.deepEqual(b.labels().slice(steps), ['Add Fluvial Erosion'], 'adding and connecting is one step of the history');
+
+  // The next node continues the chain from the node just added.
+  const exported = addNodeNow(b, 'io/export-landscape', center)!;
+  assert.deepEqual(wiring(b.now()), [`${erosion}.out>${exported}.in`, `${range}.out>${erosion}.in`].sort());
+  for (const other of [range, erosion]) assert.equal(overlap(b, exported, other), false);
+  assert.ok(b.now().nodes[exported]!.position.x > placed.x);
+
+  // A second consumer of one output goes beside it too, and below the first: no box covers another.
+  setSelection(b.ui, [range]);
+  const blur = addNodeNow(b, 'filter/blur', center)!;
+  assert.ok(wiring(b.now()).includes(`${range}.out>${blur}.in`));
+  for (const other of [range, erosion, exported]) assert.equal(overlap(b, blur, other), false, other);
+  assert.equal(b.now().nodes[blur]!.position.x, placed.x, 'in the same column');
+  assert.ok(b.now().nodes[blur]!.position.y > 0, 'below the node that stands there');
+
+  // A mask output goes into the input that is for masks, not into the terrain's.
+  const slope = b.add('select/slope', { x: 0, y: 900 }, { in: `${range}.out` });
+  setSelection(b.ui, [slope]);
+  const layer = addNodeNow(b, 'io/export-layer', center)!;
+  assert.ok(wiring(b.now()).includes(`${slope}.out>${layer}.in`));
+});
+
+test('"add this node now" without a node to continue from: unconnected, at the nearest place that covers no node', () => {
+  const b = bench();
+  const range = b.add('generate/mountain-range', { x: 0, y: 0 });
+  const center = { x: 112, y: 72 };
+  // Nothing is selected: the node is not connected, and it does not lie on the node in the middle of the view.
+  const second = addNodeNow(b, 'generate/mountain-range', center)!;
+  assert.deepEqual(wiring(b.now()), []);
+  assert.equal(overlap(b, range, second), false, 'the first finding of the review: a node added from the library covered the node that was there');
+  // A generator has no input to connect: with a node selected it is placed the same way.
+  setSelection(b.ui, [range]);
+  const third = addNodeNow(b, 'generate/mountain', center)!;
+  assert.deepEqual(wiring(b.now()), []);
+  for (const other of [range, second]) assert.equal(overlap(b, third, other), false);
+  // Several nodes selected, or a wire: nothing says which to continue from.
+  setSelection(b.ui, [range, second]);
+  const fourth = addNodeNow(b, 'filter/blur', center)!;
+  assert.deepEqual(wiring(b.now()), []);
+  for (const other of [range, second, third]) assert.equal(overlap(b, fourth, other), false);
+  // An empty graph: the node's middle is the middle of the view.
+  const empty = bench();
+  const alone = addNodeNow(empty, 'generate/mountain-range', { x: 400, y: 300 })!;
+  const view = empty.views().get(alone)!;
+  assert.deepEqual(empty.now().nodes[alone]!.position, { x: Math.round(400 - view.width / 2), y: Math.round(300 - view.height / 2) });
+  assert.equal(addNodeNow(empty, 'legacy/unknown', { x: 0, y: 0 }), null);
+});
+
+test('clearSpot: a free place is kept; a taken one gives the nearest that keeps the margin to every box', () => {
+  const b = bench();
+  const range = b.add('generate/mountain-range', { x: 0, y: 0 });
+  const view = b.views().get(range)!;
+  const size = { w: view.width, h: view.height };
+  assert.deepEqual(clearSpot(b, { x: 1000.4, y: 2000.6 }, size), { x: 1000, y: 2001 }, 'whole pixels, where nothing is');
+  const moved = clearSpot(b, { x: 10, y: 10 }, size);
+  assert.notDeepEqual(moved, { x: 10, y: 10 });
+  const clear = moved.x >= view.width + CLEAR_MARGIN || moved.x + size.w <= -CLEAR_MARGIN || moved.y >= view.height + CLEAR_MARGIN || moved.y + size.h <= -CLEAR_MARGIN;
+  assert.ok(clear, JSON.stringify(moved));
+  // No nearer place is free: the one found is within a step of the least distance that clears the box.
+  const distance = Math.hypot(moved.x - 10, moved.y - 10);
+  assert.ok(distance <= view.height + CLEAR_MARGIN + 34, `moved ${distance} px`);
 });
 
 test('delete takes the selected nodes with their wires, the selected wires and the selected groups, as one step', () => {

@@ -5,9 +5,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import type { EngineEvent } from '../../../src/core/runtime.ts';
+import type { BuildPlan, EngineEvent, GraphDoc } from '../../../src/core/runtime.ts';
 import { testGpu } from '../gpu/rig.ts';
-import { doc, endings, PREVIEW, resetSlow, slow, startSession } from './rig.ts';
+import { doc, endings, planOf, PREVIEW, resetSlow, slow, startSession } from './rig.ts';
 
 await testGpu();
 
@@ -57,7 +57,7 @@ test('a build aborts the running preview, pauses previews, keeps the viewport, a
 
     // The result is the build function's, with the request id the session gave it.
     const start = t.of('build-start', from)[0]!;
-    assert.deepEqual(result, { requestId: start.requestId, status: 'ok', problems: [], files: [], manifest: null, report: null, outDir: '/out/terrain' });
+    assert.deepEqual(result, { requestId: start.requestId, status: 'ok', problems: [], files: [], manifest: null, report: null, outDir: '/out/terrain', peakPoolBytes: null });
     assert.deepEqual({ ...start }, { type: 'build-start', requestId: start.requestId, resolution: BUILD, outDir: '/out/terrain' });
     assert.deepEqual({ ...end }, { type: 'build-end', requestId: start.requestId, status: 'ok' });
     assert.deepEqual(t.builds.calls, [{ requestId: start.requestId, outDir: '/out/terrain', resolution: BUILD, means: [2 * (0.5 + 200)] }]);
@@ -149,4 +149,59 @@ test('a build function that rejects: build-end "errors", build() rejects with th
   } finally {
     await t.dispose();
   }
+});
+
+test('plan answers what a build would write without building: it aborts nothing, trims nothing and is no event', async () => {
+  resetSlow();
+  const t = await startSession();
+  try {
+    // Before any document, and of a document that is not the session's own: a plan is of what it is given.
+    const other = graph(0.125, 4);
+    assert.deepEqual(await t.session.plan(other), planOf(other));
+    assert.equal(t.builds.planned[0], other, 'the planner is handed the document, with the engine whose registry it plans with');
+    assert.deepEqual(t.events.map((e) => e.type), ['device-ready'], 'the session announced its device; no event is the plan\'s');
+
+    t.session.setDocument(graph(0.25), 1);
+    await t.next('view-updated');
+    await t.idle();
+    const cached = t.memory();
+    assert.ok(cached.cacheBytes > 0, 'the preview left its results in the cache');
+
+    // Asked in the middle of a preview evaluation, in the task of one of its iterations.
+    let asked: Promise<BuildPlan> | null = null;
+    slow.at = (i, ctx) => {
+      if (asked || ctx.res !== PREVIEW || i !== 100) return;
+      asked = t.session.plan(graph(0.75));
+    };
+    const from = t.mark();
+    t.session.setDocument(graph(0.5), 2);
+    const shown = await t.next('view-updated');
+    assert.equal(shown.revision, 2);
+    assert.equal((await asked!).resolution, BUILD);
+    await t.idle();
+    const events = t.events.slice(from).filter((e) => e.type !== 'thumbnail');
+    assert.deepEqual(t.of('eval-end', from).map((e) => e.status), ['ok'], 'the running evaluation was not aborted');
+    assert.deepEqual(events.filter((e) => e.type === 'request-start').map((e) => e.purpose), ['view'], 'and nothing was scheduled for the plan');
+    assert.equal(events.some((e) => e.type.startsWith('build-')), false, 'a plan is no build: no build event');
+    // What the build of 7.6 does first, a plan does not: the cache holds what it held, and the result is still shown.
+    const after = t.memory();
+    assert.deepEqual([after.cacheBytes >= cached.cacheBytes, after.pinnedBytes], [true, FIELD_BYTES]);
+    slow.at = undefined;
+    const before = t.memory();
+    await t.session.plan(graph(0.5));
+    assert.deepEqual(t.memory(), before, 'the ledger is untouched by a plan');
+    assert.deepEqual((await t.session.inspect(OUT))?.mean, 2 * (0.5 + 200), 'the shown result is still there to inspect');
+
+    // What the planner throws, and what is no document, reject the call and leave the session as it was.
+    const reason = new Error('an export hook threw');
+    t.builds.planFails = reason;
+    await assert.rejects(t.session.plan(graph(0.5)), (thrown) => thrown === reason);
+    await assert.rejects(t.session.plan(null as unknown as GraphDoc), TypeError);
+    await assert.rejects(t.session.plan({ doc: graph(0.5), outDir: '/out' } as unknown as GraphDoc), TypeError);
+    assert.equal(t.builds.planned.length, 3);
+    assert.equal((await t.session.plan(graph(0.5))).name, 'level+walk+out');
+  } finally {
+    await t.dispose();
+  }
+  await assert.rejects(t.session.plan(graph(0.5)), /The engine session is disposed/);
 });

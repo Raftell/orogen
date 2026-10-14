@@ -20,6 +20,8 @@ export { commandItems, ContextMenu, Menu, MenuItems } from './Menu.tsx';
 export type { ContextMenuProps, MenuItemSpec, MenuProps } from './Menu.tsx';
 export { NumberField } from './NumberField.tsx';
 export type { NumberFieldProps } from './NumberField.tsx';
+export { SearchField } from './SearchField.tsx';
+export type { SearchFieldProps } from './SearchField.tsx';
 export { Popover } from './Popover.tsx';
 export type { PopoverProps } from './Popover.tsx';
 export { Select } from './Select.tsx';
@@ -32,6 +34,15 @@ export { Tooltip, TooltipProvider } from './Tooltip.tsx';
 export type { TooltipProps } from './Tooltip.tsx';
 
 export { isFailure, nodeErrorText, portLabel } from './node-text.ts';
+// The node catalogue and its one search: what the library lists and the graph's add-node palette offers (8.7 rule 8).
+export { ALIASES } from './node-aliases.ts';
+export type { Alias, Tool } from './node-aliases.ts';
+export { catalogOf, CATEGORIES, categoryTitle } from './node-catalog.ts';
+export type { Catalog, CatalogEntry, CatalogGroup, PortInfo, PortKind, ProductCategory } from './node-catalog.ts';
+export { createSearchIndex, matchText, PRIMARY_EXPORT, searchCatalog, titleRuns } from './node-search.ts';
+export type { MatchField, SearchHit, SearchIndex } from './node-search.ts';
+export { ADD_NODE_EVENT, addNodeType, NODE_DRAG_TYPE, requestAddNode, startNodeDrag } from './add-node.ts';
+export type { AddNodeDetail } from './add-node.ts';
 export { fromDisplay, fromHex, linearToSrgb, srgbToLinear, toDisplay, toHex } from './color.ts';
 export type { Rgb } from './color.ts';
 export {

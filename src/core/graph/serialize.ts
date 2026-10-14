@@ -201,7 +201,8 @@ function shownPath(path: readonly string[]): string {
 export function parseDoc(text: string, registry: NodeRegistry): { readonly doc: GraphDoc; readonly problems: readonly DocProblem[] } {
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    // A byte order mark is what some Windows editors put before the text; JSON has no word for it.
+    raw = JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
   } catch {
     throw new DocFormatError('Not an Orogen project: the file is not JSON');
   }

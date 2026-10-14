@@ -5,10 +5,10 @@
 import { useEffect, useMemo } from 'react';
 import { useStore } from 'zustand';
 
-import type { ProjectSettings } from '../../../core/runtime.ts';
+import { canBypass, type ProjectSettings } from '../../../core/runtime.ts';
 import { Icon, useCommandContext } from '../../ui/index.ts';
 import styles from './inspector.module.css';
-import { canBypass, nodeValues, shareValues, targetOf, visibleSections, type Target } from './model.ts';
+import { nodeValues, shareValues, targetOf, visibleSections, type Target } from './model.ts';
 import { BypassBox, NodeAbout, NodeHeader, NodesStatus } from './NodeHeader.tsx';
 import { ParamList } from './Params.tsx';
 import { SettingsView } from './Settings.tsx';

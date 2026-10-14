@@ -2,9 +2,11 @@
 # of package.json into release/. Unsigned: no certificate is configured and none is looked for.
 appId: app.orogen.desktop
 productName: Orogen
-copyright: Orogen
+copyright: Copyright (c) 2026 Raftell
 directories:
   output: release
+  # The icon and nothing else: build/icon.ico, made from build/icon.svg by build/make-icon.py.
+  buildResources: build
 # Everything the application runs is in dist/, bundled by the build: no module of node_modules is loaded at run
 # time, and none is packed.
 files:
@@ -12,14 +14,23 @@ files:
   - package.json
   - "!node_modules"
 asar: true
+# The user documentation lies beside the archive: the application opens its pages in the system's own programs
+# (runtime.md 8.6), and no program of the system reads a file inside the archive.
+extraResources:
+  - from: docs/user
+    to: docs/user
 # There is no native module to rebuild.
 npmRebuild: false
 artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 win:
+  icon: build/icon.ico
   target:
     - target: zip
       arch: [x64]
     - target: portable
       arch: [x64]
+# A portable executable unpacks itself into the temporary folder at every start, which takes seconds before any
+# window appears; the zip, unpacked once, starts at once. Neither registers the .orogen extension: that takes an
+# installer, which this configuration does not build.
 portable:
   artifactName: ${productName}-${version}-${os}-${arch}-portable.${ext}

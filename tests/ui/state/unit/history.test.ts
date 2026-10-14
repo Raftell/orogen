@@ -262,6 +262,102 @@ test('undo and redo end a gesture, and do nothing at the ends of the history', (
   assert.deepEqual([store.getState().gesture, gain(s)], [null, 0.9], 'redo ends a gesture as well');
 });
 
+// ---- cancelGesture -------------------------------------------------------------------------------------------------------
+
+test('cancelGesture takes a drag back whole: the document, the history and what could be redone are as before the drag', () => {
+  const s = setup();
+  setGain(s, 0.6);
+  s.clock.advance(5000);
+  setGain(s, 0.7);
+  s.page.doc.getState().undo();
+  const before = s.page.doc.getState();
+  assert.deepEqual([gain(s), before.past.length, before.future.length], [0.6, 1, 1]);
+  setSelection(s.page.ui, [s.soft]);
+
+  s.clock.advance(5000);
+  s.page.doc.getState().beginGesture(gainKey(s));
+  setGain(s, 0.61);
+  s.clock.advance(5000);
+  setGain(s, 0.9);
+  setSelection(s.page.ui, [s.land]);
+  assert.deepEqual([gain(s), past(s).length, s.page.doc.getState().future.length], [0.9, 2, 0], 'the drag is an entry, and has cleared the future');
+
+  s.page.doc.getState().cancelGesture();
+  const after = s.page.doc.getState();
+  assert.equal(difference(after.doc, before.doc), null, 'the document is the one the drag began with');
+  assert.equal(after.past.length, 1, 'no entry is left of the drag: the next undo is the step before it');
+  same(after.past[0], before.past[0]);
+  same(after.future, before.future, 'and what could be redone before the drag still can');
+  assert.deepEqual([after.gesture, after.unsaved], [null, before.unsaved]);
+  assert.ok(after.revision > before.revision && after.engineRevision === after.revision, 'the engine is sent the document that is back');
+  assert.deepEqual(s.page.ui.getState().selection, [s.soft], 'the selection is that of the press');
+
+  s.page.doc.getState().redo();
+  assert.equal(gain(s), 0.7, 'the redo that was there is the redo that runs');
+  s.page.doc.getState().undo();
+  s.page.doc.getState().undo();
+  assert.deepEqual([gain(s), past(s).length], [0.5, 0]);
+});
+
+test('cancelGesture after a drag whose first step went into the entry before it: that entry is back as it was', () => {
+  const s = setup();
+  setGain(s, 0.6);
+  const typed = past(s)[0]!;
+  // Less than 600 ms after a typed value the drag begins: rule 3 merges its first transaction into that entry.
+  s.clock.advance(100);
+  s.page.doc.getState().beginGesture(gainKey(s));
+  setGain(s, 0.65);
+  setGain(s, 0.8);
+  assert.equal(past(s).length, 1);
+  assert.notEqual(past(s)[0], typed, 'the entry of the typed value was replaced by the merged one');
+
+  s.page.doc.getState().cancelGesture();
+  assert.equal(gain(s), 0.6, 'the typed value stays: only the drag is taken back');
+  assert.deepEqual(past(s), [typed]);
+  same(past(s)[0], typed);
+  s.page.doc.getState().undo();
+  assert.equal(gain(s), 0.5);
+});
+
+test('cancelGesture without a change, without a gesture, and with another change on top only ends the gesture', () => {
+  const s = setup();
+  const idle = s.page.doc.getState();
+  s.page.doc.getState().cancelGesture();
+  same(s.page.doc.getState(), idle, 'without a gesture nothing happens at all');
+
+  s.page.doc.getState().beginGesture(gainKey(s));
+  s.page.doc.getState().cancelGesture();
+  assert.deepEqual([s.page.doc.getState().gesture, s.page.doc.getState().revision, past(s).length], [null, s.revision, 0]);
+
+  // A change of another key in the middle of the drag: neither it nor the drag is taken back.
+  s.page.doc.getState().beginGesture(gainKey(s));
+  setGain(s, 0.9);
+  s.page.doc.getState().transact('Move', (draft) => moveNodes(draft, [s.soft], { x: 40, y: 40 }));
+  setGain(s, 0.95);
+  const held = s.page.doc.getState();
+  s.page.doc.getState().cancelGesture();
+  assert.deepEqual([gain(s), past(s).length, s.page.doc.getState().gesture], [0.95, 3, null]);
+  same(s.page.doc.getState().doc, held.doc);
+
+  // After an undo in the middle of a drag the gesture is over (rule 6): a cancel that follows finds none.
+  s.page.doc.getState().beginGesture(gainKey(s));
+  setGain(s, 0.3);
+  s.page.doc.getState().undo();
+  const undone = s.page.doc.getState();
+  s.page.doc.getState().cancelGesture();
+  same(s.page.doc.getState(), undone);
+});
+
+test('a save in the middle of a drag that is then taken back leaves the project unsaved: the file holds what no undo leads to', () => {
+  const s = setup();
+  s.page.doc.getState().beginGesture(gainKey(s));
+  setGain(s, 0.9);
+  s.page.doc.getState().markSaved('/projects/hills.orogen');
+  assert.equal(s.page.doc.getState().unsaved, false);
+  s.page.doc.getState().cancelGesture();
+  assert.deepEqual([gain(s), s.page.doc.getState().unsaved], [0.5, true]);
+});
+
 test('a new transaction clears the future', () => {
   const s = setup();
   setGain(s, 0.6, null);

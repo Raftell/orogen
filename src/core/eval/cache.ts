@@ -27,6 +27,11 @@ export interface ResultCache extends PoolCacheHooks {
   forget(): void;
   /** Entries held, for tests and reports. */
   readonly size: number;
+  /**
+   * How many entries were taken out of the eviction order since the cache was made, for tests: an eviction looks
+   * at the entries up to the first that can go, not at all of them (2.7).
+   */
+  readonly examined: number;
 }
 
 /**
@@ -60,6 +65,7 @@ export function createCache(pool: Pick<ManagedPool, 'retain' | 'drop' | 'referen
   /** References the entries hold, per texture. */
   const held = new Map<PoolTexture, number>();
   let count = 0;
+  let examined = 0;
 
   function unfile(entry: Entry): void {
     if (entry.filed === null) ordinary.delete(entry);
@@ -124,8 +130,16 @@ export function createCache(pool: Pick<ManagedPool, 'retain' | 'drop' | 'referen
   /** Every entry in eviction order (2.7): transient ones by generation, then the rest by last use. */
   function* evictionOrder(): Generator<Entry> {
     // Copies of the lists of generations, not of the entries: the caller removes entries while it walks.
-    for (const generation of [...generations]) yield* transients.get(generation) ?? [];
-    yield* ordinary;
+    for (const generation of [...generations]) {
+      for (const entry of transients.get(generation) ?? []) {
+        examined++;
+        yield entry;
+      }
+    }
+    for (const entry of ordinary) {
+      examined++;
+      yield entry;
+    }
   }
 
   function evictOne(): boolean {
@@ -152,6 +166,7 @@ export function createCache(pool: Pick<ManagedPool, 'retain' | 'drop' | 'referen
 
   return {
     get size() { return count; },
+    get examined() { return examined; },
     evictOne,
     cacheReferences: (texture) => held.get(texture) ?? 0,
 

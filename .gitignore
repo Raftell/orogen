@@ -1,5 +1,7 @@
 node_modules/
 dist/
+/dist.partial-*/
+/dist.previous-*/
 out/
 release/
 *.log

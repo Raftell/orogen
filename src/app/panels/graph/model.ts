@@ -1,8 +1,10 @@
-// What the graph panel reads off a node definition and a document: the ports a node shows, what each port
-// carries, which inputs are missing, and the names of the categories. Pure: no DOM, no React.
+// What the graph panel reads off a node definition and a document: what each port carries, which nodes lie on
+// a cycle, and the names of the categories. The rules a panel shares with the evaluator are the core's own
+// functions (runtime.md 4.3): `portLabel`, `inputsOf`, `canBypass`, `inputSources` with `inputKey`, and
+// `missingInputs`. Pure: no DOM, no React.
 
 import type { Category, NodeDef, PortDef } from '../../../core/api.ts';
-import type { GraphDoc, NodeInstance, NodeRegistry, PortRef } from '../../../core/runtime.ts';
+import { inputKey, inputsOf, type GraphDoc, type NodeInstance, type NodeRegistry, type PortRef } from '../../../core/runtime.ts';
 
 /** The order of engine.md 4.1: the order of the palette's categories. */
 export const CATEGORIES: readonly Category[] = ['generate', 'adjust', 'filter', 'simulate', 'select', 'color', 'surface', 'io', 'ref'];
@@ -23,28 +25,6 @@ export const CATEGORY_TITLES: Readonly<Record<Category, string>> = {
 export type PortTone = 'height' | 'mask' | 'data' | 'color' | 'any';
 
 export const own = <T>(record: Readonly<Record<string, T>>, key: string): T | undefined => (Object.hasOwn(record, key) ? record[key] : undefined);
-
-/** The input the evaluator appends to a maskable node (engine.md 4.13 rule 2). */
-const MASK_PORT: PortDef = { name: 'mask', type: 'field', role: 'mask', optional: true };
-
-/** The inputs a connection can target: the declared ones, then `mask` for a maskable node (runtime.md 4.3 rule 1). */
-export function inputsOf(def: NodeDef): readonly PortDef[] {
-  return def.maskable ? [...def.inputs, MASK_PORT] : def.inputs;
-}
-
-/** engine.md 4.14: a node can be bypassed when its inputs[0] and outputs[0] exist with the same type. */
-export function canBypass(def: NodeDef | undefined): boolean {
-  const input = def?.inputs[0];
-  const output = def?.outputs[0];
-  if (!input || !output) return false;
-  if (typeof output.type === 'object') return input.type === 'any' && output.type.sameAs === input.name;
-  return (output.type === 'field' || output.type === 'color') && input.type === output.type;
-}
-
-/** engine.md 4.2: a port's display name is its label, else its name with a capital. */
-export function portLabel(port: Pick<PortDef, 'name' | 'label'>): string {
-  return port.label ?? port.name.charAt(0).toUpperCase() + port.name.slice(1);
-}
 
 export function nodeTitle(instance: NodeInstance, def: NodeDef | undefined): string {
   return instance.title ?? def?.title ?? instance.type;
@@ -69,43 +49,25 @@ export function edgeEndsExist(doc: GraphDoc, registry: NodeRegistry, from: PortR
   return sourceDef.outputs.some((port) => port.name === from.port) && inputsOf(targetDef).some((port) => port.name === to.port);
 }
 
-/** `<node>\n<port>`: a key for a port in a map. A node id may hold any character, a port name of a known type no line break. */
+/**
+ * `<node>\n<port>`: a key for an output, or for an end of a drawn wire, in a map of this panel. A node id may hold
+ * any character, a port name of a known type no line break. The inputs the evaluator finds connected are keyed by
+ * the core's `inputKey`, which is what `inputSources` returns them under.
+ */
 export const portKey = (node: string, port: string): string => `${node}\n${port}`;
 
 /**
- * For every input that the evaluator sees connected, the output it reads: of several edges into one input the
- * first in record order, and no edge that breaks rule 1 (runtime.md 4.3 rule 5).
- */
-export function inputSources(doc: GraphDoc, registry: NodeRegistry): Map<string, PortRef> {
-  const sources = new Map<string, PortRef>();
-  for (const edge of Object.values(doc.edges)) {
-    const key = portKey(edge.to.node, edge.to.port);
-    if (sources.has(key) || !edgeEndsExist(doc, registry, edge.from, edge.to)) continue;
-    sources.set(key, edge.from);
-  }
-  return sources;
-}
-
-/**
- * The labels of the required inputs nothing is connected to. The engine reports `missing input` only for a
- * node of the plan it evaluates (runtime.md 5.3), so the graph derives it from the document for every node.
- * A node that is bypassed has no missing input (5.6).
- */
-export function missingInputs(instance: NodeInstance, def: NodeDef | undefined, sources: ReadonlyMap<string, PortRef>): string[] {
-  if (!def || (instance.bypass === true && canBypass(def))) return [];
-  return def.inputs.filter((port) => !port.optional && !sources.has(portKey(instance.id, port.name))).map(portLabel);
-}
-
-/**
- * The nodes that lie on a cycle of the edges the evaluator uses (`sources` is `inputSources`). The editor makes
- * no cycle (4.3 rule 3), but a file may hold one (rule 5), and the engine names it only on the nodes it is asked
- * for: the graph says it of every node of it, from the document. Tarjan's algorithm without recursion: a file
- * may hold a chain of any length.
+ * The nodes that lie on a cycle of the edges the evaluator uses (`sources` is the core's `inputSources`). The
+ * editor makes no cycle (4.3 rule 3), but a file may hold one (rule 5), and the engine names it only on the nodes
+ * it is asked for: the graph says it of every node of it, from the document. Tarjan's algorithm without
+ * recursion: a file may hold a chain of any length. The core's own `cycleNodes` is not exported by its entry
+ * modules; a unit test holds this one to it.
  */
 export function cycleNodes(doc: GraphDoc, sources: ReadonlyMap<string, PortRef>): Set<string> {
   const next = new Map<string, string[]>();
   for (const [key, from] of sources) {
-    const to = key.slice(0, key.lastIndexOf('\n'));
+    // `inputKey` is the JSON of [node, port].
+    const to = (JSON.parse(key) as [string, string])[0];
     const list = next.get(from.node);
     if (list) list.push(to);
     else next.set(from.node, [to]);
@@ -173,7 +135,7 @@ export function shownAs(doc: GraphDoc, nodeId: string): Shown {
  * `sameAs` output has the kind `outputKind` (4.3) finds through the connections, and as a field it is a height,
  * the default role, as the view takes it (7.4); a cycle of such outputs has no kind. `outputKind` itself is not
  * asked once per output: it walks every edge each time, which with 300 nodes is tens of milliseconds at every
- * connection made. A test holds the two to the same answer. `sources` is `inputSources`.
+ * connection made. A test holds the two to the same answer. `sources` is the core's `inputSources`.
  */
 export function outputTones(doc: GraphDoc, registry: NodeRegistry, sources: ReadonlyMap<string, PortRef>): Map<string, PortTone> {
   const tones = new Map<string, PortTone>();
@@ -202,7 +164,7 @@ export function outputTones(doc: GraphDoc, registry: NodeRegistry, sources: Read
       }
       chain.push(key);
       walked.add(key);
-      const from = typeof port.type === 'object' ? sources.get(portKey(at.node, port.type.sameAs)) : undefined;
+      const from = typeof port.type === 'object' ? sources.get(inputKey({ node: at.node, port: port.type.sameAs })) : undefined;
       if (!from) break;
       at = from;
     }

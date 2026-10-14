@@ -3,7 +3,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { isBuildResolution, ladder, ladderLevel } from '../../src/core/graph/ladder.ts';
-import { DEFAULT_SETTINGS, normalizeSettings, previewResolution } from '../../src/core/graph/settings.ts';
+import { DEFAULT_SETTINGS, normalizeSettings, previewLevelNearest, previewResolution, withBuildResolution } from '../../src/core/graph/settings.ts';
+import { newDoc, setSettings, type DocDraft } from '../../src/core/runtime.ts';
 
 test('the ladders of the four Unreal sizes are the table of engine.md 1.5', () => {
   assert.deepEqual(ladder(8129), [8129, 4065, 2033, 1017, 509, 255, 128]);
@@ -105,4 +106,63 @@ test('previewLevel is lowered to the largest level the build resolution defines'
   assert.equal(level(4033, 1.7).settings.previewLevel, 1);
   assert.deepEqual(level(4033, 1.7).problems, ['setting "previewLevel": 1.7 is not a ladder level; 1 is used']);
   assert.equal(level(4033, 'two').settings.previewLevel, 2);
+});
+
+test('level 0 is a preview level of every build resolution: the preview at the build resolution itself', () => {
+  for (const buildResolution of [1009, 2017, 4033, 8129, 129, 513, 2993]) {
+    const { settings, problems } = normalizeSettings({ ...DEFAULT_SETTINGS, buildResolution, previewLevel: 0 });
+    assert.deepEqual([settings.previewLevel, problems, previewResolution(settings)], [0, [], buildResolution], String(buildResolution));
+    const draft = structuredClone(newDoc()) as DocDraft;
+    setSettings(draft, { buildResolution, previewLevel: 0 });
+    assert.deepEqual([draft.settings.buildResolution, draft.settings.previewLevel], [buildResolution, 0]);
+  }
+});
+
+test('previewLevelNearest: the level whose resolution is nearest, and of two equally near the coarser', () => {
+  // The ladders of 1009, 2017 and 4033 share their levels; that of 8129 lies beside them.
+  assert.deepEqual([1009, 2017, 4033, 8129].map((build) => previewLevelNearest(build, 1009)), [0, 1, 2, 3]);
+  assert.deepEqual([1009, 2017, 4033, 8129].map((build) => previewLevelNearest(build, 253)), [2, 3, 4, 5]);
+  assert.deepEqual([previewLevelNearest(8129, 2033), previewLevelNearest(1009, 2033), previewLevelNearest(4033, 2033)], [2, 0, 1]);
+  // Finer than the build itself, and coarser than its last level: the ends of the ladder.
+  assert.equal(previewLevelNearest(1009, 8129), 0);
+  assert.equal(previewLevelNearest(4033, 2), 6);
+  assert.equal(previewLevelNearest(129, 64), 1, '65, of the ladder 129, 65, 33');
+  // 513 has 257 and 129; 193 is as far from one as from the other: the coarser, which is the cheaper.
+  assert.equal(previewLevelNearest(513, 193), 2);
+  assert.equal(previewLevelNearest(513, 194), 1);
+  // Every answer is a level the build resolution defines.
+  for (const build of [1009, 2017, 4033, 8129, 129, 145, 2993]) {
+    for (const resolution of [1, 64, 100, 253, 1009, 3000, 8192, 1e9]) {
+      const level = previewLevelNearest(build, resolution);
+      assert.equal(normalizeSettings({ ...DEFAULT_SETTINGS, buildResolution: build, previewLevel: level }).problems.length, 0, `level ${level} of ${build}`);
+    }
+  }
+});
+
+test('withBuildResolution: another build resolution with the preview resolution kept as near as its ladder allows', () => {
+  const settings = (buildResolution: number, previewLevel: number) => ({ ...DEFAULT_SETTINGS, buildResolution, previewLevel });
+  // The case of the default project: previews at 1009 stay at 1009, whichever build is chosen, and come back.
+  assert.deepEqual(withBuildResolution(settings(4033, 2), 1009), { buildResolution: 1009, previewLevel: 0 });
+  assert.deepEqual(withBuildResolution(settings(1009, 0), 4033), { buildResolution: 4033, previewLevel: 2 });
+  assert.deepEqual(withBuildResolution(settings(4033, 2), 2017), { buildResolution: 2017, previewLevel: 1 });
+  assert.deepEqual(withBuildResolution(settings(4033, 2), 8129), { buildResolution: 8129, previewLevel: 3 }, '1017 is the level of 8129 nearest to 1009');
+  assert.deepEqual(withBuildResolution(settings(8129, 3), 4033), { buildResolution: 4033, previewLevel: 2 });
+  assert.deepEqual(withBuildResolution(settings(4033, 2), 4033), { buildResolution: 4033, previewLevel: 2 }, 'the same build resolution changes nothing');
+  // What setSettings alone does with the same change: the level stays and the previews follow the build.
+  const alone = structuredClone(newDoc()) as DocDraft;
+  setSettings(alone, { buildResolution: 1009 });
+  assert.equal(previewResolution(alone.settings), 253);
+  const kept = structuredClone(newDoc()) as DocDraft;
+  setSettings(kept, withBuildResolution(kept.settings, 1009));
+  assert.deepEqual([kept.settings.buildResolution, kept.settings.previewLevel, previewResolution(kept.settings)], [1009, 0, 1009]);
+  // A value that is no build resolution is the one normalizeSettings makes of it, and the level is one of that.
+  assert.deepEqual(withBuildResolution(settings(4033, 2), 1000), { buildResolution: 993, previewLevel: 0 });
+  assert.deepEqual(withBuildResolution(settings(4033, 2), 3000), { buildResolution: 2993, previewLevel: 2 });
+  assert.deepEqual(withBuildResolution(settings(4033, 2), Number.NaN), { buildResolution: 4033, previewLevel: 2 });
+  for (const next of [129, 145, 993, 1009, 2993, 8129, 8177, 5, 1e6]) {
+    const patch = withBuildResolution(settings(4033, 2), next);
+    const draft = structuredClone(newDoc()) as DocDraft;
+    setSettings(draft, patch);
+    assert.deepEqual([draft.settings.buildResolution, draft.settings.previewLevel], [patch.buildResolution, patch.previewLevel], `setSettings stores the patch for ${next} as it is`);
+  }
 });

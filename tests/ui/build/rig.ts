@@ -11,10 +11,11 @@ import path from 'node:path';
 import { nodes } from '../../../src/core/nodes/index.ts';
 import {
   addNode, connect, createRegistry, newDoc, serializeDoc, setNodeFlags, setParam, setSettings, setView,
-  type BuildResult, type DocDraft, type GraphDoc, type ProjectSettings,
+  type BuildPlan, type BuildResult, type DocDraft, type GraphDoc, type ProjectSettings,
 } from '../../../src/core/runtime.ts';
+import { planBuild } from '../../../src/export/plan.ts';
 import type { AppDriver } from '../../helpers/index.ts';
-import { docked, EVALUATION_BACKSTOP_MS, install, PAGE_BACKSTOP_MS, quote, ready, ROOT, settled, sleep } from '../shell/rig.ts';
+import { docked, EVALUATION_BACKSTOP_MS, install, PAGE_BACKSTOP_MS, panelSize, quote, ready, ROOT, settled, sleep, tallest } from '../shell/rig.ts';
 import { launchApp } from '../../helpers/index.ts';
 
 export { appears, exists, key, press, quote, run, vanishes } from '../shell/rig.ts';
@@ -174,10 +175,96 @@ export async function withBuildPanel(project: string | undefined, body: (app: Ap
   await app.close();
 }
 
-/** Brings the Build tab to the front, as a press on it does. */
+/**
+ * Brings the Build tab to the front, as a press on it does, and gives the panel all the height of its column:
+ * what these tests look at is the panel, and the default layout gives it less than half the column.
+ */
 export async function showPanel(app: AppDriver): Promise<void> {
   await app.eval(`void shellTest.press([...document.querySelectorAll('.dv-tab')].find((tab) => tab.textContent === 'Build'))`);
   await app.waitFor(`document.querySelector('[data-panel="build"] [data-build="panel"]') !== null`, PAGE_BACKSTOP_MS);
+  await tallest(app, 'build');
+}
+
+// ---- the plan before a build -----------------------------------------------------------------------------------------
+
+/** The plan the pipeline makes of a document (export-unreal.md 3.1): what the panel shows of a project before it is built. */
+export const planOf = (doc: GraphDoc): BuildPlan => planBuild(doc, REGISTRY);
+
+/** The words at the head of the plan section: 'Plan' with whose plan it is, or 'Exports' while there is none. */
+export const PLAN_TITLE = { standing: 'Planof the project as it is', last: 'Planof the last build', running: 'Planof the running build', none: 'Exports' } as const;
+
+/**
+ * Waits until the panel shows the plan the session made of the project as it stands, without a build
+ * (`EngineSession.plan`): it is asked for a moment after the document last changed.
+ */
+export async function planned(app: AppDriver, title: string = PLAN_TITLE.standing): Promise<void> {
+  await app.waitFor(`document.querySelector('[data-build-section="plan"] > button')?.textContent === ${quote(title)}`, PAGE_BACKSTOP_MS);
+}
+
+export interface ShownPlan {
+  /** The head of the section. */
+  readonly title: string | null;
+  /** Every target in the order shown: its kind, its node (or 'base', 'manifest'), its title, what feeds it, and its files. */
+  readonly targets: readonly {
+    readonly kind: string; readonly id: string; readonly title: string; readonly source: string | null;
+    readonly files: readonly { readonly path: string; readonly format: string; readonly size: string; readonly bytes: number | null }[];
+  }[];
+  /** The problems of the plan, as the section lists them: the code and the whole text of each. */
+  readonly problems: readonly { readonly code: string; readonly text: string }[];
+  readonly failed: string | null;
+  readonly layout: string | null;
+  readonly total: string | null;
+  /** The export nodes the plan has no target for, each with its tags ('Off', 'No input'). */
+  readonly left: readonly { readonly id: string; readonly tags: readonly string[] }[];
+}
+
+/** The plan section as the page shows it. */
+export const shownPlan = (app: AppDriver): Promise<ShownPlan> => app.eval<ShownPlan>(`(() => {
+  const section = document.querySelector('[data-build-section="plan"]');
+  const q = (selector) => section?.querySelector(selector) ?? null;
+  const all = (selector) => [...(section?.querySelectorAll(selector) ?? [])];
+  return {
+    title: q(':scope > button')?.textContent ?? null,
+    targets: all('[data-build="plan-targets"] > [data-build-target]').map((target) => ({
+      kind: target.getAttribute('data-kind'),
+      id: target.getAttribute('data-build-target'),
+      title: target.querySelector('[title]').getAttribute('title'),
+      source: target.querySelector('[data-build="export-source"]')?.textContent ?? null,
+      files: [...target.querySelectorAll('[data-build-file]')].map((file) => {
+        const [name, format, size] = [...file.querySelectorAll(':scope > span')];
+        return { path: file.getAttribute('data-build-file'), format: format.textContent, size: size.textContent, bytes: size.hasAttribute('data-bytes') ? Number(size.getAttribute('data-bytes')) : null };
+      }),
+    })),
+    problems: all('[data-build="plan-problems"] > [data-build-problem]').map((problem) => ({ code: problem.getAttribute('data-build-problem'), text: problem.textContent })),
+    failed: q('[data-build-note="plan-failed"]')?.textContent ?? null,
+    layout: q('[data-build="plan-layout"]')?.textContent ?? null,
+    total: q('[data-build="plan-total"]')?.textContent ?? null,
+    left: all('[data-build="export-nodes"] > [data-build-export]').map((row) => ({
+      id: row.getAttribute('data-build-export'),
+      tags: [...row.querySelectorAll('span')].filter((span) => span.hasAttribute('data-tone')).map((span) => span.textContent),
+    })),
+  };
+})()`);
+
+/**
+ * Holds what the panel shows to the plan the pipeline makes of `doc`: every file of the plan under a target, with
+ * its exact size where the encoding fixes one, every target of an export node under that node, and every problem
+ * with its code and the pipeline's own sentence.
+ */
+export async function expectPlan(app: AppDriver, doc: GraphDoc, where: string): Promise<ShownPlan> {
+  const expected = planOf(doc);
+  const shown = await shownPlan(app);
+  const sorted = <T,>(list: readonly T[]): T[] => [...list].sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
+  assert.deepEqual(
+    sorted(shown.targets.flatMap((target) => target.files.map((file) => [file.path, file.bytes]))),
+    sorted(expected.items.length === 0 ? [] : expected.files.map((file) => [file.path, file.bytes])),
+    `${where}: the files of the plan, each with its size`,
+  );
+  assert.deepEqual(shown.targets.filter((target) => target.kind !== 'base' && target.kind !== 'manifest').map((target) => `${target.kind}:${target.id}`), expected.items.map(({ nodeId, item }) => `${item.kind}:${nodeId}`), `${where}: the targets`);
+  assert.deepEqual(shown.problems.map((problem) => problem.code), shown.title === PLAN_TITLE.standing ? expected.problems.map((problem) => problem.code) : [], `${where}: the problems of the plan`);
+  for (const [at, problem] of (shown.title === PLAN_TITLE.standing ? expected.problems : []).entries()) assert.ok(shown.problems[at]!.text.includes(problem.message), `${where}: ${problem.code} in the pipeline's words`);
+  assert.equal(shown.failed !== null, !expected.ok, `${where}: a plan with an error says that a build would stop at it`);
+  return shown;
 }
 
 export const text = (app: AppDriver, selector: string): Promise<string | null> =>
@@ -251,24 +338,10 @@ export const scrollTo = (app: AppDriver, selector: string): Promise<void> =>
 export const setParamIn = (app: AppDriver, nodeId: string, name: string, value: unknown): Promise<void> =>
   app.eval<void>(`void orogenTest.ctx.doc.getState().transact('Parameter', (draft) => { draft.nodes[${quote(nodeId)}].params[${quote(name)}] = ${JSON.stringify(value)}; })`);
 
-/**
- * Makes the column that holds the build panel `width` pixels wide, as dragging its edge does: the dock's layout
- * with other sizes, restored through the dock.
- */
+/** Makes the column that holds the build panel `width` pixels wide, as dragging its edge does (the dock holds it to its least, 220). */
 export async function sideWidth(app: AppDriver, width: number): Promise<void> {
-  const restored = await app.eval<string>(`(() => {
-    const layout = JSON.parse(JSON.stringify(orogenTest.shell.layout()));
-    const columns = layout.dock.grid.root.data;
-    const side = columns.find((column) => column.type === 'leaf' && column.data.views.includes('build'));
-    const others = columns.filter((column) => column !== side);
-    const total = columns.reduce((sum, column) => sum + column.size, 0);
-    const before = others.reduce((sum, column) => sum + column.size, 0);
-    for (const column of others) column.size = Math.round(column.size * (total - ${width}) / before);
-    side.size = ${width};
-    return orogenTest.shell.dock.restore(layout);
-  })()`);
-  assert.equal(restored, 'restored');
-  await app.waitFor(`Math.abs(document.querySelector('[data-build="panel"]').getBoundingClientRect().width - ${width}) <= 4`, PAGE_BACKSTOP_MS);
+  const got = await panelSize(app, 'build', { width });
+  assert.ok(Math.abs(got.width - width) <= 4, `the build panel is ${got.width} wide, not ${width}`);
 }
 
 export interface Fit {

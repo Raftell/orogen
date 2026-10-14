@@ -7,7 +7,8 @@ import { test } from 'node:test';
 
 import { addNode, connect, setNodeFlags, setParam, setView } from '../../../src/core/runtime.ts';
 import type { AppDriver } from '../../helpers/index.ts';
-import { appears, attrOf, capture, count, field, PAGE_BACKSTOP_MS, PANEL, press, project, quote, rectOf, row, select, settled, textOf, withProject } from './rig.ts';
+import { panelSize } from '../shell/rig.ts';
+import { appears, attrOf, capture, count, field, PANEL, press, project, quote, rectOf, row, select, settled, textOf, withProject } from './rig.ts';
 
 const ids = { noise: '', range: '', erosion: '', curve: '', gradient: '', landscape: '', shape: '', blur: '', second: '', failing: '' };
 
@@ -115,13 +116,8 @@ test('captures: the inspector for the settings, a simple node, a simulation, gro
   });
 });
 
-/** Drags the sash between the left column and the side column until the inspector is `width` pixels wide, or as near as the dock lets it be. */
-async function widen(app: AppDriver, width: number): Promise<number> {
-  const now = (await rectOf(app, PANEL)).width;
-  await app.eval(`void shellTest.drag([...document.querySelectorAll('.dv-sash')].find((sash) => sash.getBoundingClientRect().height > 500), ${Math.round(now - width)})`);
-  await app.waitFor(`Math.abs(shellTest.rect(${quote(PANEL)}).width - ${now}) > 1`, PAGE_BACKSTOP_MS);
-  return (await rectOf(app, PANEL)).width;
-}
+/** Makes the inspector `width` pixels wide through the dock, as dragging the sash beside it does, or as near as the dock lets it be. */
+const widen = async (app: AppDriver, width: number): Promise<number> => (await panelSize(app, 'inspector', { width })).width;
 
 /** What sticks out of the panel sideways, and whether its body scrolls sideways: neither may be. */
 const sideways = (app: AppDriver): Promise<{ out: string[]; scrolls: boolean }> => app.eval(`(() => {
@@ -137,7 +133,7 @@ const sideways = (app: AppDriver): Promise<{ out: string[]; scrolls: boolean }> 
   return { out: out.slice(0, 8), scrolls: body.scrollWidth > body.clientWidth + 1 || panel.querySelector('[data-inspector]').scrollWidth > panel.clientWidth + 1 };
 })()`);
 
-test('captures: the panel wide, narrow, narrower than it can be, and in a small window', async (t) => {
+test('captures: the panel wide, narrow, at the least the dock makes it, and at the size a small window gives it', async (t) => {
   await withProject(FILE, async (app) => {
     await settled(app);
     await select(app, [ids.shape], { height: { node: ids.shape, port: 'out' } });
@@ -182,22 +178,22 @@ test('captures: the panel wide, narrow, narrower than it can be, and in a small 
     assert.deepEqual(await sideways(app), { out: [], scrolls: false });
     t.diagnostic(`capture: ${await capture(app, 'narrow-panel-settings')}`);
 
-    // ---- narrower than anything can be read: the panel keeps a least width and is cut off, not crushed ----
+    // ---- as narrow as the dock makes a panel (runtime.md 8.7 rule 7): nothing is crushed, cut off or scrolled sideways ----
     await select(app, [ids.shape]);
     const least = await widen(app, 60);
-    assert.ok(least < 168, `the dock made the panel ${least} pixels wide`);
+    assert.equal(least, 220, 'the dock holds a panel to its least width');
     assert.ok((await rectOf(app, field('feather'))).width >= 120, 'a field keeps a width its number fits into');
-    assert.equal(await app.eval<boolean>(`(() => { const root = shellTest.el(${quote(`${PANEL} [data-inspector]`)}); return root.scrollWidth > root.clientWidth; })()`), true, 'what is cut off is reached by scrolling');
+    assert.deepEqual(await sideways(app), { out: [], scrolls: false });
+    for (const id of [ids.curve, ids.gradient, ids.landscape, ids.failing]) {
+      await select(app, [id]);
+      assert.deepEqual(await sideways(app), { out: [], scrolls: false }, `nothing of ${id} sticks out of the narrowest panel`);
+    }
+    t.diagnostic(`capture: ${await capture(app, 'least-panel')}`);
 
-    // ---- a small window: the least the application has (960 by 600) ----
-    // Last, and without a word about the engine: in a window that was never shown the resize costs the engine its
-    // device (measured: "A valid external Instance reference no longer exists"), which is not the inspector's to
-    // mend. What is asserted is where the panel's parts lie.
-    await app.eval(`void window.resizeTo(960, 600)`);
-    await app.waitFor(`innerWidth <= 960 && innerHeight <= 600`, PAGE_BACKSTOP_MS);
-    // The dock lays its panels out again for the new window: the inspector ends where the window does.
-    await app.waitFor(`(() => { const box = shellTest.rect(${quote(PANEL)}); return box.x + box.width <= innerWidth + 1 && box.y + box.height <= innerHeight + 1; })()`, PAGE_BACKSTOP_MS);
-    await widen(app, 300);
+    // ---- a small window: the least the application has (960 by 600) gives the panel 300 by about 300 pixels ----
+    // The size is the panel's, set through the dock: a window that was never shown cannot be resized (testing.md 8.5).
+    const sized = await panelSize(app, 'inspector', { width: 300, height: 300 });
+    assert.ok(sized.width === 300 && sized.height <= 300 && sized.height >= 260, JSON.stringify(sized));
     await select(app, [ids.landscape]);
     const small = await rectOf(app, PANEL);
     assert.ok(small.width >= 260, `in the small window the panel is ${small.width} pixels wide`);

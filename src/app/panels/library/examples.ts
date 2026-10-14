@@ -104,17 +104,6 @@ export function gridMove(count: number, columns: number, at: number, move: GridM
   }
 }
 
-/**
- * The name the application gives a project: its file without the folder and the extension, `Untitled` for a
- * project without a file. The shell has the same function (src/app/shell/format.ts), which a panel may not
- * import; tests/ui/library/unit/examples.test.ts holds the two to each other.
- */
-export function projectName(path: string | null): string {
-  if (path === null) return 'Untitled';
-  const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1);
-  return name.toLowerCase().endsWith('.orogen') ? name.slice(0, -'.orogen'.length) || name : name;
-}
-
 /** The document of an example's project file. Throws what parseDoc throws for a text that is no project. */
 export function exampleDoc(text: string, registry: NodeRegistry): { readonly doc: GraphDoc; readonly problems: readonly DocProblem[] } {
   return parseDoc(text, registry);

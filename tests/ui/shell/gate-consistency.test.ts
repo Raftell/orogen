@@ -170,7 +170,8 @@ test('gate: a node has one title, one colour and one status in the graph, the li
     await typeInto(app, '[data-node="snow"] [data-graph="rename"]', 'Glacier');
     await keyPress(app, 'Enter', {}, '[data-node="snow"] [data-graph="rename"]');
     await showTab(app, 'Build');
-    await appears(app, '[data-build="export-nodes"]');
+    // The plan of the project as it is: each target with what feeds it.
+    await appears(app, '[data-build="plan-targets"] [data-build="export-source"]');
     const sources = await app.eval<string[]>(`[...document.querySelectorAll('[data-build="export-source"]')].map((e) => e.textContent)`);
     assert.ok(sources.includes('from Glacier') && !sources.includes('from Snow Cover'), `the build panel follows the title: ${sources.join(', ')}`);
     await capture(app, '03-renamed-everywhere');

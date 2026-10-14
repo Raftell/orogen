@@ -5,15 +5,15 @@
 // are matched by shape).
 
 import type { Category, NodeDef, PortDef } from '../../../core/api.ts';
-import type { Edge, GraphDoc, NodeGroup, NodeInstance, NodeRegistry, PortRef } from '../../../core/runtime.ts';
+import {
+  canBypass, inputKey, inputSources, inputsOf, missingInputs, portLabel,
+  type Edge, type GraphDoc, type NodeGroup, type NodeInstance, type NodeRegistry, type PortRef,
+} from '../../../core/runtime.ts';
 import {
   GROUP_MIN_HEIGHT, GROUP_MIN_WIDTH, HANDLE_SIZE, inputAnchor, nodeHeight, nodeWidth, outputAnchor, portColumn, portY,
   type NodeShape, type Point, type Rect,
 } from './geometry.ts';
-import {
-  canBypass, cycleNodes, declaredTone, edgeEndsExist, inputsOf, inputSources, missingInputs, nodeTitle, outputTones, own, portKey, portLabel, shownAs,
-  type PortTone, type Shown,
-} from './model.ts';
+import { cycleNodes, declaredTone, edgeEndsExist, nodeTitle, outputTones, own, portKey, shownAs, type PortTone, type Shown } from './model.ts';
 
 // ---- ids -------------------------------------------------------------------------------------------------------------
 // A document id is any string (runtime.md 4.5) and nodes and groups have records of their own, so a node and a
@@ -80,6 +80,8 @@ export interface NodeView {
   readonly thumbnail: boolean;
   /** Labels of the required inputs nothing is connected to. */
   readonly missing: readonly string[];
+  /** An export node: it runs when the project is built, and in no preview (it is never "paused"). */
+  readonly exports: boolean;
   /** The node lies on a cycle of wires: it can never be computed (runtime.md 4.3 rule 5). */
   readonly cycle: boolean;
   readonly shown: Shown;
@@ -179,7 +181,7 @@ function portsFromEdges(doc: GraphDoc, nodeId: string): { inputs: PortDef[]; out
 }
 
 interface Facts {
-  /** Input → the output the evaluator reads there. */
+  /** Input, by the core's `inputKey` → the output the evaluator reads there. */
   readonly sources: ReadonlyMap<string, PortRef>;
   /** Output → its tone. */
   readonly tones: ReadonlyMap<string, PortTone>;
@@ -217,14 +219,14 @@ function drawable(doc: GraphDoc, registry: NodeRegistry, edge: Edge): boolean {
     && (!targetDef || inputsOf(targetDef).some((port) => port.name === edge.to.port));
 }
 
-function viewOf(doc: GraphDoc, instance: NodeInstance, def: NodeDef | undefined, facts: Facts): NodeView {
+function viewOf(doc: GraphDoc, registry: NodeRegistry, instance: NodeInstance, def: NodeDef | undefined, facts: Facts): NodeView {
   const id = instance.id;
   const declared = def ? { inputs: inputsOf(def), outputs: def.outputs } : portsFromEdges(doc, id);
-  const bypassable = canBypass(def);
+  const bypassable = def !== undefined && canBypass(def);
   const bypassed = instance.bypass === true && bypassable;
 
   const inputs = declared.inputs.map((port, row): PortView => {
-    const source = facts.sources.get(portKey(id, port.name));
+    const source = facts.sources.get(inputKey({ node: id, port: port.name }));
     const connected = facts.wired.has(`in ${portKey(id, port.name)}`);
     return {
       name: port.name,
@@ -265,7 +267,9 @@ function viewOf(doc: GraphDoc, instance: NodeInstance, def: NodeDef | undefined,
     canBypass: bypassable,
     collapsed,
     thumbnail,
-    missing: missingInputs(instance, def, facts.sources),
+    // The evaluator's own rule (5.3), asked of the document: the engine reports it only for a node of the plan it evaluates.
+    missing: missingInputs(doc, registry, id, facts.sources).map(portLabel),
+    exports: def?.export !== undefined,
     cycle: facts.cycle.has(id),
     shown,
     locked: shown !== null && doc.ui.view?.locked === true,
@@ -290,7 +294,7 @@ const portSignature = (port: PortView): string => `${port.name}/${port.label}/${
 function signature(view: NodeView): string {
   return [
     view.type, view.known, view.title, view.typeTitle, view.category, view.bypassed, view.canBypass, view.collapsed, view.thumbnail,
-    view.shown, view.locked, view.width, view.height, view.cycle, view.missing.join(','), view.inputs.map(portSignature).join(';'), view.outputs.map(portSignature).join(';'),
+    view.shown, view.locked, view.width, view.height, view.cycle, view.exports, view.missing.join(','), view.inputs.map(portSignature).join(';'), view.outputs.map(portSignature).join(';'),
   ].join('|');
 }
 
@@ -363,7 +367,7 @@ export function createFlowMapper(): (input: FlowInput) => FlowGraph {
         if (before && before.instance === instance && before.def === def && before.facts === current && before.shown === shown && before.locked === locked) {
           kept = before;
         } else {
-          const made = viewOf(doc, instance, def, current);
+          const made = viewOf(doc, registry, instance, def, current);
           const text = signature(made);
           const same = before !== undefined && before.signature === text;
           kept = { instance, def, facts: current, shown, locked, signature: text, view: same ? before.view : made, handles: same ? before.handles : handlesOf(made) };

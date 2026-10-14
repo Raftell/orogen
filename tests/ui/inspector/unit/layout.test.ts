@@ -6,18 +6,17 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { NodeDef, ParamDef } from '../../../../src/core/api.ts';
-import { canBypass as engineCanBypass } from '../../../../src/core/graph/ports.ts';
 import { nodes } from '../../../../src/core/nodes/index.ts';
 import {
-  addNode, connect, createRegistry, newDoc, setNodeFlags, setParam, type DocDraft, type GraphDoc, type NodeError, type ProjectSettings,
+  addNode, canBypass, connect, createRegistry, missingInputs, newDoc, portLabel, setNodeFlags, setParam, type DocDraft, type GraphDoc, type NodeError, type ProjectSettings,
 } from '../../../../src/core/runtime.ts';
 import type { NodeRuntime } from '../../../../src/app/state/engine-store.ts';
 import {
-  canBypass, errorFacts, excerptLines, isChanged, isSteady, isVisible, layoutParams, missingInputs, nodeValues, outputRole, paramLabel, sameValue, SETTLED, sharedValues,
+  errorFacts, excerptLines, isChanged, isSteady, isVisible, layoutParams, measuredAt, nodeValues, outputRole, paramLabel, sameValue, SETTLED, sharedValues,
   statusLine, statusSummary, targetOf, visibleSections,
 } from '../../../../src/app/panels/inspector/model.ts';
 import {
-  buildResolutionOptions, formatSpacing, highestPointText, isUndoableSetting, metresPerVertex, previewLevelLabel, previewLevels, SETTING_HELP, SETTING_LABELS,
+  buildResolutionOptions, formatSpacing, highestPointText, isUndoableSetting, metresPerVertex, previewLevelLabel, previewLevels, previewResolutionText, SETTING_HELP, SETTING_LABELS,
   UNREAL_RESOLUTIONS,
 } from '../../../../src/app/panels/inspector/settings.ts';
 
@@ -74,8 +73,7 @@ test('nothing selected is the project settings; nodes of one type are edited tog
   assert.deepEqual(gone.types, [{ type: 'generate/no-such-node', title: 'generate/no-such-node', category: null, count: 1 }]);
 });
 
-test('the bypass rule is the engine\'s, for every node of the product', () => {
-  for (const node of nodes) assert.equal(canBypass(node), engineCanBypass(node), node.type);
+test('what can be bypassed is what the core says can: an input and an output of one kind', () => {
   assert.equal(canBypass(def('filter/blur')), true);
   assert.equal(canBypass(def('generate/fractal-noise')), false, 'a generator has no input to pass on');
   assert.equal(canBypass(def('color/gradient-map')), false, 'a field in and a color out');
@@ -116,14 +114,14 @@ test('an output that has the kind of its input carries what is connected there: 
   assert.equal(outputRole(cyclic, REGISTRY, { node: ids.loose, port: 'out' }), null);
 });
 
-test('a required input that nothing is connected to is read off the document, by its label; an optional one and a bypassed node lack nothing', () => {
+test('a required input that nothing is connected to is read off the document by the evaluator\'s rule, and said by its label; an optional one and a bypassed node lack nothing', () => {
   const ids = { range: '', combine: '', blur: '' };
   const doc = docWith((draft) => {
     ids.range = addNode(draft, REGISTRY, 'generate/mountain-range', { x: 0, y: 0 });
     ids.combine = addNode(draft, REGISTRY, 'adjust/combine', { x: 300, y: 0 });
     ids.blur = addNode(draft, REGISTRY, 'filter/blur', { x: 600, y: 0 });
   });
-  const missing = (held: GraphDoc, id: string): string[] => missingInputs(held.nodes[id]!, def(held.nodes[id]!.type), held.edges, held.nodes, REGISTRY);
+  const missing = (held: GraphDoc, id: string): string[] => missingInputs(held, REGISTRY, id).map(portLabel);
   assert.deepEqual(missing(doc, ids.range), [], 'a generator has no input');
   assert.deepEqual(missing(doc, ids.combine), ['A', 'B'], 'both required inputs, not the optional mask');
   assert.deepEqual(missing(doc, ids.blur), ['In']);
@@ -247,7 +245,7 @@ test('several nodes of one type show the first node\'s values and say which diff
 });
 
 const runtime = (patch: Partial<NodeRuntime>): NodeRuntime => ({
-  requestId: 1, state: 'idle', cached: false, fraction: 0, label: null, etaMs: null, wallMs: null, peakBytes: null, error: null, upstream: null, ...patch,
+  requestId: 1, state: 'idle', cached: false, fraction: 0, label: null, etaMs: null, wallMs: null, peakBytes: null, resolution: null, error: null, upstream: null, ...patch,
 });
 
 test('the state of a node is one line: what it is, then the time and the memory of its last run', () => {
@@ -295,6 +293,34 @@ test('a node without a result says why it has none, from what the engine is doin
     assert.deepEqual(statusLine(record, 'Blur', { ...SETTLED, device: 'failed' }), { tone: 'idle', text: 'No GPU device', facts: [] });
     assert.deepEqual(statusLine(record, 'Blur', { ...SETTLED, device: 'starting' }), { tone: 'idle', text: 'Waiting for the engine', facts: [] });
   }
+});
+
+test('with the previews paused a node without a result says "Paused", and one that has a result says what it has', () => {
+  const paused = { ...SETTLED, paused: true };
+  for (const record of [runtime({}), undefined]) assert.deepEqual(statusLine(record, null, paused), { tone: 'idle', text: 'Paused', facts: [] });
+  // What stands in the way before the pause does is said first: without a device a resumed preview computes nothing either.
+  assert.equal(statusLine(undefined, null, { ...paused, device: 'failed' }).text, 'No GPU device');
+  assert.equal(statusLine(undefined, null, { ...paused, device: 'starting' }).text, 'Waiting for the engine');
+  assert.equal(statusLine(runtime({}), null, { ...paused, building: true }).text, 'Waiting for the build');
+  // An export node runs in no preview: the pause is not what it waits for.
+  assert.equal(statusLine(undefined, null, { ...paused, exports: true }).text, 'Runs when the project is built');
+  assert.equal(statusLine(runtime({ state: 'done', wallMs: 20, peakBytes: 2 ** 20 }), null, paused).text, 'Computed');
+  assert.equal(statusLine(runtime({ state: 'error' }), null, paused).text, 'Failed');
+  assert.equal(statusSummary([runtime({ state: 'done' }), undefined, runtime({})], true), '1 computed, 2 paused');
+  assert.equal(statusSummary([runtime({ state: 'done' }), undefined], false), '1 computed, 1 not computed');
+});
+
+test('a time measured at another resolution than the view\'s says at which: a node outside the view ran for its thumbnail', () => {
+  const thumb = runtime({ state: 'done', wallMs: 3, peakBytes: 2 ** 20, resolution: 253 });
+  assert.deepEqual(statusLine(thumb, null, { ...SETTLED, viewResolution: 1009 }).facts, ['3 ms', '1 MB', 'at 253 × 253']);
+  assert.deepEqual(statusLine(thumb, null, { ...SETTLED, viewResolution: 253 }).facts, ['3 ms', '1 MB'], 'the view\'s own resolution is the one the status bar names');
+  assert.deepEqual(statusLine(thumb, null, { ...SETTLED, viewResolution: null }).facts, ['3 ms', '1 MB', 'at 253 × 253'], 'with nothing shown there is no other place that names it');
+  assert.deepEqual(statusLine({ ...thumb, cached: true }, null, { ...SETTLED, viewResolution: 1009 }).facts, ['3 ms', '1 MB', 'at 253 × 253', 'from cache']);
+  // A record without figures has nothing to qualify, and one of an engine that names no resolution says none.
+  assert.deepEqual(statusLine(runtime({ state: 'done', cached: true, resolution: 253 }), null, { ...SETTLED, viewResolution: 1009 }).facts, ['from cache']);
+  assert.deepEqual(statusLine(runtime({ state: 'done', wallMs: 3, peakBytes: 2 ** 20 }), null, { ...SETTLED, viewResolution: 1009 }).facts, ['3 ms', '1 MB']);
+  assert.equal(measuredAt({ resolution: 1009 }, 1009), null);
+  assert.equal(measuredAt({ resolution: 64 }, 1009), 'at 64 × 64');
 });
 
 test('the head takes a finished run, a failure and no record at once; a draft, a wait and a run only when they last', () => {
@@ -362,6 +388,11 @@ test('the preview levels of a build resolution are those of the ladder, each wit
   assert.equal(previewLevelLabel({ level: 0, resolution: 4033 }), 'Full · 4033 × 4033');
   assert.equal(previewLevelLabel({ level: 2, resolution: 1009 }), '1/4 · 1009 × 1009');
   assert.equal(previewLevelLabel({ level: 6, resolution: 64 }), '1/64 · 64 × 64');
+
+  // What the previews are computed at, as the settings say it under the two selects.
+  assert.equal(previewResolutionText(settings({ buildResolution: 4033, previewLevel: 2 })), "1009 × 1009, 1/4 of the build's 4033 × 4033");
+  assert.equal(previewResolutionText(settings({ buildResolution: 1009, previewLevel: 0 })), '1009 × 1009, the build resolution itself');
+  assert.equal(previewResolutionText(settings({ buildResolution: 8129, previewLevel: 3 })), "1017 × 1017, 1/8 of the build's 8129 × 8129");
 });
 
 test('the build resolutions offered are Unreal\'s landscape sizes, and the project\'s own when it is another', () => {

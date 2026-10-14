@@ -7,7 +7,7 @@ export default defineNode({
   title: 'Mask Texture',
   category: 'io',
   description: 'Exports a mask as a grayscale texture that covers the landscape, for use in its material.',
-  keywords: ['unreal', 'texture', 'grayscale', 'data', 'png'],
+  keywords: ['unreal', 'texture', 'grayscale', 'data', 'png', 'export', 'output'],
   inputs: [{ name: 'in', type: 'field', role: 'mask' }],
   outputs: [],
   params: [

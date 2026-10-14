@@ -144,7 +144,9 @@ const NESTING_MAX = 16;
 export function parseEntry(text: string, context: { readonly current?: number; readonly units?: NumberUnits } = {}): number | null {
   if (typeof text !== 'string' || text.length > ENTRY_MAX_LENGTH) return null;
   const units = new Map(Object.entries(context.units ?? {}).map(([suffix, factor]) => [suffix.toLowerCase(), factor]));
-  const source = text.trim().replace(/−/g, '-').replace(/[×]/g, '*').replace(/÷/g, '/');
+  // A comma between two digits is the decimal sign of most keyboards outside the English-speaking world ("0,5"):
+  // an entry has no other use for a comma, so it is read as the point it stands for.
+  const source = text.trim().replace(/−/g, '-').replace(/[×]/g, '*').replace(/÷/g, '/').replace(/(\d),(?=\d)/g, '$1.');
   if (source === '') return null;
   let at = 0;
   let depth = 0;
@@ -239,9 +241,13 @@ export function parseEntry(text: string, context: { readonly current?: number; r
   return result === 0 ? 0 : result;
 }
 
-/** The units of a length or a height that is stored as a fraction of `metres` (engine.md 1.6): "500m" on 5000 m is 0.1. */
+/**
+ * The units of a length or a height that is stored as a fraction of `metres` (engine.md 1.6): "500m" on 5000 m
+ * is 0.1. The stored value is a fraction of the terrain's width or of its height range, so a percentage is one
+ * too: "5%" is 0.05, of whatever size the terrain is.
+ */
 export function metricUnits(metres: number): NumberUnits {
-  return finite(metres) && metres > 0 ? { m: 1 / metres, km: 1000 / metres, cm: 0.01 / metres } : {};
+  return finite(metres) && metres > 0 ? { m: 1 / metres, km: 1000 / metres, cm: 0.01 / metres, '%': 0.01 } : {};
 }
 
 /** A stored fraction of `metres` as the metric text shown beside it: "403 m", "1.25 km", "12.5 m". */

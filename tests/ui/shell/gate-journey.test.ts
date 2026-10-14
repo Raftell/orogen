@@ -224,7 +224,7 @@ test('gate journey: an example is opened, edited, built at 1009 and saved; a sec
     assert.deepEqual(await history(first), []);
     await shot(first, '09-undone');
 
-    // ---- 6. a node from the library, found by a search, and connected by dragging ----
+    // ---- 6. a node from the library, found by a search: it continues from the node that is selected ----
     await showTab(first, 'Library');
     await press(first, '[data-panel="library"] [data-tab="nodes"]');
     await appears(first, '[data-library="search"]');
@@ -238,15 +238,22 @@ test('gate journey: an example is opened, edited, built at 1009 and saved; a sec
     assert.equal((await docOf(first)).nodes[terraces]!.type, 'surface/terraces');
     assert.deepEqual(await selection(first), [terraces], 'the node that was added is selected');
     assert.deepEqual(await history(first), ['Add Terraces']);
-    // The new node lies in the middle of the graph's panel: it is taken to a free place below the chain, and wired.
+    // The erosion was the selected node: the new node is connected to its output, as one step, and lies in the
+    // panel where it covers no other node (8.7 rule 8). Nobody has to find it under another node and wire it.
+    const wired = await docOf(first);
+    assert.ok(Object.values(wired.edges).some((edge) => edge.from.node === 'hydraulic' && edge.from.port === 'out' && edge.to.node === terraces && edge.to.port === 'in'), 'adding it made the wire from the selected node');
     const graph = await boxOf(first, '[data-graph="root"]');
+    const landed = await nodeBox(first, terraces);
+    assert.ok(landed.x >= graph.x && landed.y >= graph.y && landed.x + landed.width <= graph.x + graph.width && landed.y + landed.height <= graph.y + graph.height, `the new node is in view: ${JSON.stringify(landed)}`);
+    for (const other of Object.keys(wired.nodes).filter((id) => id !== terraces)) {
+      const box = await nodeBox(first, other);
+      const apart = landed.x >= box.x + box.width || box.x >= landed.x + landed.width || landed.y >= box.y + box.height || box.y >= landed.y + landed.height;
+      assert.ok(apart, `the new node does not cover ${other}`);
+    }
+    // It is taken to a free place below the chain, as a user tidies a graph.
     const grip = await titleAt(first, terraces);
     await graphDrag(first, grip, { x: graph.x + graph.width * 0.36, y: graph.y + graph.height * 0.82 });
     assert.deepEqual(await history(first), ['Add Terraces', 'Move']);
-    await graphDrag(first, await portAt(first, 'hydraulic', 'out', 'out'), await portAt(first, terraces, 'in', 'in'));
-    const wired = await docOf(first);
-    assert.ok(Object.values(wired.edges).some((edge) => edge.from.node === 'hydraulic' && edge.from.port === 'out' && edge.to.node === terraces && edge.to.port === 'in'), 'the drag from port to port made the wire');
-    assert.deepEqual(await history(first), ['Add Terraces', 'Move', 'Connect']);
     await settled(first);
     const stepped = { node: terraces, port: 'out' };
     assert.deepEqual((await docOf(first)).ui.view?.height, stepped, 'the selected node, now a terrain, is shown');
@@ -263,7 +270,7 @@ test('gate journey: an example is opened, edited, built at 1009 and saved; a sec
     await graphSettled(first);
     const inView = await nodeBox(first, 'color');
     assert.ok(inView.x > pane.x && inView.y > pane.y && inView.x + inView.width < pane.x + pane.width && inView.y + inView.height < pane.y + pane.height, 'the pan brought the colour node into the panel');
-    assert.deepEqual(await history(first), ['Add Terraces', 'Move', 'Connect'], 'panning is no step of the history');
+    assert.deepEqual(await history(first), ['Add Terraces', 'Move'], 'panning is no step of the history');
     await selectNode(first, 'color');
     await settled(first);
     assert.deepEqual((await docOf(first)).ui.view, { height: stepped, overlay: { ref: { node: 'color', port: 'out' }, as: 'color', opacity: 1 } });
@@ -281,7 +288,7 @@ test('gate journey: an example is opened, edited, built at 1009 and saved; a sec
     await shot(first, '14-build-panel');
     await chooseOption(first, '#build-resolution', '1009');
     assert.equal((await docOf(first)).settings.buildResolution, 1009);
-    assert.deepEqual(await history(first), ['Add Terraces', 'Move', 'Connect'], 'the build resolution is no undo step');
+    assert.deepEqual(await history(first), ['Add Terraces', 'Move'], 'the build resolution is no undo step');
     const out = path.join(FOLDER, 'alpine-build');
     await first.eval(`void orogenTest.shell.answers.chooseFolder.push(${quote(out)})`);
     await press(first, '[data-panel="build"] [data-command="build.chooseFolder"]');
@@ -338,8 +345,9 @@ test('gate journey: an example is opened, edited, built at 1009 and saved; a sec
     assert.ok(sameField(await inspect(second, stepped), await inspect(first, stepped)), 'the same terrain');
     assert.deepEqual((await viewOf(second))!.resolution, (await viewOf(first))!.resolution);
     // A colour map has no statistics to ask for: that it is the same is seen in the picture, which it covers.
-    // And the same picture: both from above, where the camera is the terrain's own frame.
-    await keyPress(second, 'F6');
+    // And the same picture, without a key being pressed: the project brings the view it was saved with
+    // (`doc.ui.viewport`, runtime.md 7.5), which is the view from above of step 8.
+    assert.equal(await first.eval<string>(`viewportTest.attr('data-mode')`), 'top');
     await second.waitFor(`viewportTest.attr('data-mode') === 'top'`, PAGE_BACKSTOP_MS);
     const secondShown = await shot(second, '19-second-application');
     const [a, b] = [await viewportPicture(first, firstShown), await viewportPicture(second, secondShown)];
@@ -451,9 +459,11 @@ test('gate journey: a project made from nothing by hand, three nodes from the pa
     await showTab(app, 'Build');
     await appears(app, '[data-panel="build"] [data-build="panel"]');
     // 253, which the task names, is a preview level and no build resolution (engine.md 1.5: one above a multiple of
-    // 16). The smallest size the application offers is 1009; the project's previews then run at 253.
+    // 16). The smallest size the application offers is 1009. The previews keep the resolution they had, 1009, which
+    // of a build of 1009 is the build resolution itself (runtime.md 4.2): a smaller build does not blur them.
     await chooseOption(app, '#build-resolution', '1009');
-    assert.equal(await text(app, '[data-build="preview"]'), 'Previews run at 253 × 253');
+    assert.equal(await text(app, '[data-build="preview"]'), 'Previews run at 1009 × 1009');
+    assert.deepEqual(await app.eval<number[]>(`[orogenTest.ctx.doc.getState().doc.settings.buildResolution, orogenTest.ctx.doc.getState().doc.settings.previewLevel]`), [1009, 0]);
     const out2 = path.join(FOLDER, 'by-hand-build');
     await app.eval(`void orogenTest.shell.answers.chooseFolder.push(${quote(out2)})`);
     // Ctrl+B without a folder asks for one, and builds into it.

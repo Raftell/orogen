@@ -156,6 +156,7 @@ export interface BuildResult {
   readonly manifest: string | null;              // path of the manifest in the sink; null unless ok
   readonly report: string | null;                // path of the report in the sink; null when the plan had an error
   readonly outDir: string | null;                // buildToFolder only: the folder that holds the files
+  readonly peakPoolBytes: number | null;         // the most the pool's ledger held while the build ran (3.10); null when nothing was evaluated
 }
 
 // ---- export-unreal.md 3.9 ----

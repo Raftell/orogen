@@ -6,7 +6,7 @@ export default defineNode({
   title: 'Image File',
   category: 'io',
   description: 'Exports a terrain, a mask or a data map as a one-channel image at build resolution, for other tools.',
-  keywords: ['save', 'write', 'heightmap', 'exr', 'tiff', 'png', 'raw', 'r16', 'r32'],
+  keywords: ['save', 'write', 'heightmap', 'exr', 'tiff', 'png', 'raw', 'r16', 'r32', 'export', 'output', 'image'],
   inputs: [{ name: 'in', type: 'field' }],
   outputs: [],
   params: [

@@ -8,9 +8,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import type { BuildResult, GraphDoc, NodeError, PortRef } from '../../../src/core/runtime.ts';
+import type { BuildPlan, BuildResult, GraphDoc, NodeError, PortRef } from '../../../src/core/runtime.ts';
+import { planBuild } from '../../../src/export/plan.ts';
 import { makeDoc } from '../../helpers/index.ts';
-import { inspect, mountainDoc, OUTPUT, ready, ROOT, show, withApp } from './rig.ts';
+import { inspect, mountainDoc, OUTPUT, ready, REGISTRY, ROOT, show, withApp } from './rig.ts';
 
 const IMAGE = path.join(ROOT, 'tests/nodes/io/assets/terrain-193.png');
 const ABSENT = path.join(OUTPUT, 'worker', 'no-such-image.png');
@@ -88,13 +89,24 @@ const SPARE = `window.spare = (() => {
   return {
     start(doc) {
       const worker = new Worker('./engine-worker.js');
-      const record = { worker, events: [], sent: 0 };
+      const record = { worker, events: [], sent: 0, waiting: new Map() };
       worker.onmessage = (e) => {
         const event = e.data && e.data.event;
+        // A reply to a call that has a result (7.2): { id, ok, value } or { id, ok: false, error }.
+        if (!event && e.data && record.waiting.has(e.data.id)) {
+          const call = record.waiting.get(e.data.id);
+          record.waiting.delete(e.data.id);
+          if (e.data.ok) call.resolve(e.data.value); else call.reject(new Error(e.data.error.name + ': ' + e.data.error.message));
+          return;
+        }
         if (!event || quiet.includes(event.type)) return;
         record.events.push(event.type === 'engine-error' ? 'engine-error: ' + event.message : event.type === 'view-updated' ? 'view-updated ' + event.revision : event.type);
       };
       record.tell = (method, ...args) => worker.postMessage({ id: ++record.sent, method, args });
+      record.ask = (method, ...args) => new Promise((resolve, reject) => {
+        record.waiting.set(++record.sent, { resolve, reject });
+        worker.postMessage({ id: record.sent, method, args });
+      });
       record.tell('setPreferences', { vramBytes: null, budgetFraction: 0.6 });
       record.tell('setProject', { path: null });
       record.tell('setDocument', doc, 1);
@@ -102,9 +114,46 @@ const SPARE = `window.spare = (() => {
     },
     events: (index) => made[index].events,
     tell: (index, method, ...args) => made[index].tell(method, ...args),
+    ask: (index, method, ...args) => made[index].ask(method, ...args),
     kill: (index) => made[index].worker.terminate(),
   };
 })(), undefined`;
+
+test('worker: a plan of a build is answered by the worker from the document alone, and writes and evaluates nothing', async () => {
+  const outDir = path.join(OUTPUT, 'worker', 'planned');
+  fs.rmSync(outDir, { recursive: true, force: true });
+  await withApp({ profile: 'core' }, async (app) => {
+    await ready(app);
+    const { doc } = project();
+    await app.eval(SPARE);
+    // An engine of the test's own, spoken to in the messages of 7.2: the application's client is not asked.
+    const spare = await app.eval<number>(`spare.start(${JSON.stringify(doc)})`);
+    await app.waitFor(`spare.events(${spare}).includes('view-updated 1')`, 60_000);
+    const before = await app.eval<string[]>(`spare.events(${spare})`);
+
+    const plan = await app.eval<BuildPlan>(`spare.ask(${spare}, 'plan', ${JSON.stringify(doc)})`);
+    // It is the plan of export-unreal.md 3.3, made by planBuild with the worker's registry: the same as made here.
+    const expected = planBuild(doc, REGISTRY);
+    assert.deepEqual([plan.ok, plan.resolution, plan.name, plan.problems], [true, 337, expected.name, []]);
+    assert.deepEqual(plan.files, expected.files);
+    assert.deepEqual(plan.items.map((entry) => [entry.nodeId, entry.item.kind]), expected.items.map((entry) => [entry.nodeId, entry.item.kind]));
+    assert.deepEqual([plan.layout, plan.layers, plan.estimate, plan.targets], [expected.layout, expected.layers, expected.estimate, expected.targets]);
+    assert.ok(plan.files.some((file) => file.path.endsWith('Height.r16')) && plan.files.at(-1)!.path.endsWith('.orogen.json'), 'the heightmap, and the manifest last');
+
+    // A document that cannot be built says why, without a build: the problems of the plan.
+    const nothing: GraphDoc = { ...doc, nodes: Object.fromEntries(Object.entries(doc.nodes).filter(([, node]) => !node.type.startsWith('io/export'))), edges: {} };
+    const empty = await app.eval<BuildPlan>(`spare.ask(${spare}, 'plan', ${JSON.stringify(nothing)})`);
+    assert.deepEqual([empty.ok, empty.problems.map((problem) => problem.code), empty.items], [false, ['E_NOTHING_TO_EXPORT'], []]);
+    assert.deepEqual(empty, planBuild(nothing, REGISTRY));
+    assert.match(await app.eval<string>(`spare.ask(${spare}, 'plan', null).then(() => 'resolved', (e) => e.message)`), /^TypeError: plan: the argument is a GraphDoc$/);
+
+    // No event came of it: nothing was aborted, evaluated or built, and no folder was made.
+    assert.deepEqual(await app.eval<string[]>(`spare.events(${spare})`), before);
+    assert.equal(fs.existsSync(outDir), false);
+    await app.eval(`void spare.tell(${spare}, 'dispose')`);
+    assert.deepEqual(await app.errors(), []);
+  });
+});
 
 test('worker: an engine worker that is killed takes nothing with it, and one started in its place evaluates', async () => {
   await withApp({ profile: 'core' }, async (app) => {

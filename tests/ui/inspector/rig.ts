@@ -18,7 +18,7 @@ import {
   type DocDraft, type GraphDoc, type NodeRegistry, type PortRef, type ViewBinding,
 } from '../../../src/core/runtime.ts';
 import { launchApp, type AppDriver } from '../../helpers/index.ts';
-import { appears, docked, EVALUATION_BACKSTOP_MS, install, key, PAGE_BACKSTOP_MS, press, quote, ready, sleep } from '../shell/rig.ts';
+import { appears, docked, EVALUATION_BACKSTOP_MS, install, key, PAGE_BACKSTOP_MS, press, quote, ready, sleep, tallest } from '../shell/rig.ts';
 
 export { appears, key, PAGE_BACKSTOP_MS, press, quote, EVALUATION_BACKSTOP_MS };
 export { exists, run, vanishes } from '../shell/rig.ts';
@@ -133,6 +133,8 @@ export async function withProject(file: string | null, body: (app: AppDriver) =>
     await ready(app);
     await docked(app);
     await appears(app, `${PANEL} [data-inspector]`);
+    // What these tests look at is the panel: it gets all the height of its column, of which the default layout gives it the larger half.
+    await tallest(app, 'inspector');
     await body(app);
   } catch (thrown) {
     await app.close().catch(() => {});

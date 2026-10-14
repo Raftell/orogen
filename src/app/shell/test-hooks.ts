@@ -45,7 +45,10 @@ export interface ShellTestHooks {
   layout(): SavedLayout | null;
   /** Applies Preferences.layout as start-up does. */
   restoreLayout(): Promise<'restored' | 'default'>;
-  /** Set by the dock when it is ready. */
+  /**
+   * Set by the dock when it is ready. `dock.setSize(id, { width, height })` gives a panel a size as dragging its
+   * dividers does: the way a test makes a panel narrow or low, in place of resizing a window that is not shown.
+   */
   dock: DockHandle | null;
   /** The engine worker of the moment. A test ends it with terminate(), as nothing in the application does, to see the application without one. */
   engineWorker(): Worker;

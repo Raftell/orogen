@@ -11,7 +11,7 @@ import styles from './inspector.module.css';
 import { SEED_SPEC, shownPrecision } from './model.ts';
 import { RowEnd, RowLabel } from './Params.tsx';
 import {
-  buildResolutionOptions, formatSpacing, HEIGHT_RANGE_RANGE, highestPointText, METRE_UNITS, metresPerVertex, previewLevelLabel, previewLevels, resolutionLabel,
+  buildResolutionOptions, formatSpacing, HEIGHT_RANGE_RANGE, highestPointText, METRE_UNITS, metresPerVertex, previewLevelLabel, previewLevels, previewResolutionText, resolutionLabel,
   SEA_LEVEL_RANGE, SETTING_HELP, SETTING_LABELS, TERRAIN_SIZE_RANGE, type SettingName,
 } from './settings.ts';
 
@@ -125,6 +125,11 @@ export function SettingsView(props: { readonly settings: ProjectSettings }) {
           />
         </Row>
         <dl className={styles.derived} data-settings-derived="">
+          <div className={styles.fact}>
+            {/* A change of the build resolution keeps the previews as near to this as its levels allow (runtime.md 4.2). */}
+            <dt>Previews at</dt>
+            <dd data-derived="preview">{previewResolutionText(settings)}</dd>
+          </div>
           <div className={styles.fact}>
             <dt>Vertex spacing</dt>
             <dd data-derived="spacing">{formatSpacing(metresPerVertex(settings))} in a build of {resolutionLabel(settings.buildResolution)}</dd>

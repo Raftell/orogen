@@ -1,6 +1,8 @@
 // The life of a project in the application (runtime.md 4.5, 8.5, 8.6): the default project, new, open, save and
-// save as through the bridge, the question before unsaved changes are discarded, and the recent files. No DOM
-// and no React: what needs a window is handed in.
+// save as through the bridge, the questions before a project is left (a build that runs, changes that are not
+// saved), the question before a file is overwritten that another program changed, what is kept of an unsaved
+// project for a run that ends without a save, and the recent files. No DOM and no React: what needs a window is
+// handed in.
 
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -19,6 +21,12 @@ export const DEFAULT_NODE = 'generate/mountain-range';
 export const RECENT_MAX = 12;
 /** A save is repeated when the document changed while the file was written; this often at most. Then the project stays unsaved. */
 const SAVE_ATTEMPTS = 3;
+/**
+ * An unsaved project is kept for recovery this long after a change (8.6): a run that ends without a save costs
+ * the changes of these seconds. The wait begins with the first change that is not kept and is not begun again
+ * by the next, so that a value dragged for a minute is kept every few seconds of that minute.
+ */
+export const RECOVERY_DELAY_MS = 3000;
 
 /** A new project: the default settings and one terrain, shown. Without that node type in the registry, an empty document. */
 export function defaultDoc(registry: NodeRegistry): GraphDoc {
@@ -68,6 +76,11 @@ export function relocatedFiles(
 }
 
 export type UnsavedAnswer = 'save' | 'discard' | 'cancel';
+/** What becomes of a save onto a file another program changed: write over it, save under another name, or leave both as they are. */
+export type ChangedAnswer = 'overwrite' | 'saveAs' | 'cancel';
+
+/** What the user is about to do to the project that is open: make another, open another, or close the window. */
+export type Leaving = 'new' | 'open' | 'close';
 
 export interface ProjectHost {
   readonly doc: StoreApi<DocState>;
@@ -77,6 +90,21 @@ export interface ProjectHost {
   setRecent(recent: readonly string[]): void;
   /** Asks what becomes of the unsaved changes. */
   askUnsaved(): Promise<UnsavedAnswer>;
+  /** Whether a build is running: it was started from the project that is about to be left, and writes into its folder. */
+  building(): boolean;
+  /** Asks whether the build that runs is stopped for what the user is about to do. True: stop it and go on; false: stay. */
+  askBuilding(leaving: Leaving): Promise<boolean>;
+  /** Cancels the build and resolves when it has ended, or when it has not within a time the host chooses. */
+  stopBuild(): Promise<void>;
+  /** The project file is not the file this application read or wrote last: another program, or another Orogen, changed it. */
+  askChanged(path: string): Promise<ChangedAnswer>;
+  /**
+   * A run before this one ended with changes no file holds, and kept them (8.6): whether they are restored.
+   * `path` is the project file they belong to, null for a project that never had one; `savedAt` when they were kept.
+   */
+  askRecover(kept: { readonly path: string | null; readonly savedAt: number }): Promise<boolean>;
+  /** Default RECOVERY_DELAY_MS. */
+  readonly recoveryDelayMs?: number;
   notify(notice: Notice): void;
   /** A project opened with problems (4.5): they are shown, and the project is open. */
   showProblems(file: string, problems: readonly DocProblem[]): void;
@@ -91,11 +119,24 @@ export interface ProjectService {
   newProject(): Promise<boolean>;
   open(): Promise<boolean>;
   openPath(path: string): Promise<boolean>;
+  /** A document as a new project without a file: an example of the library. Asks as `open` does. */
+  openDocument(document: GraphDoc): Promise<boolean>;
   save(): Promise<boolean>;
   saveAs(): Promise<boolean>;
   /** True when there is nothing to lose any more: nothing was unsaved, it was saved, or the user discards it. */
   mayDiscard(): Promise<boolean>;
+  /**
+   * The questions before the project is left, in their order: first whether a build that runs is stopped, then
+   * what becomes of unsaved changes. True when the user may go on: no build runs any more, and nothing is unsaved.
+   */
+  mayLeave(leaving: Leaving): Promise<boolean>;
   clearRecent(): void;
+  /** Keeps the project for recovery now, when it has changes that are not kept: before a build, which may take the page's process with it. */
+  keepNow(): Promise<void>;
+  /** The window is about to close with the user's consent: nothing is kept for the next start. Resolves when what was kept is gone. */
+  closing(): Promise<void>;
+  /** Stops keeping. */
+  dispose(): void;
 }
 
 const messageOf = (thrown: unknown): string => {
@@ -115,7 +156,78 @@ export function createProjectService(host: ProjectHost): ProjectService {
     return run;
   }
 
+  // ---- the file as this application last read or wrote it ----
+  /** Its size and time then; null for a project without a file, and where the file could not be looked at. */
+  let known: { readonly path: string; readonly size: number; readonly mtimeMs: number } | null = null;
+  async function remember(path: string | null): Promise<void> {
+    known = null;
+    if (path === null) return;
+    try {
+      const stat = await platform.statPath(path);
+      if (stat.exists && stat.isFile) known = { path, size: stat.size, mtimeMs: stat.mtimeMs };
+    } catch {
+      // A bridge that cannot say: the next save asks nothing.
+    }
+  }
+  /** Whether the file is another than the one read or written last: a second application, or another program, saved it since. */
+  async function changedElsewhere(path: string): Promise<boolean> {
+    if (known === null || known.path !== path) return false;
+    try {
+      const stat = await platform.statPath(path);
+      // A file that is gone is written anew without a question: nothing of anybody's is lost by that.
+      return stat.exists && (stat.size !== known.size || stat.mtimeMs !== known.mtimeMs);
+    } catch {
+      return false;
+    }
+  }
+
+  // ---- what is kept for recovery (8.6) ----
+  /** The revision the recovery file holds; null when it holds none of this run's. */
+  let keptRevision: number | null = null;
+  let keepTimer: ReturnType<typeof setTimeout> | null = null;
+  /** `start` has read and dealt with what a run before kept: until then nothing is written over it or removed. */
+  let settled = false;
+  let disposed = false;
+  let keeping: Promise<void> = Promise.resolve();
+  const cancelKeep = (): void => {
+    if (keepTimer !== null) clearTimeout(keepTimer);
+    keepTimer = null;
+  };
+  function keepNow(): Promise<void> {
+    cancelKeep();
+    const state = doc.getState();
+    if (!settled || disposed || !state.unsaved || state.revision === keptRevision) return keeping;
+    const revision = state.revision;
+    keeping = keeping.then(() => platform.writeRecovery({ path: state.path, text: serializeDoc(state.doc) })).then(
+      () => { keptRevision = revision; },
+      (thrown: unknown) => { console.warn('[orogen] the project could not be kept for recovery', thrown); },
+    );
+    return keeping;
+  }
+  function forget(): Promise<void> {
+    cancelKeep();
+    keptRevision = null;
+    keeping = keeping.then(() => platform.writeRecovery(null)).catch(() => undefined);
+    return keeping;
+  }
+  const stopKeeping = doc.subscribe((state, previous) => {
+    if (!settled || disposed) return;
+    if (!state.unsaved) {
+      // Saved, or another project in its place: what was kept is of changes that are in a file now, or given up.
+      if (previous.unsaved || keptRevision !== null || keepTimer !== null) void forget();
+      return;
+    }
+    if (state.revision !== keptRevision) keepTimer ??= setTimeout(() => { void keepNow(); }, host.recoveryDelayMs ?? RECOVERY_DELAY_MS);
+  });
+
   async function write(path: string): Promise<boolean> {
+    // Another program, or a second Orogen, saved this file after it was opened or last saved here: writing now
+    // would take its changes away without a word.
+    if (await changedElsewhere(path)) {
+      const answer = await host.askChanged(path);
+      if (answer === 'cancel') return false;
+      if (answer === 'saveAs') return saveAs();
+    }
     const from = doc.getState().path;
     const moved = (held: GraphDoc): FileMove[] => (from === path ? [] : relocatedFiles(held, registry, from, path, platform.toProjectPath));
     /** The file's text: the document with its file paths as they are stored beside the new project file. */
@@ -138,6 +250,7 @@ export function createProjectService(host: ProjectHost): ProjectService {
       host.showFailure(`${baseName(path)} could not be saved`, messageOf(thrown));
       return false;
     }
+    await remember(path);
     // Edited through every attempt (a drag that goes on): the file is behind the project, and the project stays unsaved.
     const complete = doc.getState().revision === written;
     doc.getState().markSaved(path, written);
@@ -171,6 +284,15 @@ export function createProjectService(host: ProjectHost): ProjectService {
     return answer === 'discard' || save();
   }
 
+  async function mayLeave(leaving: Leaving): Promise<boolean> {
+    // The build first: it was started from this project, and its progress and its result are this project's to show.
+    if (host.building()) {
+      if (!await host.askBuilding(leaving)) return false;
+      await host.stopBuild();
+    }
+    return mayDiscard();
+  }
+
   async function load(path: string): Promise<boolean> {
     let parsed: ReturnType<typeof parseDoc>;
     try {
@@ -179,32 +301,87 @@ export function createProjectService(host: ProjectHost): ProjectService {
       host.showFailure(`${baseName(path)} could not be opened`, messageOf(thrown));
       return false;
     }
+    await remember(path);
     doc.getState().load(parsed.doc, path);
     host.setRecent(recentWith(host.recent(), path));
     if (parsed.problems.length > 0) host.showProblems(path, parsed.problems);
     return true;
   }
 
+  /** A document without a file takes the place of the project. */
+  function loadUnfiled(document: GraphDoc): void {
+    known = null;
+    doc.getState().load(document, null);
+  }
+
+  /**
+   * What a run before this one kept of an unsaved project (8.6): offered, and on a yes the project is that one,
+   * with its file's name and unsaved, so that Save writes it where it belongs. What cannot be read as a project
+   * is not offered. Either way the file is this run's from here on.
+   */
+  async function recover(): Promise<void> {
+    let record: Awaited<ReturnType<PlatformApi['readRecovery']>> = null;
+    try {
+      record = await platform.readRecovery();
+    } catch {
+      // A bridge without recovery, or a file that cannot be read: nothing to offer.
+    }
+    if (record !== null) {
+      let parsed: ReturnType<typeof parseDoc> | null = null;
+      try {
+        parsed = parseDoc(record.text, registry);
+      } catch {
+        // No project: it is removed below.
+      }
+      if (parsed !== null && await host.askRecover({ path: record.path, savedAt: record.savedAt })) {
+        await remember(record.path);
+        doc.getState().load(parsed.doc, record.path);
+        doc.getState().markUnsaved();
+        // What the file holds is this state: it stays until the project is saved or given up.
+        keptRevision = doc.getState().revision;
+        settled = true;
+        return;
+      }
+    }
+    settled = true;
+    if (record !== null) await forget();
+    // Changed while the question stood: kept as any change is.
+    else if (doc.getState().unsaved) void keepNow();
+  }
+
   return {
     start: () => queued(async () => {
       const file = platform.launchProject;
-      if (file !== null && await load(file)) return;
-      doc.getState().load(defaultDoc(registry), null);
+      if (!(file !== null && await load(file))) loadUnfiled(defaultDoc(registry));
+      await recover();
     }),
     newProject: () => queued(async () => {
-      if (!await mayDiscard()) return false;
-      doc.getState().load(defaultDoc(registry), null);
+      if (!await mayLeave('new')) return false;
+      loadUnfiled(defaultDoc(registry));
       return true;
     }),
     open: () => queued(async () => {
-      if (!await mayDiscard()) return false;
+      if (!await mayLeave('open')) return false;
       const path = await platform.openProjectDialog();
       return path === null ? false : load(path);
     }),
-    openPath: (path) => queued(async () => (await mayDiscard()) && load(path)),
+    openPath: (path) => queued(async () => (await mayLeave('open')) && load(path)),
+    openDocument: (document) => queued(async () => {
+      if (!await mayLeave('open')) return false;
+      loadUnfiled(document);
+      return true;
+    }),
     save: () => queued(save),
     saveAs: () => queued(saveAs),
     mayDiscard: () => queued(mayDiscard),
+    mayLeave: (leaving) => queued(() => mayLeave(leaving)),
     clearRecent: () => host.setRecent([]),
+    keepNow,
+    closing: forget,
+    dispose() {
+      disposed = true;
+      cancelKeep();
+      stopKeeping();
+    },
   };
 }

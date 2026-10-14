@@ -10,6 +10,7 @@ import { MessageChannel } from 'node:worker_threads';
 import { nodes as ioNodes } from '../../../src/core/nodes/io/index.ts';
 import { createSession, serveSession, type Engine, type EngineEvent, type EngineSession, type SessionPort } from '../../../src/core/runtime.ts';
 import { buildProject } from '../../../src/export/build.ts';
+import { planBuild } from '../../../src/export/plan.ts';
 import { createEngineClient, type EngineClient } from '../../../src/app/engine/client.ts';
 import type { EngineState } from '../../../src/app/state/engine-store.ts';
 import { getEngine, memorySink, memorySource, useNodes, type MemorySink } from '../../helpers/index.ts';
@@ -85,6 +86,7 @@ export async function startWorkerEnd(setup: WorkerSetup = {}): Promise<WorkerEnd
       sinks.push(sink);
       return buildProject(host, { doc: o.doc, sink, requestId: o.requestId, signal: o.signal, onEvent: o.onEvent });
     }),
+    plan: (host, doc) => planBuild(doc, host.registry),
     renderer: null,
   });
   const { port1, port2 } = new MessageChannel();

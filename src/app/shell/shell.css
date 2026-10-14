@@ -222,9 +222,8 @@ input, textarea { user-select: text; }
   box-shadow: var(--og-shadow-dialog);
   overflow: hidden;
 }
-.og-palette-input-row { display: flex; align-items: center; gap: var(--og-space-4); padding: var(--og-space-4) var(--og-space-5); border-bottom: 1px solid var(--og-divider); color: var(--og-text-dim); }
-.og-palette-input { flex: 1; min-width: 0; height: 24px; border: 0; background: transparent; color: var(--og-text); font: inherit; font-size: var(--og-font-size-large); outline: none; }
-.og-palette-input::placeholder { color: var(--og-text-dim); }
+/* The field itself is the shared search field (src/app/ui/SearchField.tsx), in its plain form. */
+.og-palette-input-row { display: flex; align-items: center; padding: var(--og-space-4) var(--og-space-5); border-bottom: 1px solid var(--og-divider); }
 .og-palette-list { flex: 1; min-height: 0; margin: 0; padding: var(--og-space-2) 0; overflow-y: auto; list-style: none; }
 .og-palette-item { display: flex; align-items: center; gap: var(--og-space-4); height: 26px; padding: 0 var(--og-space-5); white-space: nowrap; }
 .og-palette-item[aria-selected='true'] { background: var(--og-accent); color: var(--og-text-on-accent); }
@@ -247,6 +246,10 @@ input, textarea { user-select: text; }
 .og-palette-item[aria-selected='true'] .og-key { border-color: color-mix(in srgb, currentColor 40%, transparent); color: inherit; }
 
 /* ---- the shell's dialogs ---- */
+.og-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--og-space-2) var(--og-space-6); margin: 0; user-select: text; }
+.og-fact { display: contents; }
+.og-fact > dt { color: var(--og-text-secondary); }
+.og-fact > dd { margin: 0; overflow-wrap: anywhere; }
 .og-list { margin: 0; padding: 0; list-style: none; user-select: text; }
 .og-list-item { display: flex; gap: var(--og-space-4); padding: var(--og-space-3) 0; border-top: 1px solid var(--og-divider); }
 .og-list-item:first-child { border-top: 0; }
@@ -283,3 +286,30 @@ input, textarea { user-select: text; }
 
 /* ---- the gallery of controls ---- */
 .og-gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--og-space-7); }
+
+/* ---- the Help reader: a page of the user documentation ---- */
+.og-list-more > summary { margin-top: var(--og-space-2); color: var(--og-text-dim); font-size: var(--og-font-size-small); cursor: default; user-select: none; }
+.og-list-more > summary:hover { color: var(--og-text-secondary); }
+.og-help { display: flex; flex-direction: column; gap: var(--og-space-5); min-width: 0; }
+.og-help-pages { display: flex; flex-wrap: wrap; gap: var(--og-space-2) var(--og-space-5); padding-bottom: var(--og-space-4); border-bottom: 1px solid var(--og-divider); font-size: var(--og-font-size-small); }
+.og-help a { color: var(--og-accent-text); text-decoration: none; cursor: pointer; }
+.og-help a:hover { text-decoration: underline; }
+.og-help-pages a[aria-current='page'] { color: var(--og-text); font-weight: var(--og-font-weight-bold); }
+.og-help-text { min-width: 0; max-width: 78ch; color: var(--og-text); font-size: var(--og-font-size-large); line-height: 1.55; user-select: text; overflow-wrap: anywhere; }
+.og-help-text h1 { margin: 0 0 var(--og-space-5); font-size: 20px; }
+.og-help-text h2 { margin: var(--og-space-7, 24px) 0 var(--og-space-4); padding-top: var(--og-space-4); border-top: 1px solid var(--og-divider); font-size: 16px; }
+.og-help-text h3, .og-help-text h4 { margin: var(--og-space-6) 0 var(--og-space-3); font-size: var(--og-font-size-title); }
+.og-help-text p { margin: 0 0 var(--og-space-4); }
+.og-help-text ul, .og-help-text ol { margin: 0 0 var(--og-space-4); padding-left: 1.6em; }
+.og-help-text li { margin: var(--og-space-2) 0; }
+.og-help-text li > p { margin: var(--og-space-2) 0; }
+.og-help-text code { padding: 0 3px; border-radius: var(--og-radius-small); background: var(--og-bg-sunken); font: var(--og-font-size) / 1.4 var(--og-font-mono); }
+.og-help-text pre { margin: 0 0 var(--og-space-4); padding: var(--og-space-4); border-radius: var(--og-radius); background: var(--og-bg-sunken); overflow-x: auto; }
+.og-help-text pre code { padding: 0; background: none; white-space: pre; }
+.og-help-text blockquote { margin: 0 0 var(--og-space-4); padding-left: var(--og-space-5); border-left: 3px solid var(--og-border-strong); color: var(--og-text-secondary); }
+.og-help-text hr { margin: var(--og-space-6) 0; border: 0; border-top: 1px solid var(--og-divider); }
+.og-help-table { margin: 0 0 var(--og-space-4); overflow-x: auto; }
+.og-help-text table { border-collapse: collapse; font-size: var(--og-font-size); line-height: 1.4; }
+.og-help-text th, .og-help-text td { padding: var(--og-space-2) var(--og-space-4); border: 1px solid var(--og-divider); text-align: left; vertical-align: top; }
+.og-help-text th { background: var(--og-bg-sunken); font-weight: var(--og-font-weight-bold); }
+.og-help-picture { display: block; max-width: 100%; margin: var(--og-space-3) 0; border: 1px solid var(--og-divider); border-radius: var(--og-radius); }

@@ -30,7 +30,7 @@ const CATEGORIES: readonly (readonly [Category, string, string])[] = [
   ['color', 'Color', 'Everything that makes or changes a colour map.'],
   ['surface', 'Surface', 'Detail and structure added to a terrain without simulation: terraces, strata, rocks, scattered stamps.'],
   ['io', 'Import and export', 'Nodes that read image files, and the export nodes that say what a build writes. An export node has no output: it is the end of a branch of the graph.'],
-  ['ref', 'Reference nodes', 'Small nodes the engine itself ships with. They are the templates node authors copy and the fixtures the tests use; the product registers them like any other node.'],
+  ['ref', 'Reference nodes', 'Small nodes the engine itself ships with. They are the templates node authors copy and the fixtures the tests use. They are not offered in the application: neither the Library panel nor the add-node palette lists them. A project file may name one, the command-line program draws one by its type, and a node of one that a file holds is drawn and computed like any other.'],
 ];
 
 const capital = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1);
@@ -166,15 +166,17 @@ function section(def: NodeDef): string[] {
 
 /** The text of the reference for these definitions, in the order given. */
 export function referencePage(defs: readonly NodeDef[]): string {
+  const product = defs.filter((def) => def.category !== 'ref').length;
   const lines: string[] = [
     '# Node reference',
     '',
     'This page is generated from the node registry by `tools/node-reference.ts`. Do not edit it by hand: change the',
     'node, then run `tools/guard node tools/node-reference.ts` (on Windows `node tools/guard.mjs node',
-    'tools/node-reference.ts`). It lists the nodes this checkout of Orogen registers: what the command-line program',
-    'offers today, and what the Library panel of the desktop application will.',
+    'tools/node-reference.ts`). It lists the nodes this checkout of Orogen registers.',
     '',
-    `${defs.length} nodes are registered.`,
+    `${defs.length} nodes are registered: ${product} nodes of the product, which the Library panel and the add-node palette of`,
+    `the desktop application offer and the command-line program takes, and ${defs.length - product} reference nodes, which the`,
+    'command-line program takes as well and the application offers nowhere (the last section says what they are for).',
     '',
     '## How to read an entry',
     '',

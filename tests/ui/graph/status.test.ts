@@ -28,7 +28,7 @@ test('status: a failing node, the node behind it, an unknown type, a missing inp
     await vanishes(app, '[data-ui="dialog"]');
     await graphSettled(app);
     await focusGraph(app);
-    assert.equal(await app.eval<number>(`document.querySelectorAll('[data-node]').length`), 10, 'every node of the file is drawn, also those nothing can be done with');
+    assert.equal(await app.eval<number>(`document.querySelectorAll('[data-graph="root"] [data-node]').length`), 10, 'every node of the file is drawn, also those nothing can be done with');
 
     // ---- what the document alone says, before any evaluation names the node ----
     assert.deepEqual([await status(app, 'ghost'), await line(app, 'ghost')], ['error', 'Unknown node type "legacy/unknown"']);

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 
 import { pixelRay, project, viewOf } from '../../../src/viewport/camera.ts';
-import { BAKE_LOADS_PER_FRAME } from '../../../src/viewport/lighting.ts';
+import { BAKE_LOADS_MAX, BAKE_LOADS_MIN, BAKE_LOADS_PER_FRAME } from '../../../src/viewport/lighting.ts';
 import { testGpu } from '../gpu/rig.ts';
 import { difference, makeDoc, pixel, rangeDoc, readField, region, sample, SIZE, startView, writePicture, type ViewRig } from './rig.ts';
 
@@ -86,6 +86,48 @@ test('a terrain in the 3D view: sky above, lit relief in the middle, and one fra
     const small = await rig.picture();
     assert.deepEqual([small.width, small.height], [960, 600]);
   });
+});
+
+test('a panel with more pixels than the card is given a canvas for keeps its shape, and the pointer is read in the panel\'s pixels', async () => {
+  const size = 1008;
+  const camera = { kind: 'orbit', target: [size / 2, size / 2, 60], yaw: 300, pitch: 25, distance: 1.8 * size, fovY: 35 } as const;
+  const whole = await startView();
+  const bounded = await startView({ renderer: { pixelLimit: 400_000 } });
+  try {
+    for (const rig of [whole, bounded]) {
+      rig.setCamera(camera);
+      await rig.show(rangeDoc(1009));
+    }
+    const full = await whole.picture(), small = await bounded.picture();
+    assert.deepEqual([full.width, full.height], [1600, 1000]);
+    assert.deepEqual([small.width, small.height], [800, 500], 'four hundred thousand pixels of a panel of 1600 by 1000');
+    assert.deepEqual([...bounded.renderer.state.canvas], [800, 500]);
+    // The same picture with a quarter of the pixels: every part of it has the colour the whole one has there.
+    for (const [x0, y0] of [[0.1, 0.05], [0.4, 0.45], [0.55, 0.6], [0.2, 0.8]] as const) {
+      const a = region(full, x0, y0, x0 + 0.1, y0 + 0.1).mean, b = region(small, x0, y0, x0 + 0.1, y0 + 0.1).mean;
+      assert.ok(a.every((c, i) => Math.abs(c - b[i]!) < 6), `at ${x0} ${y0}: ${a.map(Math.round).join(' ')} against ${b.map(Math.round).join(' ')}`);
+    }
+    // A pixel holds 12 bytes at the least, the lit picture and its depth, and 56 with four samples (7.5 rule 13):
+    // the panel's 1.2 million pixels that are not drawn hold at least that much less. A software adapter draws
+    // without samples, which a margin of 50 MiB took for granted.
+    const saved = whole.renderer.state.reservedBytes - bounded.renderer.state.reservedBytes;
+    assert.ok(saved >= 0.9 * (1600 * 1000 - 800 * 500) * 12, `what is held by the pixel is held for the pixels there are: ${saved} bytes less`);
+    // A pick is asked in CSS pixels of the panel (7.5): the same pixel finds the same place.
+    for (const [x, y] of [[800, 520], [640, 600], [1000, 470]] as const) {
+      const a = await whole.session.viewport.pick(x, y), b = await bounded.session.viewport.pick(x, y);
+      assert.ok(a !== null && b !== null && Math.abs(a.uv[0] - b.uv[0]) < 1e-6 && Math.abs(a.uv[1] - b.uv[1]) < 1e-6, `${JSON.stringify(a)} against ${JSON.stringify(b)}`);
+    }
+    // A panel that grows is still bounded; one that fits is drawn pixel for pixel.
+    bounded.resize({ width: 3200, height: 800, dpr: 2 });
+    const wide = await bounded.picture();
+    assert.ok(wide.width * wide.height <= 404_000 && Math.abs(wide.width / wide.height - 4) < 0.02, `${wide.width} × ${wide.height}`);
+    bounded.resize({ width: 500, height: 400, dpr: 1 });
+    const fits = await bounded.picture();
+    assert.deepEqual([fits.width, fits.height], [500, 400]);
+  } finally {
+    await whole.dispose();
+    await bounded.dispose();
+  }
 });
 
 test('the top view shows the field as its image: texel (0, 0) at the top left, +X to the right, +Y down the screen', async () => {
@@ -411,36 +453,32 @@ test('the light maps are refined over frames of their own, and then nothing more
   });
 });
 
-test('where the device has a clock the light maps are refined by the time their passes took, and they are the same maps', async (t) => {
+test('the share of a frame that refines the light maps follows the device: by its clock where it has one, by the wall clock where it has none; the maps are the same', async (t) => {
   const camera = { kind: 'orbit', target: [1008, 1008, 100], yaw: 300, pitch: 30, distance: 3200, fovY: 35 } as const;
-  const drawn = async (timeBakes: boolean): Promise<{ picture: Awaited<ReturnType<ViewRig['picture']>>; loads: number; timed: boolean }> => {
+  const drawn = async (timeBakes: boolean): Promise<{ picture: Awaited<ReturnType<ViewRig['picture']>>; loads: number }> => {
     const rig = await startView({ renderer: { timeBakes } });
     try {
       rig.setCamera(camera);
       await rig.show(rangeDoc(2017));
-      // The sun moves a few times: frames of one kind of pass are timed, and the share of the next follows.
+      // The sun moves a few times: the frames that refine are timed, and the share of the next follows.
       for (const sunAzimuth of [100, 140, 180, 195]) {
         rig.setDisplay({ verticalScale: 1, showSea: true, sunAzimuth, sunElevation: 38 });
         await rig.picture();
       }
-      return { picture: await rig.picture(), loads: rig.renderer.state.bakeLoads, timed: timeBakes && rig.gpu.caps.timestampQuery };
+      return { picture: await rig.picture(), loads: rig.renderer.state.bakeLoads };
     } finally {
       await rig.dispose();
     }
   };
+  // Without the device's clock the share begins at BAKE_LOADS_PER_FRAME and is set by the time the frames took by
+  // the wall clock (lighting.ts nextBakeLoads, held in tests/ui/viewport/unit/display.test.ts): wherever that
+  // leaves it on this machine, it is within its bounds.
   const plain = await drawn(false);
-  assert.equal(plain.loads, BAKE_LOADS_PER_FRAME, 'without the clock a frame spends the loads it is given');
-  // Asked of a device without timestamp-query (profile 'core'), timed bakes are plain ones: no query set is asked for.
+  assert.ok(plain.loads >= BAKE_LOADS_MIN && plain.loads <= BAKE_LOADS_MAX, `${plain.loads} loads a frame without the clock`);
   const timed = await drawn(true);
   const gpu = await testGpu();
-  if (!gpu.caps.timestampQuery) {
-    assert.equal(timed.loads, BAKE_LOADS_PER_FRAME);
-    assert.ok(difference(timed.picture, plain.picture) < 0.05);
-    t.diagnostic('this device has no timestamp-query: the timed path runs under OROGEN_GPU_PROFILE=max (npm run test:gpu:max)');
-    return;
-  }
-  t.diagnostic(`a frame may spend ${Math.round(timed.loads / 1e6)} M loads on this device, by its clock; ${Math.round(BAKE_LOADS_PER_FRAME / 1e6)} M without`);
-  assert.ok(timed.loads !== BAKE_LOADS_PER_FRAME && timed.loads >= 20e6 && timed.loads <= 1500e6, `${timed.loads}`);
+  t.diagnostic(`a frame may spend ${Math.round(plain.loads / 1e6)} M loads by the wall clock and ${Math.round(timed.loads / 1e6)} M ${gpu.caps.timestampQuery ? 'by the device\'s clock' : 'asked for the device\'s clock, which this device does not have (it runs under OROGEN_GPU_PROFILE=max)'}; it begins at ${Math.round(BAKE_LOADS_PER_FRAME / 1e6)} M`);
+  assert.ok(timed.loads >= BAKE_LOADS_MIN && timed.loads <= BAKE_LOADS_MAX, `${timed.loads}`);
   assert.ok(difference(timed.picture, plain.picture) < 0.05, 'however the work is cut into frames, the maps are the same');
 });
 
@@ -481,4 +519,36 @@ test('a draft during a gesture is shown as it comes and refined when the gesture
     assert.ok(difference(await rig.picture(), refined) < 0.05, 'the last picture stays');
     assert.ok(rig.renderer.state.frames - frames <= 1);
   });
+});
+
+test('the GPU\'s end of a frame that never comes is nobody\'s unhandled rejection: a device whose process went answers so', async () => {
+  // In Chromium `onSubmittedWorkDone` rejects when the GPU process has gone ("A valid external Instance reference
+  // no longer exists"); Dawn in Node resolves it, so the rejection is put in the queue's place for one frame.
+  const unhandled: unknown[] = [];
+  const listen = (reason: unknown): void => { unhandled.push(reason); };
+  process.on('unhandledRejection', listen);
+  const rig = await startView({ size: SQUARE });
+  const queue = rig.gpu.device.queue as { onSubmittedWorkDone?: () => Promise<undefined> };
+  try {
+    await rig.show(rangeDoc());
+    const frames = rig.renderer.state.frames;
+    let rejected = 0;
+    queue.onSubmittedWorkDone = () => {
+      rejected++;
+      return Promise.reject(new DOMException('A valid external Instance reference no longer exists.', 'OperationError'));
+    };
+    // One frame, and none after it that would look at the promise of this one.
+    rig.setCamera({ kind: 'top', center: [0.4, 0.6], span: 0.8 });
+    await rig.picture();
+    assert.ok(rig.renderer.state.frames > frames, 'the new camera was drawn');
+    // An unhandled rejection is told after the task it was left in.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.ok(rejected >= 1, 'the frame asked for the GPU\'s end of it');
+    assert.deepEqual(unhandled.map(String), [], 'the renderer handles what it asked for');
+  } finally {
+    // The device is the process's own and serves the tests after this one.
+    delete queue.onSubmittedWorkDone;
+    process.off('unhandledRejection', listen);
+    await rig.dispose();
+  }
 });
