@@ -43,10 +43,10 @@ test('switches: Windows asks for the discrete GPU in both spellings and needs no
   for (const software of [false, true]) {
     const switches = names(launchSwitches('win32', software));
     assert.ok(switches.includes('force_high_performance_gpu') && switches.includes('force-high-performance-gpu'));
-    assert.ok(!switches.includes('enable-features'));
   }
   const hardware = launchSwitches('win32', false);
-  for (const name of ['enable-unsafe-webgpu', 'enable-unsafe-swiftshader', 'use-webgpu-adapter', 'ignore-gpu-blocklist', 'use-angle']) assert.ok(!names(hardware).includes(name), name);
+  assert.ok(!names(hardware).includes('enable-features'));
+  for (const name of ['enable-unsafe-webgpu', 'enable-unsafe-swiftshader', 'use-webgpu-adapter', 'ignore-gpu-blocklist', 'use-angle', 'use-vulkan']) assert.ok(!names(hardware).includes(name), name);
 });
 
 test('switches: on Windows the software adapter is SwiftShader, asked for by name, past the blocklist that keeps WebGPU from a machine without a GPU', () => {
@@ -56,6 +56,8 @@ test('switches: on Windows the software adapter is SwiftShader, asked for by nam
   assert.equal(valueOf(switches, 'use-webgpu-adapter'), 'swiftshader');
   assert.ok(names(switches).includes('ignore-gpu-blocklist'));
   assert.equal(valueOf(switches, 'use-angle'), 'swiftshader');
+  assert.equal(valueOf(switches, 'use-vulkan'), 'swiftshader');
+  assert.equal(valueOf(switches, 'enable-features'), 'Vulkan');
   // Linux keeps the recipe measured there: SwiftShader is what is left without the Vulkan feature.
   assert.ok(!names(launchSwitches('linux', true)).includes('use-webgpu-adapter'));
 });
