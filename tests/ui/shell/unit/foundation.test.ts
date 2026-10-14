@@ -110,7 +110,7 @@ test('the engine client is a whole EngineSession, with the viewport, the thumbna
 
 test('the bridge has the members the contract prints, in the page and in the main process', () => {
   const members = membersOf(RUNTIME, 'PlatformApi');
-  assert.equal(members.length, 24);
+  assert.equal(members.length, 26);
   // The preload script exposes each, and the hidden-window test of the bridge compares the same list with the page's object.
   const preload = read('src/platform/electron/preload/preload.ts');
   for (const member of members) assert.match(preload, new RegExp(`\\b${member}\\b`), `the preload script has ${member}`);

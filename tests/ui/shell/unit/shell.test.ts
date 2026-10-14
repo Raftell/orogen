@@ -9,7 +9,9 @@ import { addNode, parseDoc, serializeDoc, setParam, setSettings, type DocDraft, 
 import { editRoute, HELP_PAGES, SHELL_KEYS, SHELL_MENU, shellCommands } from '../../../../src/app/shell/app-commands.ts';
 import { RegistrationError } from '../../../../src/app/shell/commands.ts';
 import { defaultDoc, DEFAULT_NODE, recentWith, RECENT_MAX, relocatedFiles } from '../../../../src/app/shell/project.ts';
-import { DEVICE_BACK_NOTICE, DEVICE_LOST_NOTICE, LOG_KEPT, NOTICES_SHOWN, SOFTWARE_ADAPTER_NOTICE } from '../../../../src/app/shell/shell.ts';
+import {
+  DEVICE_BACK_NOTICE, DEVICE_LOST_NOTICE, LOG_KEPT, noGraphicsDevice, NOTICES_SHOWN, SOFTWARE_ADAPTER_NOTICE, SOFTWARE_RESTART_NOTICE,
+} from '../../../../src/app/shell/shell.ts';
 import { CAPS, createRig, fakePanels, REGISTRY, run, turn, type Rig } from './_shell.ts';
 
 const edit = (rig: Rig, seed: number): void => rig.doc.getState().transact('Seed', (draft) => setSettings(draft, { seed }));
@@ -576,6 +578,71 @@ test('an engine that never started is retried with another worker, and the engin
   const said = rig.shell.state.getState().notices.at(-1)!;
   assert.deepEqual([said.level, said.message, said.count], ['info', 'The engine was restarted', 2], 'each restart is said');
   assert.ok(rig.shell.menus().find((menu) => menu.title === 'Engine')!.items.some((item) => item.kind === 'command' && item.command === 'engine.restart'), 'the Engine menu offers it');
+});
+
+test('an engine that was given no graphics device at all: the explanation opens by itself once, and a device that failed is no such case', async () => {
+  // runtime.md 8.7 rule 16. The worker's words when the platform gave it no adapter (8.3 step 1).
+  const rig = createRig();
+  rig.engine.emit({ type: 'engine-error', message: 'No WebGPU adapter is available', fatal: true });
+  assert.equal(noGraphicsDevice(rig.engineState.getState().device), true);
+  assert.deepEqual(dialog(rig), { kind: 'noDevice' });
+  rig.shell.closeDialog();
+  // Retry starts another worker, which is given none either: the status bar leads to the explanation from now on.
+  await run(rig, 'engine.retryDevice');
+  rig.engine.emit({ type: 'engine-error', message: 'No WebGPU adapter is available: GPU process is gone', fatal: true });
+  assert.equal(noGraphicsDevice(rig.engineState.getState().device), true);
+  assert.equal(dialog(rig), null, 'once in a run');
+
+  // A device that was found and failed, a recovery that failed after a device was ready, a non-fatal error: none of them.
+  const found = createRig();
+  found.engine.emit({ type: 'engine-error', message: 'The adapter gave no device for profile "max": limit too high', fatal: true });
+  assert.deepEqual([noGraphicsDevice(found.engineState.getState().device), dialog(found)], [false, null]);
+  const recovered = createRig();
+  recovered.engine.emit({ type: 'device-ready', epoch: 1, caps: CAPS, budgetBytes: 2 ** 30 });
+  recovered.engine.emit({ type: 'engine-error', message: 'No WebGPU adapter is available', fatal: true });
+  assert.deepEqual([noGraphicsDevice(recovered.engineState.getState().device), dialog(recovered)], [false, null], 'the graphics card was there: this is a recovery that failed, which Retry is for');
+  const said = createRig();
+  said.engine.emit({ type: 'engine-error', message: 'No WebGPU adapter is available', fatal: false });
+  assert.equal(dialog(said), null);
+  // Another question stands: it is not pushed aside.
+  const asked = createRig();
+  asked.shell.showDialog({ kind: 'about' });
+  asked.engine.emit({ type: 'engine-error', message: 'WebGPU is not available in this window', fatal: true });
+  assert.deepEqual(dialog(asked), { kind: 'about' });
+});
+
+test('restarting with software rendering asks what leaving the project asks, then hands the project to the main process', async () => {
+  const rig = createRig();
+  await rig.shell.project.start();
+  rig.platform.answers.save.push('/work/alps.orogen');
+  edit(rig, 7);
+  rig.engine.emit({ type: 'engine-error', message: 'No WebGPU adapter is available', fatal: true });
+
+  // Unsaved changes: the question of closing, and Cancel leaves everything as it is.
+  let asked = rig.shell.restartWithSoftwareRendering();
+  await turn();
+  assert.equal(dialog(rig)?.kind, 'unsaved');
+  rig.shell.answerUnsaved('cancel');
+  assert.equal(await asked, false);
+  assert.deepEqual(rig.platform.restarts, []);
+
+  // Save: the project is written where the user chose, and that file is what the next run opens.
+  asked = rig.shell.restartWithSoftwareRendering();
+  await turn();
+  rig.shell.answerUnsaved('save');
+  assert.equal(await asked, true);
+  assert.deepEqual(rig.platform.restarts, ['/work/alps.orogen']);
+  assert.ok(rig.platform.files.has('/work/alps.orogen'));
+  assert.equal(rig.shell.state.getState().notices.at(-1)?.message, SOFTWARE_RESTART_NOTICE);
+  assert.equal(rig.platform.recovery, null, 'left with consent: nothing is kept for the next start to offer');
+
+  // A project without a file and without changes goes as nothing; a refusal is said.
+  const fresh = createRig();
+  await fresh.shell.project.start();
+  fresh.platform.restartAnswer = false;
+  assert.equal(await fresh.shell.restartWithSoftwareRendering(), false);
+  assert.deepEqual(fresh.platform.restarts, [null]);
+  assert.deepEqual(fresh.shell.state.getState().notices.map((notice) => [notice.level, notice.message]), [['error', 'Orogen could not restart with software rendering']]);
 });
 
 test('a lost device is said while it is being recovered, and no longer: the notice leaves when the device is back, which is said once', () => {

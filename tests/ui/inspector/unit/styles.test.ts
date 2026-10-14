@@ -16,9 +16,10 @@ const SHEET = read('src/app/panels/inspector/inspector.module.css');
 /** The sheet without its comments, which may name anything. */
 const RULES = SHEET.replace(/\/\*[\s\S]*?\*\//g, '');
 const THEME = read('src/app/shell/theme.css');
+/** `file` is the repository's path, written with `/` on every platform: what the tests below name a source by. */
 const SOURCES = [PANEL, path.join(PANEL, 'controls')]
   .flatMap((folder) => fs.readdirSync(folder).filter((name) => name.endsWith('.tsx')).map((name) => path.join(folder, name)))
-  .map((file) => ({ file: path.relative(ROOT, file), text: fs.readFileSync(file, 'utf8') }));
+  .map((file) => ({ file: path.relative(ROOT, file).split(path.sep).join('/'), text: fs.readFileSync(file, 'utf8') }));
 
 test('every color, space and font of the inspector is a token the theme defines', () => {
   const defined = new Set([...THEME.matchAll(/(--og-[a-z0-9-]+)\s*:/g)].map((found) => found[1]!));
@@ -57,7 +58,11 @@ test('what the panel itself makes focusable draws its focus, and the panel answe
     assert.match(rule[1]!, /var\(--og-focus-(ring|shadow)\)/, `${selector} draws the theme's focus`);
   }
   // Each of them takes the focus by the keyboard.
-  const tabbable = (file: string, mark: RegExp): void => assert.match(SOURCES.find((source) => source.file.endsWith(file))!.text, mark, file);
+  const tabbable = (file: string, mark: RegExp): void => {
+    const source = SOURCES.find((candidate) => candidate.file === `src/app/panels/inspector/${file}`);
+    assert.ok(source, `${file} is a source of the panel`);
+    assert.match(source.text, mark, file);
+  };
   tabbable('Dial.tsx', /tabIndex=\{props\.disabled \? -1 : 0\}/);
   tabbable('controls/curve.tsx', /tabIndex=\{props\.disabled \? -1 : 0\}/);
   tabbable('controls/gradient.tsx', /<button[\s\S]*?data-stop=/);

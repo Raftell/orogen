@@ -64,12 +64,34 @@ test('a device that was still starting when the wait ended is no device', () => 
   assert.match(strict.out, /still so when the wait ended/);
 });
 
+test('--require-evaluation: the start-up project computed on the device passes; one not computed fails with 4, no device with 3', () => {
+  // As the driver records it on a software adapter (runtime.md 8.7 rule 16): the engine path of a packaged application.
+  const computed = { idle: true, device: 'ready', nodes: { done: 1 }, errors: [], view: { resolution: 1009, draft: false }, afterMs: 9000 };
+  const passed = judge({ ...base, attempts: [ready], evaluation: computed }, '--require-evaluation');
+  assert.equal(passed.code, 0, passed.out);
+  assert.match(passed.out, /the start-up project: computed 9000 ms after the window loaded/);
+  for (const [why, evaluation] of [
+    ['still computing when the wait ended', { ...computed, idle: false, nodes: { running: 1 }, view: null, timedOut: true }],
+    ['a node that failed', { ...computed, nodes: { error: 1 }, errors: ['shader-compile: the kernel did not compile'] }],
+    ['nothing shown', { ...computed, view: null }],
+    ['no node at all', { ...computed, nodes: {} }],
+  ]) {
+    const failed = judge({ ...base, attempts: [ready], evaluation }, '--require-evaluation');
+    assert.equal(failed.code, 4, `${why}: ${failed.out}`);
+  }
+  assert.equal(judge({ ...base, attempts: [ready] }, '--require-evaluation').code, 4, 'a device without a record of the evaluation');
+  assert.equal(judge({ ...base, attempts: [failed] }, '--require-evaluation').code, 3, 'no device: what --require-device says');
+  // Without it the evaluation is said and asked of nobody.
+  assert.equal(judge({ ...base, attempts: [ready], evaluation: { ...computed, nodes: { error: 1 } } }, '--require-device').code, 0);
+});
+
 test('a window that did not load its interface fails with 1, whatever else is asked', () => {
   const result = { ...base, loaded: false, failure: 'the page has loaded without its test object', attempts: [] };
   const lenient = judge(result);
   assert.equal(lenient.code, 1);
   assert.match(lenient.out, /the window did not load the interface: the page has loaded without its test object/);
   assert.equal(judge(result, '--require-device').code, 1);
+  assert.equal(judge(result, '--require-evaluation').code, 1);
 });
 
 test('no result, and a file that is no result, fail with 1', () => {

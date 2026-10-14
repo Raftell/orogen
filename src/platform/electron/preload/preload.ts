@@ -44,6 +44,7 @@ const api: PlatformApi = {
   gpuProfile: launch.gpuProfile,
   testMode: launch.testMode,
   launchProject: launch.launchProject,
+  softwareRendering: launch.softwareRendering === true,
   openProjectDialog: () => ipcRenderer.invoke(CHANNELS.openProjectDialog) as Promise<string | null>,
   saveProjectDialog: (suggestedPath?: string) => ipcRenderer.invoke(CHANNELS.saveProjectDialog, suggestedPath) as Promise<string | null>,
   openFileDialog: (extensions: readonly string[]) => ipcRenderer.invoke(CHANNELS.openFileDialog, [...extensions]) as Promise<string | null>,
@@ -65,6 +66,7 @@ const api: PlatformApi = {
   onMenuCommand: (listener) => subscribe(menuListeners, listener),
   onCloseRequested: (listener) => subscribe(closeListeners, listener),
   confirmClose: () => ipcRenderer.send(CHANNELS.confirmClose),
+  restartWithSoftwareRendering: (project: string | null) => ipcRenderer.invoke(CHANNELS.restartWithSoftwareRendering, project) as Promise<boolean>,
 };
 
 contextBridge.exposeInMainWorld(PLATFORM_GLOBAL, api);

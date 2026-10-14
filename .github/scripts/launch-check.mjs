@@ -1,16 +1,20 @@
 #!/usr/bin/env node
 // The launch check (testing.md 9.1): starts the application once in test mode, hidden, and says how far it came:
-// whether its window loaded, and whether its engine worker opened a GPU device, on which adapter.
+// whether its window loaded, whether its engine worker opened a GPU device, on which adapter, and whether it
+// computed the start-up project.
 //
 //   node .github/scripts/launch-check.mjs [--app <executable>] [--result <file>] [--timeout <seconds>] [--settle <seconds>]
-//   node .github/scripts/launch-check.mjs --read <file> --require-device
+//                                         [--require-device | --require-evaluation]
+//   node .github/scripts/launch-check.mjs --read <file> [--require-device | --require-evaluation]
 //
 // Without --app it starts the build of this checkout (`electron .`, which needs `npm run build`); with --app the
 // packaged executable, for example release/win-unpacked/Orogen.exe. The application itself writes what it saw
 // (launch-check-driver.cjs) to the result file, and this program reads it.
 //
-// Exit codes: 0 the window loaded (with --require-device: and a device was opened); 1 the application did not
-// start, did not load or left no result; 3 --require-device, and no device was opened; 2 wrong arguments.
+// Exit codes: 0 the window loaded (with --require-device: and a device was opened; with --require-evaluation: and
+// the engine computed the start-up project on it, every node done); 1 the application did not start, did not load
+// or left no result; 3 --require-device or --require-evaluation, and no device was opened; 4 --require-evaluation,
+// and the device was opened but the start-up project was not computed; 2 wrong arguments.
 //
 // On the development machine this runs project code: start it through the guard, as every test is
 // (tools/guard --lock --mem=4G node .github/scripts/launch-check.mjs).
@@ -32,13 +36,13 @@ const SETTLE_MS = 500;
 
 function usage(problem) {
   console.error(`launch-check: ${problem}`);
-  console.error('usage: node .github/scripts/launch-check.mjs [--app <executable>] [--result <file>] [--timeout <seconds>] [--settle <seconds>] [--require-device]');
-  console.error('       node .github/scripts/launch-check.mjs --read <file> [--require-device]');
+  console.error('usage: node .github/scripts/launch-check.mjs [--app <executable>] [--result <file>] [--timeout <seconds>] [--settle <seconds>] [--require-device | --require-evaluation]');
+  console.error('       node .github/scripts/launch-check.mjs --read <file> [--require-device | --require-evaluation]');
   process.exit(2);
 }
 
 function parse(argv) {
-  const options = { app: null, result: null, read: null, timeout: 300, settle: 0, requireDevice: false };
+  const options = { app: null, result: null, read: null, timeout: 300, settle: 0, requireDevice: false, requireEvaluation: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = () => {
@@ -56,9 +60,10 @@ function parse(argv) {
       options.settle = Number(value());
       if (!(options.settle >= 0 && options.settle <= 600)) usage('--settle is a number of seconds from 0 to 600');
     } else if (arg === '--require-device') options.requireDevice = true;
+    else if (arg === '--require-evaluation') options.requireDevice = options.requireEvaluation = true;
     else usage(`"${arg}" is not understood`);
   }
-  if (options.read !== null && (options.app !== null || options.result !== null)) usage('--read reads a result and starts nothing: it goes with --require-device only');
+  if (options.read !== null && (options.app !== null || options.result !== null)) usage('--read reads a result and starts nothing: it goes with --require-device or --require-evaluation only');
   return options;
 }
 
@@ -190,9 +195,12 @@ function report(result, options) {
   if (result.gpuFeatureStatusAtLoad) line('info', `Chromium's GPU features when the window had loaded: ${JSON.stringify(result.gpuFeatureStatusAtLoad)}`);
   if (result.gpuFeatureStatus) line('info', `Chromium's GPU features at the end: ${JSON.stringify(result.gpuFeatureStatus)}`);
   if (result.gpuDevices) line('info', `Chromium's GPU devices: ${JSON.stringify(result.gpuDevices)}`);
+  const computed = computedProject(result.evaluation);
   if (result.evaluation) {
     const e = result.evaluation;
-    line('info', `the start-up project: ${e.timedOut ? 'not computed when the wait ended' : 'computed'} ${e.afterMs} ms after the window loaded; nodes ${JSON.stringify(e.nodes)}${e.view ? `, shown at ${e.view.resolution}` : ''}${(e.errors ?? []).length > 0 ? `; ${e.errors.join('; ')}` : ''}`);
+    line(options.requireEvaluation && !computed ? 'error' : 'info', `the start-up project: ${e.timedOut ? 'not computed when the wait ended' : computed ? 'computed' : 'not computed'} ${e.afterMs} ms after the window loaded; nodes ${JSON.stringify(e.nodes)}${e.view ? `, shown at ${e.view.resolution}` : ''}${(e.errors ?? []).length > 0 ? `; ${e.errors.join('; ')}` : ''}`);
+  } else if (options.requireEvaluation && attempts.at(-1)?.state === 'ready') {
+    line('error', 'the start-up project: the check recorded no evaluation of it');
   }
   if (result.lateAdapter) {
     const late = result.lateAdapter;
@@ -209,7 +217,19 @@ function report(result, options) {
   }
   summarise(lines);
   if (options.requireDevice && !device) return 3;
+  if (options.requireEvaluation && !computed) return 4;
   return 0;
+}
+
+/**
+ * Whether the engine worker computed the start-up project (one Mountain Range, shown): the evaluation ended, every
+ * node it ran is done, none failed, and the view was shown. What `--require-evaluation` requires.
+ */
+function computedProject(evaluation) {
+  if (!evaluation || evaluation.timedOut || !evaluation.idle) return false;
+  const nodes = evaluation.nodes ?? {};
+  const failed = Object.entries(nodes).some(([state, count]) => state !== 'done' && state !== 'idle' && count > 0);
+  return (nodes.done ?? 0) > 0 && !failed && (evaluation.errors ?? []).length === 0 && evaluation.view !== null && evaluation.view !== undefined;
 }
 
 async function main() {

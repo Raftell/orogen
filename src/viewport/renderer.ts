@@ -6,8 +6,9 @@
 // (rule 9). Everything derived from the content lives in textures of the renderer's own (rule 4): the light maps
 // of lighting.ts, the grids of minima and maxima, the lit picture before tone mapping. How much of that there is
 // follows the adapter (lightCapFor, multisampleLimitFor, pixelLimitFor; rule 13). A content the session steps
-// back to is not drawn at once (rule 2, setContent below). From near, the picture is of a smooth surface through
-// the field, which the pointer does not read (rule 12).
+// back to is not drawn at once, and after loans the picture is kept until the node's result comes (rule 2,
+// setContent and keep below). From near, the picture is of a smooth surface through the field, which the pointer
+// does not read (rule 12).
 
 import type {
   CameraState, GpuCaps, GpuContext, PickResult, TextureRef, ViewportContent, ViewportDisplay, ViewportRenderer, ViewportSize,
@@ -276,6 +277,13 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
     clearTimeout(hold);
     hold = null;
   }
+  // `keep`: the picture stays until the next content. What was withdrawn is only compared with what follows (its
+  // size, whether it was given), never drawn; a size given meanwhile is the canvas's when that content comes.
+  let keeping = false;
+  let withdrawn: { readonly height: { readonly width: number; readonly height: number } | null } | null = null;
+  let keptSize: ViewportSize | null = null;
+  /** The camera, the display or the size changed while the picture was kept: the content that ends it is drawn at once. */
+  let movedWhileKept = false;
 
   // Whether this window can present at all (7.5 rule 9). Measured under a virtual display: the first frame of a
   // WebGPU canvas costs the device. A device that is lost before any frame was confirmed is taken for that, and
@@ -660,10 +668,12 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
 
   function frame(): void {
     const waiting = afterFrame.splice(0);
-    if (hold !== null) {
-      // The picture is kept: the frame that was due, of the light maps' refinement, is asked for again when the hold ends.
+    if (hold !== null || keeping) {
+      // The picture is kept: the frame that was due, of the light maps' refinement, is asked for again when the
+      // hold ends or the next content comes.
       pending = false;
       for (const wake of waiting) wake();
+      settle();
       return;
     }
     try {
@@ -1059,6 +1069,8 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
       if (disposed) return;
       canvas = surfaceOf(next);
       context = null;
+      keptSize = null;
+      movedWhileKept ||= keeping;
       setSize(attached);
       configure();
       endHold();
@@ -1070,12 +1082,19 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
       canvas = null;
     },
     resize(next: ViewportSize): void {
+      // A canvas of another size holds no picture: while the picture is kept, the page stretches the one it has.
+      if (keeping) {
+        keptSize = next;
+        movedWhileKept = true;
+        return;
+      }
       setSize(next);
       endHold();
       schedule();
     },
     setCamera(next: CameraState): void {
       camera = next;
+      movedWhileKept ||= keeping;
       endHold();
       schedule();
     },
@@ -1090,6 +1109,7 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
           else if (moved) lighting.invalidateSun();
         }
       }
+      movedWhileKept ||= keeping;
       endHold();
       schedule();
     },
@@ -1098,16 +1118,21 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
     // Synchronous (7.5 rule 2): a frame binds the content that is current when it is drawn, and nothing made
     // from a view outlives the frame that made it.
     //
-    // A step back keeps the picture for a moment. When a node that lent its state settles, the session withdraws
-    // the loans by giving the content it showed before them, the very object, or none when it showed none; the
-    // node's result follows when its evaluation ends. Measured in a session: a frame is drawn in between, and it
-    // is the earlier terrain flashing up after the last step of an erosion. So that frame waits: for the content
-    // that follows, for a change of the camera, the display or the size, or the time of RendererOptions.holdMs,
-    // after which what the session gave is what is drawn (5.11 rule 5).
+    // A step back keeps the picture for a moment. When an evaluation ends without the result the viewport waited
+    // for, aborted or failed, the session gives the content it showed before, the very object, or none when it
+    // showed none (5.11 rule 5); an evaluation that follows at once usually brings another. So the frame of it
+    // waits: for the content that follows, for a change of the camera, the display or the size, or the time of
+    // RendererOptions.holdMs, after which what the session gave is what is drawn.
     setContent(next: ViewportContent | null): void {
-      const previous = content;
+      const previous: { readonly height: { readonly width: number; readonly height: number } | null } | null = keeping ? withdrawn : content;
       const back = frames > 0 && (next === null ? previous !== null : given.has(next));
       if (next) given.add(next);
+      const moved = keeping && movedWhileKept;
+      keeping = false;
+      withdrawn = null;
+      movedWhileKept = false;
+      if (keptSize) setSize(keptSize);
+      keptSize = null;
       content = next;
       generation++;
       heightChanged = true;
@@ -1118,7 +1143,7 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
       boundsExact = false;
       if (next?.overlay?.as !== 'heat') overlayRange = [0, 1];
       endHold();
-      if (!back || disposed) {
+      if (!back || moved || disposed) {
         schedule();
         return;
       }
@@ -1128,10 +1153,27 @@ export function createViewportRenderer(options: RendererOptions = {}): Viewport 
       }, holdMs);
     },
 
+    // The loans of a node were withdrawn and its result is on its way (7.5 rule 2). The lent texture goes back to
+    // the pool when this returns, and nothing else the session has is the picture: the one drawn of the last loan
+    // stays until the result comes, whatever the camera, the display or the size do meanwhile, which that frame
+    // then draws. A pick meanwhile finds nothing. The session ends the wait, with the result or, when the node
+    // failed or the evaluation ended without it, with what it showed before.
+    keep(): void {
+      if (disposed) return;
+      if (!keeping) withdrawn = content && { height: content.height && { width: content.height.width, height: content.height.height } };
+      keeping = true;
+      content = null;
+      generation++;
+      endHold();
+      settle();
+    },
+
     dispose(): void {
       if (disposed) return;
       disposed = true;
       endHold();
+      keeping = false;
+      withdrawn = null;
       content = null;
       context?.unconfigure();
       context = null;

@@ -5,7 +5,7 @@
 
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
-import type { DocProblem, EngineEvent, EngineSession, NodeRegistry } from '../../core/runtime.ts';
+import { foundNoAdapter, type DocProblem, type EngineEvent, type EngineSession, type NodeRegistry } from '../../core/runtime.ts';
 import type { PlatformApi, Preferences } from '../platform.ts';
 import type { DocState } from '../state/doc-store.ts';
 import type { EngineState } from '../state/engine-store.ts';
@@ -34,7 +34,9 @@ export type ShellDialog =
   | { readonly kind: 'errors' }
   | { readonly kind: 'gallery' }
   | { readonly kind: 'problems'; readonly file: string; readonly problems: readonly DocProblem[] }
-  | { readonly kind: 'failure'; readonly title: string; readonly message: string };
+  | { readonly kind: 'failure'; readonly title: string; readonly message: string }
+  /** The engine found no graphics device at all: why, what helps, and software rendering (8.7 rule 16). */
+  | { readonly kind: 'noDevice' };
 
 export interface ShownNotice extends Notice {
   readonly id: number;
@@ -69,6 +71,24 @@ export const DEVICE_LOST_NOTICE = 'The graphics device was lost and is being rec
 export const DEVICE_BACK_NOTICE = 'The graphics device is back';
 /** Said when the engine has a software adapter after it had the graphics card: everything still works, a hundred times slower. */
 export const SOFTWARE_ADAPTER_NOTICE = 'The engine is now on a software adapter, without the graphics card: previews and builds are many times slower. Restart Orogen to get the graphics card back';
+/** The words of 8.7 rule 16: what WebGPU needs, what helps, and what software rendering is for. */
+export const NO_DEVICE_TEXT = {
+  title: 'Orogen found no graphics device it can use',
+  why: 'Orogen computes and draws terrains on the graphics card, through WebGPU, and the system offered it none.',
+  needs: 'On Windows, WebGPU needs a graphics card with DirectX 12 and a current driver from its maker (NVIDIA, AMD or Intel). A remote desktop session or a virtual machine often has none. Install or update the driver, then choose Retry.',
+  software: 'Orogen can also restart with software rendering: the processor does the graphics card\'s work, many times slower. It is for opening and checking a project, not for builds. It lasts until Orogen is closed; the next start uses the graphics card again.',
+  onSoftware: 'This run already uses software rendering, and no software adapter was offered either.',
+} as const;
+
+/** Said when the main process has taken the request to restart with software rendering (8.7 rule 16). */
+export const SOFTWARE_RESTART_NOTICE = 'Orogen is restarting with software rendering';
+
+/**
+ * Whether the engine stopped because the platform offers it no graphics device at all, and never had one: the case
+ * the shell explains and offers software rendering for (8.7 rule 16). A device that was found and failed, and a
+ * recovery that failed after a device was ready, are others: Retry is for them.
+ */
+export const noGraphicsDevice = (device: EngineState['device']): boolean => device.state === 'failed' && device.caps === null && foundNoAdapter(device.message);
 
 /** What the shell asks of the dock while it is there. */
 export interface DockAccess {
@@ -140,6 +160,11 @@ export interface Shell {
   answerChanged(answer: ChangedAnswer): void;
   /** Answers the question the dialog of kind 'recover' asks: true restores what was kept, false gives it up. */
   answerRecover(restore: boolean): void;
+  /**
+   * The user chose software rendering (8.7 rule 16): the questions of leaving the project are asked, and when the
+   * project may be left the main process ends this run and starts another that opens it. Resolves with whether it was asked to.
+   */
+  restartWithSoftwareRendering(): Promise<boolean>;
   resetLayout(): void;
   /** The dock, while it is there: what `AppServices.showPanel` reaches. Null when it is gone. */
   attachDock(dock: DockAccess | null): void;
@@ -393,6 +418,8 @@ export function createShell(options: ShellOptions): Shell {
   /** Whether the engine had the graphics card in this run, and whether its last device was a software adapter. */
   let hardwareSeen = false;
   let onSoftware = false;
+  /** Whether the explanation of an engine without a device was opened by itself in this run: once at the most. */
+  let explained = false;
   function onEngineEvent(event: EngineEvent): void {
     if (event.type === 'engine-error') {
       // A recovery that failed says so in the engine's words: "is being recovered" is no longer true.
@@ -402,6 +429,12 @@ export function createShell(options: ShellOptions): Shell {
         recovering = false;
       }
       notify({ level: event.fatal ? 'error' : 'warning', message: event.fatal ? `The engine stopped: ${event.message}` : event.message });
+      // 8.7 rule 16: an engine that never had a device and was given none says nothing a newcomer can act on. The
+      // explanation comes by itself once, unless another question stands; the status bar leads to it after that.
+      if (event.fatal && foundNoAdapter(event.message) && engineState.getState().device.caps === null && !explained && state.getState().dialog === null) {
+        explained = true;
+        showDialog({ kind: 'noDevice' });
+      }
     } else if (event.type === 'device-lost') {
       recovering = true;
       lostNotice = notify({ level: 'warning', message: DEVICE_LOST_NOTICE, detail: event.message });
@@ -478,6 +511,23 @@ export function createShell(options: ShellOptions): Shell {
     answerBuilding,
     answerChanged,
     answerRecover,
+    async restartWithSoftwareRendering() {
+      if (state.getState().dialog?.kind === 'noDevice') state.setState({ dialog: null });
+      try {
+        // As for closing the window: the project is left with the user's consent, and nothing is kept of it.
+        if (!await project.mayLeave('close')) return false;
+        await project.closing();
+        if (!await platform.restartWithSoftwareRendering(doc.getState().path)) {
+          notify({ level: 'error', message: 'Orogen could not restart with software rendering' });
+          return false;
+        }
+      } catch (thrown) {
+        notify({ level: 'error', message: 'Orogen could not restart with software rendering', detail: messageOf(thrown) });
+        return false;
+      }
+      notify({ level: 'info', message: SOFTWARE_RESTART_NOTICE });
+      return true;
+    },
     resetLayout: () => runner.run('view.resetLayout'),
     attachDock(handle) {
       dock = handle;

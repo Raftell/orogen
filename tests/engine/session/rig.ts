@@ -139,13 +139,13 @@ export type RendererCall =
   | { readonly call: 'init'; readonly gpu: GpuContext }
   | { readonly call: 'setContent'; readonly content: ViewportContent | null }
   | { readonly call: 'attach'; readonly canvas: unknown; readonly size: ViewportSize }
-  | { readonly call: 'detach' | 'dispose' }
+  | { readonly call: 'detach' | 'dispose' | 'keep' }
   | { readonly call: 'resize' | 'setCamera' | 'setDisplay'; readonly value: unknown }
   | { readonly call: 'pick'; readonly x: number; readonly y: number };
 
 export interface RecordingRenderer extends ViewportRenderer {
   readonly calls: RendererCall[];
-  /** What the session last told it to draw. */
+  /** What the session last told it to draw; null as well while it keeps its picture (`keep`). */
   readonly content: ViewportContent | null;
   /** How often setContent was called. */
   readonly switches: number;
@@ -179,6 +179,10 @@ export function recordingRenderer(): RecordingRenderer {
       content = next;
       switches++;
       calls.push({ call: 'setContent', content: next });
+    },
+    keep() {
+      content = null;
+      calls.push({ call: 'keep' });
     },
     attach(canvas, size) { calls.push({ call: 'attach', canvas, size }); },
     detach() { calls.push({ call: 'detach' }); },

@@ -116,7 +116,8 @@ jobs:
           if-no-files-found: ignore
 
   # The Windows package, unsigned (testing.md 9.1): the application folder and the portable executable, each an
-  # artifact of the run under its own name, and one start of the packaged application on the runner.
+  # artifact of the run under its own name, a start of the packaged application on the runner as it is, and one on
+  # the software adapter, which proves its engine worker.
   package-windows:
     runs-on: windows-latest
     timeout-minutes: 30
@@ -156,10 +157,19 @@ jobs:
       # application does not load its window.
       - name: Start the packaged application
         run: node .github/scripts/launch-check.mjs --app release/win-unpacked/Orogen.exe --result test-output/launch-check/packaged.json
-      # Whether Electron offers a WebGPU adapter on a runner without a GPU is not yet known: said, not required.
+      # The hardware attempt. Measured on windows-latest: Chromium offers WebGPU no adapter where the only one is
+      # WARP ("webgpu": "unavailable_software"), so this says what a user without a usable GPU sees: a warning.
       - name: Its engine opens a GPU device
         continue-on-error: true
         run: node .github/scripts/launch-check.mjs --read test-output/launch-check/packaged.json --require-device
+      # The engine path of the packaged application, on the software adapter a user restarts with (SwiftShader,
+      # runtime.md 1.6, 8.7 rule 16), as the electron-kernels job starts the application on Linux: the engine worker
+      # loads from the archive, opens a device and computes the start-up project. A regression there fails the job.
+      - name: Its engine computes on the software adapter
+        run: node .github/scripts/launch-check.mjs --app release/win-unpacked/Orogen.exe --result test-output/launch-check/packaged-software.json --require-evaluation --timeout 600
+        env:
+          OROGEN_ELECTRON_GPU: software
+          OROGEN_LAUNCH_CHECK_EVALUATION_MS: '300000'
       # The portable executable unpacks itself and starts the same application. Not required until it has passed here.
       - name: Start the portable executable
         continue-on-error: true

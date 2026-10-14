@@ -246,6 +246,8 @@ input, textarea { user-select: text; }
 .og-palette-item[aria-selected='true'] .og-key { border-color: color-mix(in srgb, currentColor 40%, transparent); color: inherit; }
 
 /* ---- the shell's dialogs ---- */
+.og-dialog-text { margin: 0; user-select: text; }
+.og-dialog-text + .og-dialog-text { margin-top: var(--og-space-4); }
 .og-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--og-space-2) var(--og-space-6); margin: 0; user-select: text; }
 .og-fact { display: contents; }
 .og-fact > dt { color: var(--og-text-secondary); }

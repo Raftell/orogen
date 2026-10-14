@@ -28,6 +28,14 @@ const TOP = { kind: 'top', center: [0.5, 0.5], span: 1 } as const;
 const SQUARE = { width: 800, height: 800, dpr: 1 };
 /** One step of 255 is the rounding of the canvas; the dither adds half a step. */
 const STEP = 2;
+/**
+ * A software adapter draws every frame on the CPU, the whole picture each time, and the light maps are refined
+ * over many frames (runtime.md 7.5 rule 13): the tests that redraw most run there with a quarter of the field's
+ * texels and a sixth of the canvas's pixels (testing.md 9.3). What each holds does not depend on the size; on a
+ * GPU they keep theirs. On WARP the four took 117 to more than 300 s each.
+ */
+const SOFTWARE = (await testGpu()).caps.software;
+const SMALL = { width: 640, height: 400, dpr: 1 };
 
 async function withView(body: (rig: ViewRig) => Promise<void>, size = SIZE): Promise<void> {
   const rig = await startView({ size });
@@ -383,8 +391,10 @@ test('the normals are the terrain\'s slopes in metres: a ramp is shaded by its p
       const facing = Math.max(0, (-slope * Math.cos(e) * Math.cos(a) + Math.sin(e)) / Math.hypot(slope, 1));
       return encode(Math.min(1, 0.4 * (0.22 + 1.05 * facing)));
     };
+    // A plane: its slope is the same at any resolution.
+    const resolution = SOFTWARE ? 257 : 1009;
     for (const [terrainSize, heightRange] of [[4032, 1008], [1008, 1008], [8000, 400]] as const) {
-      await rig.show(makeDoc({ range: { type: 'generate/gradient', params: { angle: 0 } } }, { height: HEIGHT }, { terrainSize, heightRange, buildResolution: 1009, previewLevel: 0 }));
+      await rig.show(makeDoc({ range: { type: 'generate/gradient', params: { angle: 0 } } }, { height: HEIGHT }, { terrainSize, heightRange, buildResolution: resolution, previewLevel: 0 }));
       for (const [verticalScale, sunAzimuth, sunElevation] of [[1, 0, 35], [1, 180, 35], [2, 180, 35], [0.5, 0, 60], [1, 90, 20]] as const) {
         rig.setDisplay({ verticalScale, showSea: false, sunAzimuth, sunElevation, topStyle: 'hillshade' });
         const middle = region(await rig.picture(), 0.4, 0.4, 0.6, 0.6);
@@ -431,13 +441,20 @@ test('a mountain casts its shadow away from the sun, by the directions of engine
   });
 });
 
+/** The field of the tests that refine light maps, its grid, and a camera that sees it whole: one picture at either size. */
+const REFINED = SOFTWARE ? { field: 1009, grid: 1024 } : { field: 2017, grid: 2048 };
+const refinedCamera = (field: number) => {
+  const s = (field - 1) / 2016;
+  return { kind: 'orbit', target: [1008 * s, 1008 * s, 100 * s], yaw: 300, pitch: 30, distance: 3200 * s, fovY: 35 } as const;
+};
+
 test('the light maps are refined over frames of their own, and then nothing more is drawn', async () => {
   await withView(async (rig) => {
-    rig.setCamera({ kind: 'orbit', target: [1008, 1008, 100], yaw: 300, pitch: 30, distance: 3200, fovY: 35 });
+    rig.setCamera(refinedCamera(REFINED.field));
     const before = rig.renderer.state.frames;
-    await rig.show(rangeDoc(2017));
+    await rig.show(rangeDoc(REFINED.field));
     const state = rig.renderer.state;
-    assert.equal(state.lightSize, 2048);
+    assert.equal(state.lightSize, REFINED.grid);
     assert.ok(state.frames - before >= 3, `the first frame shows the coarse maps, later ones the full grid: ${state.frames - before} frames`);
     const settled = await rig.picture();
     // A change of the sun is answered in the next frame and refined after it.
@@ -449,19 +466,22 @@ test('the light maps are refined over frames of their own, and then nothing more
     const done = rig.renderer.state.frames;
     await new Promise((resolve) => setTimeout(resolve, 150));
     assert.equal(rig.renderer.state.frames, done);
-    assert.ok(rig.renderer.state.reservedBytes < 400 * 2 ** 20, `the renderer holds ${Math.round(rig.renderer.state.reservedBytes / 2 ** 20)} MB for a field of 2017`);
-  });
+    assert.ok(rig.renderer.state.reservedBytes < 400 * 2 ** 20, `the renderer holds ${Math.round(rig.renderer.state.reservedBytes / 2 ** 20)} MB for a field of ${REFINED.field}`);
+  }, SOFTWARE ? SMALL : SIZE);
 });
 
 test('the share of a frame that refines the light maps follows the device: by its clock where it has one, by the wall clock where it has none; the maps are the same', async (t) => {
-  const camera = { kind: 'orbit', target: [1008, 1008, 100], yaw: 300, pitch: 30, distance: 3200, fovY: 35 } as const;
+  // On a software adapter there is no device's clock under either profile's tests, and every frame is over its
+  // time at once: the share is at its least after a few frames, which two moves of the sun over the smaller field
+  // show as well as four over the larger.
+  const camera = refinedCamera(REFINED.field);
   const drawn = async (timeBakes: boolean): Promise<{ picture: Awaited<ReturnType<ViewRig['picture']>>; loads: number }> => {
-    const rig = await startView({ renderer: { timeBakes } });
+    const rig = await startView({ renderer: { timeBakes }, ...(SOFTWARE ? { size: SMALL } : {}) });
     try {
       rig.setCamera(camera);
-      await rig.show(rangeDoc(2017));
+      await rig.show(rangeDoc(REFINED.field));
       // The sun moves a few times: the frames that refine are timed, and the share of the next follows.
-      for (const sunAzimuth of [100, 140, 180, 195]) {
+      for (const sunAzimuth of SOFTWARE ? [100, 180] : [100, 140, 180, 195]) {
         rig.setDisplay({ verticalScale: 1, showSea: true, sunAzimuth, sunElevation: 38 });
         await rig.picture();
       }
@@ -487,11 +507,13 @@ test('a draft during a gesture is shown as it comes and refined when the gesture
     const doc = (height: number, view = HEIGHT) => makeDoc({
       range: { type: 'generate/mountain-range', params: { height } },
       missing: { type: 'io/import-field', params: { file: '/no/such/heights.png' } },
-    }, { height: view }, { buildResolution: 2017, previewLevel: 1 });
+    }, { height: view }, { buildResolution: SOFTWARE ? 1009 : 2017, previewLevel: 1 });
+    // The preview is level 1 of the ladder, and its light maps the power of two at or above it.
+    const preview = SOFTWARE ? 505 : 1009, grid = SOFTWARE ? 512 : 1024;
     rig.setCamera({ kind: 'orbit', target: [2016, 2016, 250], yaw: 300, pitch: 30, distance: 6500, fovY: 35 });
     await rig.show(doc(1));
     const full = await rig.picture();
-    assert.equal(rig.renderer.state.lightSize, 1024);
+    assert.equal(rig.renderer.state.lightSize, grid);
 
     // A gesture: the document changes, and a coarser level of the ladder is shown.
     rig.session.beginGesture();
@@ -499,14 +521,14 @@ test('a draft during a gesture is shown as it comes and refined when the gesture
     rig.session.setDocument(doc(0.5), 100);
     await rig.until(() => rig.events.slice(from).some((e) => e.type === 'view-updated' && e.revision === 100), 'the draft');
     const draft = rig.events.slice(from).find((e) => e.type === 'view-updated')!;
-    assert.ok(draft.type === 'view-updated' && draft.draft && draft.resolution < 1009, `a draft at ${JSON.stringify(draft)}`);
+    assert.ok(draft.type === 'view-updated' && draft.draft && draft.resolution < preview, `a draft at ${JSON.stringify(draft)}`);
     const coarse = await rig.picture();
-    assert.ok(rig.renderer.state.lightSize < 1024, 'the light maps follow the size of what is shown');
+    assert.ok(rig.renderer.state.lightSize < grid, 'the light maps follow the size of what is shown');
     assert.ok(difference(coarse, full) > 0.3, 'half as high is another picture');
     rig.session.endGesture();
     await rig.until(() => rig.events.slice(from).some((e) => e.type === 'view-updated' && e.revision === 100 && !e.draft), 'the refinement');
     const refined = await rig.picture();
-    assert.equal(rig.renderer.state.lightSize, 1024);
+    assert.equal(rig.renderer.state.lightSize, grid);
     assert.ok(difference(refined, coarse) < difference(refined, full) + 5);
 
     // The view names a node that fails: nothing new is shown, and what was on screen stays (7.3 rule 6).
@@ -518,7 +540,7 @@ test('a draft during a gesture is shown as it comes and refined when the gesture
     assert.equal(rig.events.slice(failing).some((e) => e.type === 'view-updated'), false);
     assert.ok(difference(await rig.picture(), refined) < 0.05, 'the last picture stays');
     assert.ok(rig.renderer.state.frames - frames <= 1);
-  });
+  }, SOFTWARE ? SMALL : SIZE);
 });
 
 test('the GPU\'s end of a frame that never comes is nobody\'s unhandled rejection: a device whose process went answers so', async () => {

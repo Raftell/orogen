@@ -514,7 +514,8 @@ export function createSession(opts: {
       settings: request.doc.settings,
     } : null;
     // The view targets are delivered as they are published (5.2, staged delivery), and the session takes a handle
-    // of its own on each: the result of a node whose loans were on screen is drawn from then on (7.5 rule 2).
+    // of its own on each: the result of a node whose loans were on screen is drawn from then on, and from the
+    // withdrawal of its loans to then the renderer keeps their picture (7.5 rule 2).
     const held: (AnyFieldHandle | null)[] = request.targets.map(() => null);
     let result: EvaluateResult | null = null;
     try {
@@ -528,6 +529,11 @@ export function createSession(opts: {
           if (e.type === 'node-done' && !e.cached) run.ran.push(e.nodeId);
           emit(e);
           if (thumbnails && e.type === 'eval-start' && !run.controller.signal.aborted) leaveOutSlow(run, e);
+          // A node whose loans were withdrawn has no result to follow them after all (5.11 rule 5, 7.5 rule 2).
+          if (loanView && !lost && !disposed && (e.type === 'node-error' || e.type === 'node-skipped')) {
+            const failed = e.type === 'node-error' ? e.error.nodeId : e.nodeId;
+            guarded(() => binder.failed(failed));
+          }
         },
         ...(loanView ? {
           onLoans: (nodeId: string, loans: Readonly<Record<string, TextureRef>> | null) => {

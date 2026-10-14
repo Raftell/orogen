@@ -177,6 +177,7 @@ and at the right the inspector, with the node library and the build panel as two
 
 1. **Read the status bar** at the foot of the window: `Ready` and the name of your graphics card. `Software
    adapter: everything is slow` means Orogen is not on the card. `Graphics device failed` has a **Retry** button.
+   `No graphics device` means Windows offered Orogen no card it can use: a window says why, and what helps.
 2. **Open an example.** In the **Library** panel, at the lower right: **Examples**, **Open** on *First Terrain*
    (three nodes) or *Alpine Range* (twenty-one).
 3. **Look.** Drag in the viewport to turn the camera, turn the wheel to come nearer, `F6` for the view from

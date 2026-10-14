@@ -19,6 +19,7 @@ function fakeBridge(calls: Call[], preferences: Preferences): PlatformApi {
     gpuProfile: 'core',
     testMode: true,
     launchProject: '/projects/open-me.orogen',
+    softwareRendering: false,
     openProjectDialog: async () => { said('openProjectDialog'); return '/projects/a.orogen'; },
     saveProjectDialog: async (suggestedPath) => { said('saveProjectDialog', suggestedPath); return null; },
     openFileDialog: async (extensions) => { said('openFileDialog', extensions); return '/images/height.png'; },
@@ -40,6 +41,7 @@ function fakeBridge(calls: Call[], preferences: Preferences): PlatformApi {
     onMenuCommand: (listener) => { menu.add(listener); return () => void menu.delete(listener); },
     onCloseRequested: () => () => undefined,
     confirmClose: () => said('confirmClose'),
+    restartWithSoftwareRendering: async (project) => { said('restartWithSoftwareRendering', project); return true; },
     // What the main process does when a menu entry is chosen. No member of PlatformApi: reached by the test alone.
     ...{ choose: (commandId: string) => { for (const listener of [...menu]) listener(commandId); } },
   };

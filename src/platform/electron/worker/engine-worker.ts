@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { nodes } from '../../../core/nodes/index.ts';
 import {
-  budgetBytes, createEngine, createRegistry, createSession, DEFAULT_PREFERENCES, GpuUnavailableError, openFirstDevice, openGpu, serveSession,
+  budgetBytes, createEngine, createRegistry, createSession, DEFAULT_PREFERENCES, GpuUnavailableError, NO_WEBGPU, openFirstDevice, openGpu, serveSession,
   type ClientMessage, type GpuContext, type GpuProfile, type SessionPort, type WorkerMessage,
 } from '../../../core/runtime.ts';
 import { buildToFolder } from '../../../export/folder.ts';
@@ -97,7 +97,7 @@ const ENGINE_ROUNDS = 2;
 
 async function start(): Promise<void> {
   if (!navigator.gpu) {
-    fail('WebGPU is not available in this window');
+    fail(NO_WEBGPU);
     return;
   }
   for (let round = 1; ; round++) {

@@ -6,7 +6,7 @@ import { useStore } from 'zustand';
 import { Icon, isFailure } from '../ui/index.ts';
 import type { EngineState } from '../state/engine-store.ts';
 import { adapterName, failedNodes, formatBytes, formatDuration } from './format.ts';
-import type { Shell } from './shell.ts';
+import { noGraphicsDevice, type Shell } from './shell.ts';
 
 const PURPOSE: Readonly<Record<NonNullable<EngineState['evaluation']>['purpose'], string>> = {
   view: 'Computing', draft: 'Computing draft', thumbnails: 'Thumbnails', build: 'Building',
@@ -26,11 +26,14 @@ function Device(props: { readonly shell: Shell }) {
   const paused = useStore(shell.ctx.engineState, (state) => state.paused) || pausedHere;
   // 8.5: an engine that answers nothing sends no event either. "Ready" would be the last thing it said.
   const silent = useStore(shell.ctx.engineState, (state) => state.silent) && device.state !== 'starting' && device.state !== 'failed';
+  // 8.7 rule 16: no device at all is said as such, and Details explains it and offers software rendering.
+  const none = noGraphicsDevice(device);
   const text = silent ? 'Engine not responding'
     : device.state === 'starting' ? 'Starting graphics device'
       : device.state === 'lost' ? 'Graphics device lost, recovering'
-        : device.state === 'failed' ? 'Graphics device failed'
-          : paused ? 'Previews paused' : 'Ready';
+        : none ? 'No graphics device'
+          : device.state === 'failed' ? 'Graphics device failed'
+            : paused ? 'Previews paused' : 'Ready';
   return (
     <>
       <div className="og-status-item" data-status="device" data-state={device.state} data-silent={silent ? '' : undefined} title={silent ? 'The engine has not answered for several seconds. Engine > Restart Engine starts another; the project is not in the engine, so nothing of it is lost.' : device.message ?? undefined}>
@@ -38,6 +41,9 @@ function Device(props: { readonly shell: Shell }) {
         <span className={device.state === 'failed' || silent ? 'og-status-error' : paused && device.state === 'ready' ? 'og-status-warning' : 'og-status-strong'}>{text}</span>
         {device.state === 'failed' ? (
           <button type="button" className="og-status-button" data-command="engine.retryDevice" onClick={() => shell.runner.run('engine.retryDevice')}>Retry</button>
+        ) : null}
+        {none ? (
+          <button type="button" className="og-status-button" data-action="no-device" onClick={() => shell.showDialog({ kind: 'noDevice' })}>Details…</button>
         ) : null}
         {silent ? (
           <button type="button" className="og-status-button" data-command="engine.restart" onClick={() => shell.runner.run('engine.restart')}>Restart Engine</button>

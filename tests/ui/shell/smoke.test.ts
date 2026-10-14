@@ -4,6 +4,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
 
 import type { GraphDoc } from '../../../src/core/runtime.ts';
@@ -68,7 +69,8 @@ test('smoke: acceptance graph 01 opens from the command line and is shown', asyn
       return { path: doc.path, nodes: Object.keys(doc.doc.nodes), title: document.title, shown: engine.view.revision, sent: doc.engineRevision,
         node: engine.nodes.fbm?.state ?? 'none', dialog: orogenTest.shell.state.getState().dialog };
     })()`);
-    assert.ok(state.path.endsWith('/tests/graphs/01-generate.orogen'));
+    // The path the main process resolved, in the platform's own form (a drive and backslashes on Windows).
+    assert.equal(state.path, path.resolve(import.meta.dirname, '../../graphs/01-generate.orogen'));
     assert.deepEqual(state.nodes, ['fbm']);
     assert.equal(state.title, '01-generate - Orogen');
     assert.equal(state.shown, state.sent, 'engineState.view reports the revision of the opened project');

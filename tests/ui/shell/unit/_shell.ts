@@ -38,6 +38,9 @@ export interface FakePlatform extends PlatformApi {
   /** The pages `openDocument` finds: the others answer false, as a page the package lacks does. */
   documents: readonly string[];
   confirmed: number;
+  /** The projects `restartWithSoftwareRendering` was asked to open, in order; `restartAnswer` is what it answers. */
+  readonly restarts: (string | null)[];
+  restartAnswer: boolean;
   /** Fails the next write or read with this message. */
   failNext: string | null;
   /** What `statPath` says of each file that was written: its time moves with every write, here or by `touch`. */
@@ -54,7 +57,7 @@ export interface FakePlatform extends PlatformApi {
   requestOpen(file: string): void;
 }
 
-export function fakePlatform(options: { readonly launchProject?: string | null; readonly testMode?: boolean } = {}): FakePlatform {
+export function fakePlatform(options: { readonly launchProject?: string | null; readonly testMode?: boolean; readonly softwareRendering?: boolean } = {}): FakePlatform {
   const menuListeners = new Set<(commandId: string) => void>();
   const closeListeners = new Set<() => void>();
   const openListeners = new Set<(file: string) => void>();
@@ -63,6 +66,7 @@ export function fakePlatform(options: { readonly launchProject?: string | null; 
     gpuProfile: 'core',
     testMode: options.testMode ?? false,
     launchProject: options.launchProject ?? null,
+    softwareRendering: options.softwareRendering ?? false,
     files: new Map(),
     answers: { open: [], save: [], folder: [] },
     asked: [],
@@ -71,6 +75,8 @@ export function fakePlatform(options: { readonly launchProject?: string | null; 
     opened: [],
     documents: ['README.md', 'unreal-import.md', 'first-run-on-windows.md'],
     confirmed: 0,
+    restarts: [],
+    restartAnswer: true,
     failNext: null,
     times: new Map(),
     touch(file, text) {
@@ -163,6 +169,10 @@ export function fakePlatform(options: { readonly launchProject?: string | null; 
     onCloseRequested(listener) {
       closeListeners.add(listener);
       return () => void closeListeners.delete(listener);
+    },
+    async restartWithSoftwareRendering(project) {
+      platform.restarts.push(project);
+      return platform.restartAnswer;
     },
     confirmClose() {
       platform.confirmed++;
@@ -260,6 +270,8 @@ export interface Rig {
 export function createRig(options: {
   readonly launchProject?: string | null;
   readonly testMode?: boolean;
+  /** The run was started with software rendering (PlatformApi.softwareRendering). */
+  readonly softwareRendering?: boolean;
   readonly panels?: PanelDef[];
   readonly preferences?: Partial<Preferences>;
   /** How long a build that was told to stop is waited for; default the shell's own. */

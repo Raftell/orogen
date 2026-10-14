@@ -11,8 +11,8 @@ import { inspect, mountainDoc, ready, show, sleep, withApp } from './rig.ts';
 /** The members of PlatformApi (runtime.md 8.6), as the preload script exposes them. */
 const BRIDGE = [
   'chooseFolder', 'confirmClose', 'getPreferences', 'gpuProfile', 'launchProject', 'onCloseRequested', 'onMenuCommand', 'onOpenRequested', 'openBuildFile',
-  'openDocument', 'openExternal', 'openFileDialog', 'openProjectDialog', 'readRecovery', 'readTextFile', 'saveProjectDialog', 'setBuildActive', 'setPreferences',
-  'showInFolder', 'statPath', 'testMode', 'toProjectPath', 'writeRecovery', 'writeTextFile',
+  'openDocument', 'openExternal', 'openFileDialog', 'openProjectDialog', 'readRecovery', 'readTextFile', 'restartWithSoftwareRendering', 'saveProjectDialog',
+  'setBuildActive', 'setPreferences', 'showInFolder', 'softwareRendering', 'statPath', 'testMode', 'toProjectPath', 'writeRecovery', 'writeTextFile',
 ];
 
 test('pipeline: the page has the bridge and nothing of Node', async () => {

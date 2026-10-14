@@ -218,8 +218,19 @@ slow. If the engine comes back on a software adapter after it had the graphics c
 restarting Orogen brings the card back.
 
 **A graphics device that was not found is said too.** When the engine finds no adapter as it starts, it asks
-again after one second and after five. If there is still none, the status bar says *Graphics device failed*
-with a **Retry** button, which starts the engine anew.
+again after one second and after five. If there is still none, a window explains it: Orogen works through
+WebGPU, which on Windows needs a graphics card with DirectX 12 and a current driver from its maker; a remote
+desktop session or a virtual machine often has none. The status bar then says *No graphics device*, with
+**Retry**, which starts the engine anew (after the driver was installed, say), and **Details…**, which shows the
+window again. A device that was found and failed says *Graphics device failed* with **Retry**.
+
+**Software rendering** is offered in that window: **Restart with Software Rendering** asks what closing asks
+about unsaved changes, then ends Orogen and starts it again on Chromium's software adapter, with the project
+that was open. Everything works there and everything is slow, many times slower than on a graphics card: it is
+for opening and checking a project, not for builds. It lasts until Orogen is closed; the next start is on the
+graphics card again. (The window and the question are tested; the restart itself is tested on Linux only, and
+whether Chromium gives the software adapter on a Windows machine without a usable card is what the CI's
+Windows package check says.)
 
 **Unsaved work is kept for a run that ends badly.** A project with changes that are not saved is kept, in the
 application's own folder, three seconds after a change and at once when a build starts. If Orogen then ends

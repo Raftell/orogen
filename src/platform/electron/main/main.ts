@@ -11,7 +11,7 @@ import path from 'node:path';
 import { CHANNELS, PROJECT_EXTENSION, type LaunchInfo, type Preferences } from '../ipc.ts';
 import { readTextFile, writeFailure, writeTextFile } from './files.ts';
 import { buildFile, documentFile, externalUrl, statPath } from './open.ts';
-import { LaunchError, readLaunch, secondStartProject, type Launch } from './launch.ts';
+import { LaunchError, readLaunch, secondStartProject, softwareRelaunchArgs, type Launch } from './launch.ts';
 import { createLog } from './log.ts';
 import { menuTemplate } from './menu.ts';
 import { createPreferenceStore } from './preferences.ts';
@@ -223,7 +223,7 @@ async function start(): Promise<void> {
     });
   };
 
-  const info: LaunchInfo = { gpuProfile: launch.profile, testMode: launch.test, launchProject: launch.project };
+  const info: LaunchInfo = { gpuProfile: launch.profile, testMode: launch.test, launchProject: launch.project, softwareRendering: launch.software };
   ipcMain.on(CHANNELS.launchInfo, (event) => {
     event.returnValue = fromPage(event) ? info : null;
   });
@@ -339,6 +339,17 @@ async function start(): Promise<void> {
   listen(CHANNELS.confirmClose, () => {
     closing = true;
     win.close();
+  });
+  // 8.7 rule 16: the user chose software rendering, after the page asked about unsaved changes. The next run starts
+  // once this one has ended (`app.relaunch`), with the switch on its command line alone: the run after it is on the
+  // graphics card again. Test mode ends nothing and starts nothing, and answers as it would.
+  handle(CHANNELS.restartWithSoftwareRendering, (project: unknown) => {
+    if (project !== null && (typeof project !== 'string' || !path.isAbsolute(project))) return false;
+    if (launch.test) return true;
+    app.relaunch({ args: softwareRelaunchArgs(process.argv, { packaged: app.isPackaged }, project) });
+    closing = true;
+    win.close();
+    return true;
   });
   win.on('closed', () => setBuildActive(false));
 

@@ -1,7 +1,7 @@
 // The shell's own dialogs: the questions before a project is left (a build that runs, unsaved changes), before a
 // file is overwritten that another program changed, and about what a run before kept of an unsaved project; the
 // problems of a project that was opened, a file that could not be read or written, the list of errors with their
-// details, and what the application is. The pages of the Help menu are in Help.tsx.
+// details, what the application is, and why there is no graphics device. The pages of the Help menu are in Help.tsx.
 
 import { useStore } from 'zustand';
 
@@ -11,7 +11,7 @@ import { adapterName, baseName, failedNodes, formatBytes } from './format.ts';
 import { Gallery } from './Gallery.tsx';
 import { HelpDialog } from './Help.tsx';
 import { PreferencesDialog } from './Preferences.tsx';
-import type { Shell, ShellDialog } from './shell.ts';
+import { NO_DEVICE_TEXT, noGraphicsDevice, type Shell, type ShellDialog } from './shell.ts';
 import { APPLICATION } from './version.ts';
 
 function Unsaved(props: { readonly shell: Shell; readonly dialog: Extract<ShellDialog, { kind: 'unsaved' }> }) {
@@ -173,6 +173,35 @@ function Problems(props: { readonly shell: Shell; readonly dialog: Extract<Shell
   );
 }
 
+function NoDevice(props: { readonly shell: Shell }) {
+  const { shell } = props;
+  const software = shell.ctx.platform.softwareRendering;
+  const message = useStore(shell.ctx.engineState, (state) => state.device.message);
+  return (
+    <Dialog
+      open
+      name="no-device"
+      width={520}
+      title={NO_DEVICE_TEXT.title}
+      onClose={() => shell.closeDialog()}
+      actions={
+        <>
+          {software ? null : (
+            <Button className="og-dialog-actions-start" data-action="software" onClick={() => void shell.restartWithSoftwareRendering()}>Restart with Software Rendering</Button>
+          )}
+          <Button data-action="close" onClick={() => shell.closeDialog()}>Close</Button>
+          <Button variant="primary" data-action="retry" autoFocus onClick={() => { shell.closeDialog(); shell.runner.run('engine.retryDevice'); }}>Retry</Button>
+        </>
+      }
+    >
+      <p className="og-dialog-text" data-text="why">{NO_DEVICE_TEXT.why}</p>
+      <p className="og-dialog-text" data-text="needs">{NO_DEVICE_TEXT.needs}</p>
+      <p className="og-dialog-text" data-text="software">{software ? NO_DEVICE_TEXT.onSoftware : NO_DEVICE_TEXT.software}</p>
+      {message ? <pre className="og-list-detail" data-text="message">{message}</pre> : null}
+    </Dialog>
+  );
+}
+
 function Failure(props: { readonly shell: Shell; readonly dialog: Extract<ShellDialog, { kind: 'failure' }> }) {
   const { shell, dialog } = props;
   return (
@@ -203,6 +232,7 @@ function ErrorList(props: { readonly shell: Shell }) {
   const { engineState, doc, registry } = shell.ctx;
   const device = useStore(engineState, (state) => state.device);
   const nodes = useStore(engineState, (state) => state.nodes);
+  const none = noGraphicsDevice(device);
   const build = useStore(engineState, (state) => state.build);
   const held = useStore(doc, (state) => state.doc.nodes);
   const log = useStore(shell.state, (state) => state.log);
@@ -231,9 +261,11 @@ function ErrorList(props: { readonly shell: Shell }) {
           <li className="og-list-item" data-error="device">
             <Icon className="og-text-error" name="error" />
             <div className="og-list-main">
-              <div className="og-list-title">The graphics device could not be opened</div>
+              <div className="og-list-title">{none ? 'No graphics device was found' : 'The graphics device could not be opened'}</div>
+              {none ? <div className="og-list-note">{NO_DEVICE_TEXT.needs}</div> : null}
               {device.message ? <pre className="og-list-detail">{device.message}</pre> : null}
             </div>
+            {none ? <Button size="small" data-action="details" onClick={() => shell.showDialog({ kind: 'noDevice' })}>Details…</Button> : null}
             <Button size="small" onClick={() => shell.runner.run('engine.retryDevice')}>Retry</Button>
           </li>
         ) : null}
@@ -293,6 +325,7 @@ export function Dialogs(props: { readonly shell: Shell }) {
     case 'about': return <About shell={shell} />;
     case 'problems': return <Problems shell={shell} dialog={dialog} />;
     case 'failure': return <Failure shell={shell} dialog={dialog} />;
+    case 'noDevice': return <NoDevice shell={shell} />;
     case 'errors': return <ErrorList shell={shell} />;
     case 'preferences': return <PreferencesDialog shell={shell} />;
     case 'gallery': return <Gallery shell={shell} />;

@@ -19,6 +19,19 @@ export interface GpuContext {
 export class GpuUnavailableError extends Error {    // no adapter, or the device fails the checks of 1.4
   override name = 'GpuUnavailableError';
 }
+
+/** What `openGpu` fails with when the platform gives no adapter at all, alone or before its reason (1.1). */
+export const NO_ADAPTER = 'No WebGPU adapter is available';
+/** What the engine worker stops with in a window that has no WebGPU at all (8.3). */
+export const NO_WEBGPU = 'WebGPU is not available in this window';
+
+/**
+ * Whether an engine stopped because the platform offers no GPU device: no adapter, or no WebGPU. The shell
+ * explains that case and offers software rendering (8.7 rule 16); a device that was found and failed is another.
+ */
+export function foundNoAdapter(message: string | null): boolean {
+  return message !== null && (message === NO_WEBGPU || message === NO_ADAPTER || message.startsWith(`${NO_ADAPTER}:`));
+}
 export class DeviceLostError extends Error {        // thrown by every engine call on a lost device
   override name = 'DeviceLostError';
 }
@@ -53,9 +66,9 @@ export async function openGpu(gpu: GPU, opts: { profile: GpuProfile; log?: boole
   try {
     adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
   } catch (thrown) {
-    throw new GpuUnavailableError(`No WebGPU adapter is available: ${describe(thrown)}`);
+    throw new GpuUnavailableError(`${NO_ADAPTER}: ${describe(thrown)}`);
   }
-  if (!adapter) throw new GpuUnavailableError('No WebGPU adapter is available');
+  if (!adapter) throw new GpuUnavailableError(NO_ADAPTER);
 
   let device: GPUDevice;
   try {

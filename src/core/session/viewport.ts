@@ -52,6 +52,11 @@ export interface ViewportRenderer extends ViewportHost {
   /** Called once, and again after every device replacement. */
   init(gpu: GpuContext, ledger: { reserve(bytes: number, label: string): { release(): void } }): void;
   setContent(content: ViewportContent | null): void;
+  /**
+   * The content is withdrawn and the next one is on its way (7.5 rule 2): from now on the renderer uses no view of
+   * it, and it keeps the picture it has drawn until the next `setContent`, whatever else changes meanwhile.
+   */
+  keep(): void;
   dispose(): void;
 }
 
@@ -88,7 +93,9 @@ export interface ViewBinder {
   show(result: ShownResult | null): boolean;
   /**
    * The running node lends (or, with null, withdraws) its working state. A loan stands in for the published
-   * texture of the port the view names, when its kind is the kind the view asks for.
+   * texture of the port the view names, when its kind is the kind the view asks for. When the loans on screen are
+   * withdrawn, the node's result is what follows them: the renderer keeps its picture (`keep`) and is given no
+   * earlier content meanwhile (7.5 rule 2).
    */
   lend(view: LoanView, nodeId: string, loans: Readonly<Record<string, TextureRef>> | null): void;
   /**
@@ -98,6 +105,11 @@ export interface ViewBinder {
    * terrain back. The binder takes a handle of its own; `handle` stays the caller's.
    */
   deliver(view: LoanView, part: 'height' | 'overlay', handle: AnyFieldHandle): void;
+  /**
+   * The node ended without a result (`node-error`, `node-skipped`). When the picture was kept for its result after
+   * its loans, nothing follows them: what was drawn before them is drawn again (5.11 rule 5).
+   */
+  failed(nodeId: string): void;
   /** The evaluation under way has ended without a result to show: what `show` was last given is drawn again (5.11 rule 5). */
   revert(): void;
   /** The device is lost: the renderer draws nothing and the handles are dropped without being released (7.8 rule 1). */
@@ -139,6 +151,11 @@ export function createViewBinder(renderer: ViewportRenderer | null): ViewBinder 
   let base: ViewportContent | null = null;
   /** A loan is in the content the renderer has. */
   let lending = false;
+  /**
+   * The node whose loans were withdrawn while the renderer keeps their picture for its result; null when none.
+   * Its result (`deliver`), its failure, the end of the evaluation or another loan ends the wait.
+   */
+  let kept: string | null = null;
   /** The parts of the view a loan has stood in for since the last `show` or `revert`. */
   const lent = { height: false, overlay: false };
   /** The binder's own handles on what `deliver` put in a loan's place. */
@@ -153,6 +170,7 @@ export function createViewBinder(renderer: ViewportRenderer | null): ViewBinder 
     lent.height = false;
     lent.overlay = false;
     lending = false;
+    kept = null;
     base = content;
     return held;
   }
@@ -212,12 +230,16 @@ export function createViewBinder(renderer: ViewportRenderer | null): ViewBinder 
       const lentOverlay = view.overlay && over?.kind === (view.overlay.as === 'color' ? 'color' : 'field') ? over : null;
       if (!lentHeight && !lentOverlay) {
         if (lending) {
+          // The lent texture goes back to the pool after this call, and the node's result is what comes next: the
+          // content of before is not given, so no frame of it can be drawn while the node settles (7.5 rule 2).
           lending = false;
-          renderer?.setContent(base);
+          kept = nodeId;
+          renderer?.keep();
         }
         return;
       }
       lending = true;
+      kept = null;
       if (lentHeight) lent.height = true;
       if (lentOverlay) lent.overlay = true;
       renderer?.setContent({
@@ -251,13 +273,22 @@ export function createViewBinder(renderer: ViewportRenderer | null): ViewBinder 
         seaLevel: view.settings.seaLevel,
       };
       // While another loan stands the renderer keeps it; this content is what it steps back to.
-      if (!lending) renderer?.setContent(base);
+      if (!lending) {
+        kept = null;
+        renderer?.setContent(base);
+      }
       releaseHandles([previous]);
+    },
+
+    failed(nodeId) {
+      if (disposed || kept !== nodeId) return;
+      kept = null;
+      renderer?.setContent(base);
     },
 
     revert() {
       if (disposed) return;
-      const changed = lending || base !== content;
+      const changed = lending || kept !== null || base !== content;
       const stood = settle();
       if (changed) renderer?.setContent(content);
       releaseHandles(stood);

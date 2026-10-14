@@ -68,6 +68,11 @@ interface GpuContext {
 declare class GpuUnavailableError extends Error {}    // no adapter, or the device fails the checks of 1.4
 declare class DeviceLostError extends Error {}        // thrown by every engine call on a lost device
 
+declare const NO_ADAPTER: 'No WebGPU adapter is available';      // the message of rule 3 without an adapter, alone or before its reason
+declare const NO_WEBGPU: 'WebGPU is not available in this window';   // what the engine worker stops with where there is no navigator.gpu (8.3)
+/** Whether an engine stopped for one of the two: the platform gave it no GPU device at all (8.7 rule 16). */
+declare function foundNoAdapter(message: string | null): boolean;
+
 /** src/core/gpu/device.ts. The only code that calls requestAdapter() or requestDevice(). `log` prints the line of 1.3. */
 declare function openGpu(gpu: GPU, opts: { profile: GpuProfile; log?: boolean }): Promise<GpuContext>;
 
@@ -77,7 +82,7 @@ declare function createNodeGpu(opts?: { profile?: GpuProfile; adapter?: string }
 
 1. Nothing else creates a device: not a node, not a panel, not a test, not the viewport. Tests take the device from the harness (`testing.md`).
 2. `openGpu` calls `gpu.requestAdapter({ powerPreference: 'high-performance' })`, then `adapter.requestDevice()` with the profile's features and limits (1.2). It requests a new adapter for every device: an adapter is consumed by `requestDevice`, and a reused one returns a device that is already lost.
-3. `openGpu` rejects with `GpuUnavailableError` when `requestAdapter` returns `null` or when a check of 1.4 fails. The message names the missing item.
+3. `openGpu` rejects with `GpuUnavailableError` when `requestAdapter` returns `null` or when a check of 1.4 fails. The message names the missing item: `NO_ADAPTER` when there is no adapter, followed by `: <reason>` when `requestAdapter` threw.
 4. `openGpu` installs the `device.lost` handler that sets `lost` and `lostInfo` and calls the listeners, and an `uncapturederror` listener (5.8).
 5. In the application the engine worker calls `openGpu(navigator.gpu, { profile: 'max' })`. The environment variable `OROGEN_GPU_PROFILE=core` forces `core` for debugging, and `OROGEN_GPU_LOG=1` sets `log`. The main process reads the first, refuses to start on any value but `core` and `max`, and gives it to the page as `PlatformApi.gpuProfile` (8.6). It passes both to the worker by its environment: the renderer process inherits it, and a worker with Node integration reads `process.env` (measured in Electron 44.7.0).
 6. `createNodeGpu` defaults: `profile` from `OROGEN_GPU_PROFILE`, else `'max'`; `adapter` from `OROGEN_GPU_ADAPTER`, else none. It passes `log: true` when `OROGEN_GPU_LOG` is `1`.
@@ -218,9 +223,10 @@ replaces the first.
 | Linux | `enable-unsafe-webgpu` | WebGPU is off by default under X11 |
 | Linux | `enable-features=Vulkan` | measured: without it the adapter is SwiftShader, a software rasteriser, with no error. Not appended when `OROGEN_ELECTRON_GPU=software` (8.2): that is how a test asks for the software adapter |
 | Windows | `force_high_performance_gpu` and `force-high-performance-gpu` | selects the discrete GPU on a machine with two. Both spellings are appended; which one Electron 44 honours is not verified. No effect on the target machine, which has one GPU |
+| Windows, software only | `enable-unsafe-webgpu`, `enable-unsafe-swiftshader`, `use-webgpu-adapter=swiftshader` | appended when `OROGEN_ELECTRON_GPU=software`, or in a run the user restarted with software rendering (`--software-rendering`, 8.7 rule 16). Measured on `windows-latest`, which has only WARP: Chromium reports `"webgpu": "unavailable_software"` and the engine is given no adapter, twice. SwiftShader is Vulkan, and the Windows distribution carries it (`vk_swiftshader.dll`, `vulkan-1.dll`); the first switch passes the blocklist, the second allows SwiftShader, the third asks WebGPU for it. Whether the three are enough there is what the `package-windows` job says (`testing.md` 9.1); not measured on a Windows machine here |
 
-Windows needs no switch for WebGPU itself: it is on by default with the D3D12
-backend.
+Windows needs no switch for WebGPU itself on a graphics card: it is on by
+default with the D3D12 backend.
 
 If `caps.software` is true on Linux with the switches above, the documented
 alternative set is `enable-unsafe-webgpu`, `ozone-platform=x11`,
@@ -1470,7 +1476,7 @@ A node inside `ctx.loop` can lend its working state to the viewer through
 2. When the loans changed, the evaluator calls `EvaluateOptions.onLoans(nodeId, loans)` (5.2) before it waits, with one `TextureRef` per lent port. When at least 100 ms have also passed since the last one, `node-preview` is emitted with the ports that have a loan.
 3. A viewer may draw a lent texture in frames it submits while the loan is valid. It reads by `uv`, so a loan of any size works: the coarse levels of a coarse-to-fine run are shown as they are.
 4. Loans end when the node settles, or earlier when it releases a field it has lent. The evaluator withdraws them synchronously, with `onLoans(nodeId, null)`, before the fields return to the pool; the viewer is on the same thread and switches in that call (7.5).
-5. Lent content is never cached, never gets a thumbnail and is not in the result. After an abort or an error the viewer shows what it showed before. After a node that settled, its published result takes the place of its loans as soon as it is delivered, while the rest of the evaluation runs (7.5 rule 2).
+5. Lent content is never cached, never gets a thumbnail and is not in the result. After an abort or an error the viewer shows what it showed before. After a node that settled, its published result takes the place of its loans as soon as it is delivered, while the rest of the evaluation runs; between the withdrawal and the delivery the viewer keeps the picture of the loans (7.5 rule 2).
 
 ### 5.12 Thumbnails
 
@@ -1973,6 +1979,8 @@ interface ViewportRenderer extends ViewportHost {
   /** Called once, and again after every device replacement. */
   init(gpu: GpuContext, ledger: { reserve(bytes: number, label: string): { release(): void } }): void;
   setContent(content: ViewportContent | null): void;
+  /** The content is withdrawn and the next one is on its way: no view of it is used from now on, and the picture drawn stays until the next setContent (rule 2). */
+  keep(): void;
   dispose(): void;
 }
 ```
@@ -1994,7 +2002,7 @@ An orbit camera with `yaw` 0 looks along +X and has +Y on its right, as in
 Unreal, whose frame is +X forward, +Y right, +Z up.
 
 1. **Same device, no copy.** The renderer draws from the engine's textures. Nothing is read back to display a terrain.
-2. **`setContent` is synchronous.** When it returns, the renderer uses no view of the previous content, which the session may release at once. The session calls it when a result is shown; when a loan for a bound port begins, changes or ends, which the evaluator reports through `onLoans` (5.2, 5.11), with the lent texture in place of the published one; when the result of a node whose loans were shown is delivered, below; and with `null` when the device is lost. A loan is shown only for the node and port the view names and only when its kind is the kind the view asks for (7.4 rule 1); otherwise the shown content stays. **A step back keeps the picture.** When the loans of a node end, the lent texture goes back to the pool, and the session gives the renderer the content it showed before them, the same object, or `null` when it showed none. Measured in a session with the renderer of `src/viewport/`: a frame is drawn in between, which is the earlier terrain flashing up after the last step of an erosion. A renderer that is given a content it was given before, or `null` after a content, therefore keeps the picture it has drawn, without using any view of what it replaced: until the next content, until the camera, the display or the size changes, and for 400 ms at the longest, after which it draws what it was given (5.11 rule 5). **The node's result follows its loans.** The session evaluates the view with staged delivery (5.2) and takes a handle of its own on each view target as it is delivered. When the target is the port a loan stood in for, the session gives the renderer a content with that node's published result in the loan's place as soon as it is delivered, which is in the task in which the node settles or a mask blend or a conversion later (5.5 step 4), a time the kept picture covers, and with the other part of the view as it was shown: the nodes that still run after a simulation, the masks and colours drawn over it, do not bring the earlier terrain back for the seconds they take, as they did when the step back was all the renderer had until the whole evaluation was shown. That content stays until the evaluation's result is shown in one call (7.4 rule 2), or until the evaluation ends without one, aborted or with a view target failed: the session then gives the renderer the shown content again, the same object, and releases the handle it held meanwhile (5.11 rule 5). A target no loan stood in for is not drawn before the result.
+2. **`setContent` is synchronous.** When it returns, the renderer uses no view of the previous content, which the session may release at once; the same holds for `keep`. The session calls `setContent` when a result is shown; when a loan for a bound port begins or changes, which the evaluator reports through `onLoans` (5.2, 5.11), with the lent texture in place of the published one; when the result of a node whose loans were shown is delivered, below; when such a node ends without a result, below; and with `null` when the device is lost. A loan is shown only for the node and port the view names and only when its kind is the kind the view asks for (7.4 rule 1); otherwise the shown content stays. **The picture of the loans is kept for the node's result.** When the loans on screen end, the lent texture goes back to the pool, and the session calls `keep` instead of giving the renderer anything: not the content it showed before them and not `null`. When the session gave the content of before at that moment and the node's result once it was delivered, the renderer had to hold that content back for the time in between, which is the adapter's: on lavapipe and on WARP (CI) frames of the earlier terrain were drawn there, the earlier terrain flashing up after the last step of an erosion. What is never given cannot be drawn, on any adapter. A renderer that is told to `keep` draws nothing more until the next `setContent`: a change of the camera, the display or the size meanwhile is drawn with that content, the backing size of the canvas changes with it, and a pick meanwhile resolves `null`. **The node's result follows its loans.** The session evaluates the view with staged delivery (5.2) and takes a handle of its own on each view target as it is delivered. When the target is the port a loan stood in for, the session gives the renderer a content with that node's published result in the loan's place as soon as it is delivered, which is in the task in which the node settles or a mask blend or a conversion later (5.5 step 4), and with the other part of the view as it was shown: the nodes that still run after a simulation, the masks and colours drawn over it, do not bring the earlier terrain back for the seconds they take. That content stays until the evaluation's result is shown in one call (7.4 rule 2), or until the evaluation ends without one, aborted or with a view target failed: the session then gives the renderer the shown content again, the same object, and releases the handle it held meanwhile (5.11 rule 5). A target no loan stood in for is not drawn before the result. **When no result follows.** When the node whose loans were withdrawn ends with `node-error` or `node-skipped` (5.10), the session gives the renderer at once the content it showed before those loans, the same object, while the rest of the evaluation runs (5.11 rule 5). **A step back keeps the picture.** A renderer that is given a content it was given before, or `null` after a content, keeps the picture it has drawn, without using any view of what it replaced: until the next content, until the camera, the display or the size changes, and for 400 ms at the longest, after which it draws what it was given. An evaluation that is aborted for an edit is usually followed at once by another, whose loans or result take the place of that picture. When the camera, the display or the size changed while the picture was kept by `keep`, the content that ends it is drawn at once, even one given before.
 3. **Reading fields.** Fields are bound with `sampleType: 'unfilterable-float'` and read with `textureLoad`, never with a filtering sampler. A field is addressed by `uv` with the vertex-centred mapping `texel = uv × (size − 1)` and interpolated by hand, so the height and the overlay may differ in size, and a loan of any size can stand in for either.
 4. **Read-only.** The renderer never writes, clears or destroys a pool texture. Whatever it derives from the content (pyramids, light maps) lives in textures of its own, registered with `ledger.reserve`.
 5. **Its own encoder.** The renderer encodes and submits its frames itself. It follows the error-scope rule (5.8) and estimates no submission of its own above the preview slice target (3.5): longer work is spread over frames.
@@ -2158,7 +2166,9 @@ new BrowserWindow({
 It reads `OROGEN_TEST`, `OROGEN_TEST_DRIVER`, a project file as the first
 argument, `OROGEN_GPU_PROFILE` (1.1) and `OROGEN_ELECTRON_GPU`; what each does
 is stated there and nowhere else. The one effect on this document is the
-switch that `OROGEN_ELECTRON_GPU=software` leaves out on Linux (1.6).
+switches that `OROGEN_ELECTRON_GPU=software` selects (1.6): the same as those of
+the command-line switch `--software-rendering`, which no test sets and a run the
+user restarted with software rendering has (8.7 rule 16, `launch.ts`).
 
 ### 8.3 The engine worker
 
@@ -2528,6 +2538,7 @@ interface PlatformApi {
   readonly gpuProfile: GpuProfile;
   readonly testMode: boolean;                            // OROGEN_TEST=1: the page assigns window.orogenTest (testing.md 2.9)
   readonly launchProject: string | null;                 // the project file given as the first argument, absolute; the page opens it at start-up
+  readonly softwareRendering: boolean;                   // this run asked Chromium for its software adapter (1.6): `--software-rendering`, or OROGEN_ELECTRON_GPU=software
   openProjectDialog(): Promise<string | null>;
   saveProjectDialog(suggestedPath?: string): Promise<string | null>;
   openFileDialog(extensions: readonly string[]): Promise<string | null>;
@@ -2549,8 +2560,22 @@ interface PlatformApi {
   onMenuCommand(listener: (commandId: string) => void): () => void;
   onCloseRequested(listener: () => void): () => void;
   confirmClose(): void;
+  restartWithSoftwareRendering(project: string | null): Promise<boolean>;   // 8.7 rule 16; false: refused
 }
 ```
+
+**Restarting with software rendering.** `restartWithSoftwareRendering(project)`
+is called by the shell when the user chose it, after the questions of leaving
+the project (8.8 rule 9) and with the project that is to be opened, an absolute
+path or `null`; anything else is refused with `false`. The main process calls
+`app.relaunch` with the arguments `softwareRelaunchArgs` of `launch.ts` gives
+(started from source, the application's folder; the switches the run was
+started with; the project; `--software-rendering`) and closes the window
+without asking the page again; the next run starts once this one has ended,
+which releases the lock of 8.2 rule 8 for it. The switch is on that run's
+command line alone, so the run after it is on the graphics card again: the
+choice is remembered for one run and written nowhere. In test mode nothing ends
+and nothing starts, and the call answers `true` as it would (`testing.md` 2.9).
 
 Project files are small JSON and go through this bridge as text. So do the
 manifest and the report of a build, which the build panel reads once the build
@@ -2718,6 +2743,7 @@ panel shows is disabled while the panel is hidden.
 13. **The graph at a distance.** What a node draws follows the zoom (`lodOf`, `titleStepOf` of the graph's `geometry.ts`). From 0.55: everything; up to 0.75 the node's name is drawn at 16 graph pixels in its header, where the graph's own 12 would be under 9 pixels on screen. From 0.30 to 0.55: no port labels, no status line, no badges, and the node's name is drawn larger than its header, in a band over the top of the node cut at its width, in two sizes (30 graph pixels below a zoom of 0.40, 22 from there). A name is so 9 to 12 pixels high on screen wherever it is drawn below 0.75; at the graph's own size it was 4 to 6 in the middle band, and an example that opens fitted into that band (two of the six do) had no name that could be read. Steps and not the inverse of the zoom, because a style that changes with every step of a zoom is computed again for every node. Below 0.30: blocks in the colours of their categories. The name of a group is drawn at the screen's size, from its header, wherever the zoom is below 0.55 and at least 0.16.
 14. **The library's details.** Under the node list the library describes the node under the pointer, or the selected one, in a pane that keeps its height whatever it shows, so that the list does not move as the pointer does. Until the pane has described a node for the first time it is the one line of its hint, and the list has the room: at first start the panel showed four nodes above an empty box.
 15. **The build panel says how the build stands, and of what.** A plan of textures and images without a landscape item is said so, in the plan and in the outcome of the build ("No Unreal Landscape node: this build writes no heightmap"): such a build "finishes", and nothing else would tell a newcomer that the terrain was not exported. A refusal of the output folder (`E_OUT_DIR`) is withdrawn from the head of the panel when another folder is chosen: it was of the folder before. A build that ended with the engine worker that ran it (8.5) is said as "Build stopped: the engine was restarted", and the command that started it has not failed.
+16. **No graphics device.** An engine that never had a device and stopped because the platform gave it none (`foundNoAdapter` of the core: `openGpu`'s "No WebGPU adapter is available", or a window without WebGPU, 8.3) leaves every panel without a picture, and its sentence names nothing a newcomer can act on. The shell therefore opens a dialog of its own, once in a run and only when no other dialog stands: what WebGPU needs (on Windows a graphics card with DirectX 12 and a current driver from its maker; a remote desktop session or a virtual machine often has none), Retry, and, unless the run already has it (`PlatformApi.softwareRendering`), **Restart with Software Rendering**: the processor does the card's work, many times slower, for opening and checking a project and not for builds, until Orogen is closed. The status bar says "No graphics device" with Retry and Details…, which shows the dialog again, and the list of errors says the same with Details… beside Retry. Choosing software rendering asks what closing asks (unsaved changes, a build that runs), removes what was kept for recovery as closing does, and hands the project file to the main process (8.6), which starts the next run with it; the notification area says "Orogen is restarting with software rendering" once the main process has taken the request. A device that was found and failed, and a recovery that failed after a device was ready (`device.caps` is not `null`), are said as "Graphics device failed" with Retry, as before: the card was there. Measured on `windows-latest`, which has no GPU: Chromium offered the packaged application no adapter, at the first start of the engine and at Retry (`testing.md` 9.3).
 
 ### 8.8 Commands and keys
 

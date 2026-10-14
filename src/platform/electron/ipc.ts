@@ -39,6 +39,8 @@ export interface PlatformApi {
   readonly testMode: boolean;
   /** The project file given on the command line, as an absolute path; null: none. The page opens it at start-up. */
   readonly launchProject: string | null;
+  /** This run asked Chromium for its software adapter: the user restarted with software rendering, or OROGEN_ELECTRON_GPU=software. */
+  readonly softwareRendering: boolean;
   openProjectDialog(): Promise<string | null>;
   saveProjectDialog(suggestedPath?: string): Promise<string | null>;
   openFileDialog(extensions: readonly string[]): Promise<string | null>;
@@ -67,6 +69,11 @@ export interface PlatformApi {
   onMenuCommand(listener: (commandId: string) => void): () => void;
   onCloseRequested(listener: () => void): () => void;
   confirmClose(): void;
+  /**
+   * Ends this run and starts another with software rendering, which opens `project` (an absolute path; null: none).
+   * The page has asked about unsaved changes first. False: refused. In test mode nothing ends and nothing starts.
+   */
+  restartWithSoftwareRendering(project: string | null): Promise<boolean>;
 }
 
 /** The page's window as the preload script leaves it: `window.orogenPlatform` is the PlatformApi. */
@@ -78,6 +85,7 @@ export interface LaunchInfo {
   readonly gpuProfile: GpuProfile;
   readonly testMode: boolean;
   readonly launchProject: string | null;
+  readonly softwareRendering: boolean;
 }
 
 /** Every channel between the preload script and the main process. Nothing else is listened to on either side. */
@@ -99,6 +107,7 @@ export const CHANNELS = {
   openExternal: 'orogen:open-external',
   openDocument: 'orogen:open-document',
   openBuildFile: 'orogen:open-build-file',
+  restartWithSoftwareRendering: 'orogen:restart-with-software-rendering',
   // preload → main, not answered (ipcRenderer.send)
   setBuildActive: 'orogen:set-build-active',
   showInFolder: 'orogen:show-in-folder',

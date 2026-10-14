@@ -5,7 +5,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { adapterNamed } from '../../../src/core/gpu/caps.ts';
-import { DeviceLostError, deviceLostError, GpuUnavailableError, onUncapturedError, openGpu, type GpuContext, type GpuLostInfo } from '../../../src/core/gpu/device.ts';
+import {
+  DeviceLostError, deviceLostError, foundNoAdapter, GpuUnavailableError, NO_ADAPTER, NO_WEBGPU, onUncapturedError, openGpu, type GpuContext, type GpuLostInfo,
+} from '../../../src/core/gpu/device.ts';
 
 const DEFAULTS = {
   maxTextureDimension2D: 8192,
@@ -34,6 +36,7 @@ interface FakeOptions {
   deviceLimits?: Partial<typeof DEFAULTS>;
   language?: string[];
   requestDeviceFails?: string;
+  requestAdapterFails?: string;
 }
 
 /** A GPU whose adapter gives devices that have exactly what was required of them. */
@@ -45,6 +48,7 @@ function fakeGpu(o: FakeOptions = {}) {
     wgslLanguageFeatures: new Set(o.language ?? LANGUAGE),
     async requestAdapter(options: unknown) {
       calls.adapterOptions.push(options);
+      if (o.requestAdapterFails) throw new Error(o.requestAdapterFails);
       if (o.adapter === false) return null;
       return {
         features: new Set(o.adapterFeatures ?? ['float32-filterable', 'texture-formats-tier1', 'timestamp-query', 'texture-formats-tier2']),
@@ -212,6 +216,16 @@ test('no adapter, no device and an unknown profile', async () => {
     return true;
   });
   await assert.rejects(openGpu(fakeGpu().gpu, { profile: 'fast' as never }), TypeError);
+});
+
+test('an engine that found no adapter is told from one whose device failed, by the words the engine stops with', async () => {
+  // What the shell explains and offers software rendering for (runtime.md 8.7 rule 16): no adapter, or no WebGPU.
+  const reasons: string[] = [];
+  for (const options of [{ adapter: false }, { requestAdapterFails: 'GPU process is gone' }, { requestDeviceFails: 'limit too high' }] as const) {
+    await openGpu(fakeGpu(options).gpu, { profile: 'core' }).then(() => reasons.push('a device'), (thrown: unknown) => reasons.push((thrown as Error).message));
+  }
+  assert.deepEqual(reasons.map(foundNoAdapter), [true, true, false], reasons.join(' | '));
+  assert.deepEqual([NO_WEBGPU, NO_ADAPTER, null, 'The GPU device lacks texture-formats', `${NO_ADAPTER}s`].map(foundNoAdapter), [true, true, false, false, false]);
 });
 
 test('a device that fails a check of runtime.md 1.4 is refused, with the missing item named, and destroyed', async () => {

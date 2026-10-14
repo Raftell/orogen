@@ -3,7 +3,7 @@
 // product's node list from nodes/index.ts; this module imports nothing from src/core/nodes/.
 
 // 1. Device
-export { DeviceLostError, GpuUnavailableError, openGpu } from './gpu/device.ts';
+export { DeviceLostError, foundNoAdapter, GpuUnavailableError, NO_ADAPTER, NO_WEBGPU, openGpu } from './gpu/device.ts';
 export type { GpuContext, GpuLostInfo, GpuProfile } from './gpu/device.ts';
 export type { GpuCaps } from './gpu/caps.ts';
 
