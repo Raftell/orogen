@@ -1,0 +1,158 @@
+{
+  "schema": "orogen.unreal.landscape/1",
+  "status": "complete",
+  "generator": {
+    "name": "Orogen",
+    "version": "0.1.0"
+  },
+  "targetEngine": "5.8",
+  "project": {
+    "seed": 0
+  },
+  "terrain": {
+    "sizeM": 8128,
+    "heightRangeM": 511.9921875,
+    "seaLevel": 0.5000076295109483
+  },
+  "resolution": {
+    "x": 8129,
+    "y": 8129
+  },
+  "landscape": {
+    "layout": {
+      "quadsPerSection": 127,
+      "sectionsPerComponent": 2,
+      "components": {
+        "x": 32,
+        "y": 32
+      }
+    },
+    "heightmap": {
+      "r16": "MarkerHeight.r16",
+      "png": "MarkerHeight.png",
+      "rangeMode": "fixed",
+      "valueMin": 0,
+      "valueMax": 1,
+      "heightMinM": -256,
+      "heightMaxM": 255.9921875,
+      "measuredMin": 0,
+      "measuredMax": 1,
+      "clippedSamples": 0,
+      "zScaleFormula": "range_cm*128/65535",
+      "dither": "none"
+    },
+    "transform": {
+      "scaleCm": {
+        "x": 100,
+        "y": 100,
+        "z": 100
+      },
+      "actorLocationCm": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "uiLocationCm": {
+        "x": 406400,
+        "y": 406400,
+        "z": 0
+      },
+      "rotationDeg": {
+        "pitch": 0,
+        "yaw": 0,
+        "roll": 0
+      }
+    },
+    "orientation": {
+      "pixel00": "minX_minY",
+      "imageX": "+X",
+      "imageY": "+Y",
+      "flipYAxis": false
+    },
+    "seaLevelZCm": 0,
+    "worldPartition": {
+      "enabled": true,
+      "gridSize": 4,
+      "regionSize": 32
+    },
+    "alphamapType": "Additive",
+    "layers": [
+      {
+        "name": "Base",
+        "r8": "LayerBase.r8",
+        "png": "LayerBase.png",
+        "blend": "advanced",
+        "base": true,
+        "meanWeight": 0.500061508180588
+      },
+      {
+        "name": "Left",
+        "r8": "LayerLeft.r8",
+        "png": "LayerLeft.png",
+        "blend": "advanced",
+        "base": false,
+        "meanWeight": 0.49993849181941197
+      },
+      {
+        "name": "Top",
+        "r8": "LayerTop.r8",
+        "png": "LayerTop.png",
+        "blend": "none",
+        "base": false,
+        "meanWeight": 0.49993849181941197
+      }
+    ]
+  },
+  "textures": [
+    {
+      "content": "color",
+      "file": "T_Marker_1024.png",
+      "size": 1024,
+      "channels": 3,
+      "bits": 8,
+      "srgb": true,
+      "covers": "landscapeExtent",
+      "sampling": "texel-center"
+    }
+  ],
+  "images": [],
+  "splines": null,
+  "files": [
+    {
+      "path": "MarkerHeight.png",
+      "bytes": 623426
+    },
+    {
+      "path": "MarkerHeight.r16",
+      "bytes": 132161282
+    },
+    {
+      "path": "LayerBase.png",
+      "bytes": 314391
+    },
+    {
+      "path": "LayerBase.r8",
+      "bytes": 66080641
+    },
+    {
+      "path": "LayerLeft.png",
+      "bytes": 313369
+    },
+    {
+      "path": "LayerLeft.r8",
+      "bytes": 66080641
+    },
+    {
+      "path": "LayerTop.png",
+      "bytes": 308310
+    },
+    {
+      "path": "LayerTop.r8",
+      "bytes": 66080641
+    },
+    {
+      "path": "T_Marker_1024.png",
+      "bytes": 15772
+    }
+  ]
+}
