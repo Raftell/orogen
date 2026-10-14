@@ -30,9 +30,16 @@ export function launchSwitches(platform: string, software: boolean): LaunchSwitc
     switches.push({ name: 'force_high_performance_gpu' }, { name: 'force-high-performance-gpu' });
     // SwiftShader is Vulkan, and Electron's Windows distribution carries it (vk_swiftshader.dll). Chromium's
     // blocklist keeps WebGPU from a machine whose only adapter is a software one, and it no longer falls back to
-    // SwiftShader unless that is allowed. Whether these three are enough on windows-latest is the launch check's
-    // to say (testing.md 9.1, 9.3).
-    if (software) switches.push({ name: 'enable-unsafe-webgpu' }, { name: 'enable-unsafe-swiftshader' }, { name: 'use-webgpu-adapter', value: 'swiftshader' });
+    // SwiftShader unless that is allowed. The first three alone were not enough on windows-latest: its GPU process
+    // ran with "gpu_compositing": "disabled_software" beside the blocklisted Microsoft Basic Render Driver, and
+    // WebGPU found no adapter. The last two lift the blocklist and put ANGLE on SwiftShader too; whether that is
+    // enough is the launch check's to say (testing.md 9.1, 9.3).
+    if (software) {
+      switches.push(
+        { name: 'enable-unsafe-webgpu' }, { name: 'enable-unsafe-swiftshader' }, { name: 'use-webgpu-adapter', value: 'swiftshader' },
+        { name: 'ignore-gpu-blocklist' }, { name: 'use-angle', value: 'swiftshader' },
+      );
+    }
   }
   if (features.length > 0) switches.push({ name: 'enable-features', value: features.join(',') });
   return switches;

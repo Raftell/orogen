@@ -46,7 +46,7 @@ test('switches: Windows asks for the discrete GPU in both spellings and needs no
     assert.ok(!switches.includes('enable-features'));
   }
   const hardware = launchSwitches('win32', false);
-  for (const name of ['enable-unsafe-webgpu', 'enable-unsafe-swiftshader', 'use-webgpu-adapter']) assert.ok(!names(hardware).includes(name), name);
+  for (const name of ['enable-unsafe-webgpu', 'enable-unsafe-swiftshader', 'use-webgpu-adapter', 'ignore-gpu-blocklist', 'use-angle']) assert.ok(!names(hardware).includes(name), name);
 });
 
 test('switches: on Windows the software adapter is SwiftShader, asked for by name, past the blocklist that keeps WebGPU from a machine without a GPU', () => {
@@ -54,6 +54,8 @@ test('switches: on Windows the software adapter is SwiftShader, asked for by nam
   assert.ok(names(switches).includes('enable-unsafe-webgpu'));
   assert.ok(names(switches).includes('enable-unsafe-swiftshader'));
   assert.equal(valueOf(switches, 'use-webgpu-adapter'), 'swiftshader');
+  assert.ok(names(switches).includes('ignore-gpu-blocklist'));
+  assert.equal(valueOf(switches, 'use-angle'), 'swiftshader');
   // Linux keeps the recipe measured there: SwiftShader is what is left without the Vulkan feature.
   assert.ok(!names(launchSwitches('linux', true)).includes('use-webgpu-adapter'));
 });
