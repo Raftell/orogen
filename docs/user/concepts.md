@@ -90,8 +90,9 @@ things go: a wind direction is where the wind blows to, and a light direction po
 the light.
 
 This is also how the terrain is meant to lie in Unreal Engine, whose world is left-handed like this picture:
-image columns along Unreal's +X and image rows along +Y. That mapping is one of the unconfirmed statements
-that [the acceptance test](unreal-import.md#6-the-acceptance-test) exists to settle.
+image columns along Unreal's +X and image rows along +Y. [The acceptance
+test](unreal-import.md#6-the-acceptance-test) confirmed that mapping on Unreal Engine 5.8
+([results](unreal-import.md#65-results-on-unreal-engine-58)).
 
 ### Random numbers
 

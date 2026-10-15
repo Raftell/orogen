@@ -92,6 +92,14 @@ test('the viewport: a landform is drawn; the camera orbits, pans, dollies and fl
     const before = await orbitOf(app);
     await app.eval(`void viewportTest.drag(${quote(mid)}, ${quote([mid[0] + 40, mid[1] - 20])}, 2, {}, 4, false)`);
     assert.equal(await attr(app, 'data-drag'), 'fly');
+    // The hint names the fly keys by their places, with the letters AZERTY prints there (runtime.md 8.8 rule 2), on
+    // one line that the panel shows whole.
+    const hint = await app.eval<{ text: string; width: number; shown: number }>(`(() => {
+      const note = document.querySelector('[data-viewport="note"]');
+      return { text: note.textContent, width: note.scrollWidth, shown: note.clientWidth };
+    })()`);
+    assert.match(hint.text, /W, A, S, D positions .*\(Z, Q, S, D on AZERTY\)/);
+    assert.ok(hint.width <= hint.shown, `the hint is cut: ${hint.width} pixels of text in ${hint.shown}`);
     const looking = await orbitOf(app);
     assert.ok(looking.yaw !== before.yaw && looking.pitch < before.pitch, 'the right button looks around');
     await app.eval(`void viewportTest.key('keydown', 'KeyW')`);

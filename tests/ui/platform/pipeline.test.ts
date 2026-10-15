@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { test } from 'node:test';
 
+import { offersSoftwareRendering } from '../../../src/app/shell/shell.ts';
 import { inspect, mountainDoc, ready, show, sleep, withApp } from './rig.ts';
 
 /** The members of PlatformApi (runtime.md 8.6), as the preload script exposes them. */
@@ -77,7 +78,10 @@ test('pipeline: a document evaluates in the worker and its terrain is on the can
   });
 });
 
-test('pipeline: OROGEN_ELECTRON_GPU=software starts on the software adapter, which evaluates as well', async (t) => {
+const SOFTWARE_SKIP = offersSoftwareRendering(process.platform) ? false
+  : 'software mode gives WebGPU no adapter on Windows: measured with Electron 44 on windows-latest and beside a working RTX 3080 (ARCHITECTURE.md section 2)';
+
+test('pipeline: OROGEN_ELECTRON_GPU=software starts on the software adapter, which evaluates as well', { skip: SOFTWARE_SKIP }, async (t) => {
   await withApp({ profile: 'core', gpu: 'software' }, async (app) => {
     const caps = await ready(app);
     assert.equal(caps.software, true, `the adapter is ${caps.adapter.vendor} ${caps.adapter.description}`);

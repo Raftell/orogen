@@ -181,6 +181,15 @@ test('editing: selection, context menus, a refused connection and cut wires', as
     assert.deepEqual(await selection(app), [], 'a stroke selects nothing and drags nothing');
     await undo(app);
     assert.deepEqual(await wires(app), ALL_WIRES);
+    // Y is the key that types Y, as the keys of the keymap are (runtime.md 8.8 rule 2): on QWERTZ it lies in QWERTY's
+    // Z place, and the key in QWERTY's Y place types Z there.
+    await app.eval(`void graphTest.keyDown('KeyZ', 'y')`);
+    assert.equal(await attr(app, '[data-graph="root"]', 'data-cutting'), '', 'QWERTZ Y holds the cut');
+    await app.eval(`void graphTest.keyUp('KeyZ', 'y')`);
+    assert.equal(await attr(app, '[data-graph="root"]', 'data-cutting'), null);
+    await app.eval(`void graphTest.keyDown('KeyY', 'z')`);
+    assert.equal(await attr(app, '[data-graph="root"]', 'data-cutting'), null, 'QWERTZ Z does not');
+    await app.eval(`void graphTest.keyUp('KeyY', 'z')`);
     // The same with Control and the secondary button, which then opens no menu.
     const cut = await wireAt(app, 'steep-out-dist-in');
     await app.eval(`void (graphTest.down(${cut.x}, ${cut.y - 30}, { button: 2, ctrlKey: true }), graphTest.move(${cut.x}, ${cut.y}, { button: 2, ctrlKey: true }),

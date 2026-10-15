@@ -26,7 +26,7 @@ function Device(props: { readonly shell: Shell }) {
   const paused = useStore(shell.ctx.engineState, (state) => state.paused) || pausedHere;
   // 8.5: an engine that answers nothing sends no event either. "Ready" would be the last thing it said.
   const silent = useStore(shell.ctx.engineState, (state) => state.silent) && device.state !== 'starting' && device.state !== 'failed';
-  // 8.7 rule 16: no device at all is said as such, and Details explains it and offers software rendering.
+  // 8.7 rule 16: no device at all is said as such, and Details explains it, with software rendering where the system has it.
   const none = noGraphicsDevice(device);
   const text = silent ? 'Engine not responding'
     : device.state === 'starting' ? 'Starting graphics device'

@@ -105,19 +105,42 @@ function expectSheet(file: string, what: string): Png {
 
 const fileOf = (out: string, type: string, name: string): string => path.join(out, 'nodes', ...type.split('/'), name);
 
+const MIB = 2 ** 20;
+interface MemoryCaps { readonly adapter: { readonly device: string }; readonly vramBytes: number | null; readonly vramSource: 'adapter' | 'nvidia-smi' | null }
+
+/**
+ * The memory nvidia-smi gives for the adapter's card, run here as a person would run it (runtime.md 1.3), in
+ * MiB; null where the tool is missing, fails, or names no card of the adapter's name.
+ */
+function nvidiaSmiMib(caps: MemoryCaps): number | null {
+  const program = process.platform !== 'win32' ? 'nvidia-smi' : [
+    path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'nvidia-smi.exe'),
+    path.join(process.env.ProgramW6432 ?? process.env.ProgramFiles ?? 'C:\\Program Files', 'NVIDIA Corporation', 'NVSMI', 'nvidia-smi.exe'),
+  ].find((file) => fs.existsSync(file));
+  if (program === undefined) return null;
+  const done = spawnSync(program, ['--query-gpu=memory.total,name', '--format=csv,noheader,nounits'], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
+  if (done.error !== undefined || done.status !== 0) return null;
+  const letters = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const line = done.stdout.split('\n').find((text) => letters(text.slice(text.indexOf(',') + 1)) === letters(caps.adapter.device));
+  return line === undefined ? null : Number(line.slice(0, line.indexOf(',')));
+}
+
 test('orogen probe prints the capabilities of the device as indented JSON, and nothing else on standard output', () => {
   const done = orogen(['probe', '--profile', 'core']);
   assert.equal(done.code, 0, done.err);
   const caps = JSON.parse(done.out) as {
     adapter: { description: string; device: string }; software: boolean; features: string[]; compactFormats: boolean; timestampQuery: boolean;
-    limits: { maxTextureDimension2D: number; maxStorageTexturesPerShaderStage: number }; formats: Record<string, string>; vramBytes: number | null;
-  };
+    limits: { maxTextureDimension2D: number; maxStorageTexturesPerShaderStage: number }; formats: Record<string, string>;
+  } & MemoryCaps;
   assert.equal(done.out, `${JSON.stringify(caps, null, 2)}\n`);
   assert.ok(caps.adapter.description.length + caps.adapter.device.length > 0, 'the adapter is named');
   assert.equal(typeof caps.software, 'boolean');
   // --profile core: default limits and no optional feature, whatever the adapter offers and the environment says.
   assert.deepEqual([caps.compactFormats, caps.timestampQuery, caps.limits.maxTextureDimension2D, caps.limits.maxStorageTexturesPerShaderStage], [false, false, 8192, 4]);
   assert.deepEqual([caps.formats.field, caps.formats.half, caps.formats.mask8], ['r32float', 'r32float', 'r32float']);
+  // The card's memory: Dawn in Node reports none, and nvidia-smi gives it where it names this adapter's card.
+  const mib = nvidiaSmiMib(caps);
+  assert.deepEqual([caps.vramSource, caps.vramBytes], mib === null ? [null, null] : ['nvidia-smi', mib * MIB], `nvidia-smi gives ${mib} MiB for ${caps.adapter.device}`);
 
   // The profile of the environment, as every CI job runs it first.
   const ambient = orogen(['probe']);
@@ -256,6 +279,28 @@ test('orogen render ref/distance: a node whose input is a mask is drawn over the
   assert.ok(shade.tinted > 0.01 && shade.tinted < 0.99, `${(100 * shade.tinted).toFixed(1)} % of that terrain is tinted by the distance`);
   const view = look(png, 1040, 1808);
   assert.ok(view.drawn > 0.2 && view.drawn < 0.95, 'the 3d view is a terrain, not a plane');
+});
+
+test('orogen render prints its GPU memory budget on standard error, and where the figure of the card came from', () => {
+  const probe = orogen(['probe']);
+  assert.equal(probe.code, 0, probe.err);
+  const caps = JSON.parse(probe.out) as MemoryCaps;
+  const out = path.join(OUTPUT, 'budget');
+
+  const plain = orogen(['render', 'ref/fbm', '--res', String(RES), '--out', out]);
+  rendered(plain);
+  if (caps.vramBytes === null) {
+    assert.match(plain.err, /^orogen render: GPU memory budget 2457 MiB: the default for a card whose memory neither the adapter nor nvidia-smi reports; --budget-mb sets another$/m);
+  } else {
+    const said = `${Math.floor(caps.vramBytes / MIB)} MiB, which ${caps.vramSource === 'adapter' ? 'the adapter' : 'nvidia-smi'} reports`;
+    assert.ok(plain.err.includes(`orogen render: GPU memory budget ${Math.floor(Math.floor(caps.vramBytes * 0.6) / MIB)} MiB: 60 % of the card's ${said}\n`), plain.err);
+  }
+
+  const given = orogen(['render', 'ref/fbm', '--res', String(RES), '--out', out, '--budget-mb', '300']);
+  rendered(given);
+  assert.match(given.err, caps.vramBytes === null
+    ? /^orogen render: GPU memory budget 300 MiB, from --budget-mb; neither the adapter nor nvidia-smi reports the card's memory$/m
+    : /^orogen render: GPU memory budget 300 MiB, from --budget-mb; the card has \d+ MiB, which (the adapter|nvidia-smi) reports$/m);
 });
 
 /** A project file with a ref/fbm feeding a ref/talus, and a ref/talus nothing is connected to. */
@@ -407,6 +452,7 @@ test('orogen gallery --category ref: every reference node rendered, the page a r
   assert.match(page, new RegExp(`${withOutputs.length} nodes of the category ref at ${RES} × ${RES}`));
   assert.ok(page.includes('Checked on the adapter of this test, profile core.'));
   assert.match(done.err, new RegExp(`^orogen gallery: ${withOutputs.length}/${withOutputs.length} `, 'm'));
+  assert.match(done.err.split('\n').find((line) => line.startsWith('orogen gallery: ')) ?? '', /^orogen gallery: GPU memory budget \d+ MiB/, 'the budget comes first');
 });
 
 test('orogen gallery: a node that reads a file is drawn with the file of its conformance call, once the output folder holds its report', () => {

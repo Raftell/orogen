@@ -8,9 +8,9 @@ node src/cli/main.ts <subcommand> [options]
 
 It is one process that computes on the graphics card. Every command on this page was run on the development
 machine (Linux) while this page was written. On Windows the project's automated checks run `probe`, `render`,
-`gallery`, `build` and `unreal-test` as part of the engine's tests, on the software adapter; nobody has typed
-them into a Windows shell, and what this page says of PowerShell and Command Prompt comes from how those shells
-are documented to pass arguments.
+`gallery`, `build` and `unreal-test` as part of the engine's tests, on the software adapter. On the target
+machine `probe` and `unreal-test` were typed into PowerShell; the others have not been, and what this page says
+of PowerShell and Command Prompt beyond that comes from how those shells are documented to pass arguments.
 
 ```
 orogen probe [--profile <core|max>] [--adapter <substring>]
@@ -41,7 +41,7 @@ same program, and PowerShell is known to take the `--` for itself: use the form 
 | `--profile <core or max>` | the environment variable `OROGEN_GPU_PROFILE`, else `max` | How the graphics device is opened. `max` asks the card for its own limits, stores some internal state more compactly and times the work on the card. `core` uses only what every WebGPU device has, and is what the project's automated checks run with. The example of this guide builds to identical files under both |
 | `--adapter <substring>` | `OROGEN_GPU_ADAPTER`, else the system's default adapter | A part of the adapter's name, with the same capitals. Use it when a machine has several adapters |
 | `--out <dir>` | for `render` and `gallery`: `OROGEN_TEST_OUTPUT`, else `test-output` | Where files are written. A relative path is taken from the folder you are in. `build` and `unreal-test` have no default: they need `--out` |
-| `--budget-mb <n>` | 60 % of the card's memory where the graphics library reports it; 2457 where it does not | The most graphics memory Orogen's fields may take, in MiB (`render`, `gallery`, `build`). On the development machine the library reports no amount, so the default there is 2457; whether it reports one on Windows is not known. A terrain with a large simulation at 8129 × 8129 needs more than 2457: pass what your card can spare, for example `--budget-mb 6000` on a card with 10 GB |
+| `--budget-mb <n>` | 60 % of the card's memory; 2457 where it is not known | The most graphics memory Orogen's fields may take, in MiB (`render`, `gallery`, `build`). The graphics library reports no amount, on Linux or on Windows; on an NVIDIA card Orogen asks `nvidia-smi`, which NVIDIA's driver installs on both (on Windows from `C:\Windows\System32`, else `C:\Program Files\NVIDIA Corporation\NVSMI`). The development machine's card has 6144 MiB, so the default there is 3686; a card of 10240 MiB gets 6144. Where nvidia-smi is missing, fails, does not answer within 3 seconds or does not name the card, the default is 2457, too little for a large simulation at 8129 × 8129: pass what your card can spare, for example `--budget-mb 6000` on a card with 10 GB. `render`, `gallery` and `build` print the budget and where the card's memory came from |
 | `--res <n>` | see each subcommand | A resolution, in vertices per side |
 
 ## Exit codes
@@ -62,6 +62,15 @@ orogen probe
 
 Prints the capabilities of the graphics device as JSON: the adapter's name, whether it is a software adapter,
 its features and its limits. Run it first on a new machine, and attach its output when you report a problem.
+
+At its end, `vramBytes` is the card's memory in bytes and `vramSource` where Orogen learnt it: `nvidia-smi`, or
+`adapter` when the graphics library reports it, which it has done on no machine so far. Both are `null` when
+nothing said it, and the default budget is then 2457 MiB (see `--budget-mb`). On the development machine:
+
+```
+  "vramBytes": 6442450944,
+  "vramSource": "nvidia-smi"
+```
 
 ## render
 
@@ -121,8 +130,15 @@ An export node has no output and cannot be rendered (`has no outputs: there is n
 2). An import node needs its file: `--param file='"C:/Maps/heights.png"'` in bash. Write the path with `/`:
 inside JSON a `\` begins an escape, so `C:\Maps` would have to be written `C:\\Maps`.
 
-The command prints no progress while it works. A simulation rendered at 4033 or 8129 can need more graphics
-memory than the default budget: see `--budget-mb` above.
+The command prints no progress while it works. Before it starts, it prints on standard error the graphics
+memory it may use and where the card's memory figure came from:
+
+```
+orogen render: GPU memory budget 3686 MiB: 60 % of the card's 6144 MiB, which nvidia-smi reports
+```
+
+A simulation rendered at 4033 or 8129 can need more graphics memory than the default budget: see `--budget-mb`
+above.
 
 ## gallery
 
@@ -141,7 +157,8 @@ for nodes that need a file and were drawn without one: an import node is drawn w
 once they have run into the same output folder, and is listed with `No file selected` until then.
 
 Without `--category` every category is drawn, the simulations included; that took about half a minute on the
-development machine. Progress is printed on standard error, one line per node.
+development machine. Progress is printed on standard error, one line per node, after the line of the budget
+that `render` prints too.
 
 ## build
 
@@ -162,9 +179,11 @@ what is written; this section is the command.
 | `--json` | writes every event of the build as one JSON object per line on standard output, and nothing else there |
 | `--quiet` | prints no progress. Problems are still printed |
 
-What a build prints, on standard error, and on standard output the path of the manifest:
+What a build prints, on standard error, and on standard output the path of the manifest. The first line is the
+graphics memory the build may use, as `render` prints it (here on the development machine):
 
 ```
+orogen build: GPU memory budget 3686 MiB: 60 % of the card's 6144 MiB, which nvidia-smi reports
 orogen build: 8 files at 1009 x 1009 into D:\Build\Ridge
 orogen build: evaluating 2 nodes
 orogen build:   Mountain Range: 0.02 s, 4.1 MB

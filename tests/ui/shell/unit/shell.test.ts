@@ -3,14 +3,18 @@
 // preferences, and what the shell does when the engine or the main process speaks.
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
 
 import { addNode, parseDoc, serializeDoc, setParam, setSettings, type DocDraft, type GraphDoc } from '../../../../src/core/runtime.ts';
 import { editRoute, HELP_PAGES, SHELL_KEYS, SHELL_MENU, shellCommands } from '../../../../src/app/shell/app-commands.ts';
 import { RegistrationError } from '../../../../src/app/shell/commands.ts';
+import { parseMarkdown, plainText } from '../../../../src/app/shell/help/markdown.ts';
 import { defaultDoc, DEFAULT_NODE, recentWith, RECENT_MAX, relocatedFiles } from '../../../../src/app/shell/project.ts';
 import {
-  DEVICE_BACK_NOTICE, DEVICE_LOST_NOTICE, LOG_KEPT, noGraphicsDevice, NOTICES_SHOWN, SOFTWARE_ADAPTER_NOTICE, SOFTWARE_RESTART_NOTICE,
+  DEVICE_BACK_NOTICE, DEVICE_LOST_NOTICE, LOG_KEPT, NO_DEVICE_HELP, NO_DEVICE_TEXT, noGraphicsDevice, NOTICES_SHOWN, offersSoftwareRendering,
+  SOFTWARE_ADAPTER_NOTICE, SOFTWARE_RESTART_NOTICE, softwareRenderingChoice,
 } from '../../../../src/app/shell/shell.ts';
 import { CAPS, createRig, fakePanels, REGISTRY, run, turn, type Rig } from './_shell.ts';
 
@@ -643,6 +647,50 @@ test('restarting with software rendering asks what leaving the project asks, the
   assert.equal(await fresh.shell.restartWithSoftwareRendering(), false);
   assert.deepEqual(fresh.platform.restarts, [null]);
   assert.deepEqual(fresh.shell.state.getState().notices.map((notice) => [notice.level, notice.message]), [['error', 'Orogen could not restart with software rendering']]);
+});
+
+test('software rendering is offered on Linux and not on Windows, by the page\'s name of the system and by Node\'s', () => {
+  // Measured with Electron 44: on Windows software mode gave WebGPU no adapter, on a runner without a GPU and beside a working RTX 3080.
+  for (const windows of ['Win32', 'win32', 'Win64']) assert.equal(offersSoftwareRendering(windows), false, windows);
+  for (const linux of ['Linux x86_64', 'Linux aarch64', 'linux']) assert.equal(offersSoftwareRendering(linux), true, linux);
+
+  // What the explanation says and offers: the restart where the system has it and the run does not.
+  assert.deepEqual(softwareRenderingChoice(true, false), { restart: true, text: NO_DEVICE_TEXT.software });
+  assert.deepEqual(softwareRenderingChoice(true, true), { restart: false, text: NO_DEVICE_TEXT.onSoftware });
+  for (const running of [false, true]) assert.deepEqual(softwareRenderingChoice(false, running), { restart: false, text: NO_DEVICE_TEXT.unoffered });
+  assert.match(NO_DEVICE_TEXT.unoffered, /^On Windows/);
+  assert.equal(createRig({ system: 'Linux x86_64' }).shell.softwareRenderingOffered, true);
+});
+
+test('on Windows the explanation opens as on Linux, and software rendering is neither offered nor started', async () => {
+  const rig = createRig({ system: 'Win32' });
+  await rig.shell.project.start();
+  edit(rig, 7);
+  rig.engine.emit({ type: 'engine-error', message: 'No WebGPU adapter is available', fatal: true });
+  assert.deepEqual(dialog(rig), { kind: 'noDevice' }, 'what WebGPU needs, Retry and the way to the guide are said on every system');
+  assert.equal(rig.shell.softwareRenderingOffered, false);
+  assert.deepEqual(softwareRenderingChoice(rig.shell.softwareRenderingOffered, rig.platform.softwareRendering), { restart: false, text: NO_DEVICE_TEXT.unoffered });
+
+  // Asked all the same, it asks nothing about the unsaved project, hands nothing to the main process and says nothing.
+  const asked = rig.shell.restartWithSoftwareRendering();
+  await turn();
+  assert.deepEqual(dialog(rig), { kind: 'noDevice' }, 'no question about the unsaved project');
+  assert.equal(await asked, false);
+  assert.deepEqual(rig.platform.restarts, []);
+  assert.equal(rig.shell.state.getState().notices.some((notice) => /software rendering/.test(notice.message)), false);
+});
+
+test('the explanation leads to the place of the User Guide that says what to check', () => {
+  const blocks = parseMarkdown(fs.readFileSync(path.resolve(import.meta.dirname, '../../../../docs/user', NO_DEVICE_HELP.page), 'utf8'));
+  const heading = blocks.find((block) => block.kind === 'heading' && block.id === NO_DEVICE_HELP.anchor);
+  assert.ok(heading?.kind === 'heading', `${NO_DEVICE_HELP.page} has the heading ${NO_DEVICE_HELP.anchor}`);
+  assert.equal(plainText(heading.parts), NO_DEVICE_TEXT.help, 'the link says what the heading is called');
+
+  // The link opens the reader there, in place of the explanation.
+  const rig = createRig();
+  rig.engine.emit({ type: 'engine-error', message: 'No WebGPU adapter is available', fatal: true });
+  rig.shell.showDialog({ kind: 'help', ...NO_DEVICE_HELP });
+  assert.deepEqual(dialog(rig), { kind: 'help', page: 'application.md', anchor: 'troubleshooting-the-graphics-device' });
 });
 
 test('a lost device is said while it is being recovered, and no longer: the notice leaves when the device is back, which is said once', () => {

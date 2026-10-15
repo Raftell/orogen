@@ -4,7 +4,7 @@
 // confirmed. The AppDriver of the harness reaches the page; the facts here are the window's.
 'use strict';
 
-const { BrowserWindow, Menu } = require('electron');
+const { BrowserWindow, Menu, screen } = require('electron');
 
 const SWITCHES = [
   'enable-webgpu-developer-features', 'disable-renderer-backgrounding', 'enable-unsafe-webgpu', 'enable-features',
@@ -22,6 +22,12 @@ module.exports = async function report({ app, win, errors }) {
   const page = (js) => win.webContents.executeJavaScript(js, true);
   const preferences = win.webContents.getLastWebPreferences() ?? {};
   const menu = Menu.getApplicationMenu();
+  // Before the menu is used and the window asked to close: the size of the page, and the screen it must fit.
+  const sizes = {
+    contentSize: win.getContentSize(),
+    pageSize: await page('[window.innerWidth, window.innerHeight]'),
+    workArea: screen.getDisplayMatching(win.getBounds()).workArea,
+  };
 
   // The menu: every entry that is a command of the interface, chosen once.
   await page(`void (window.menuCommands = [], window.closeRequests = 0,
@@ -41,6 +47,7 @@ module.exports = async function report({ app, win, errors }) {
   const facts = {
     visible: win.isVisible(),
     menuBarVisible: win.isMenuBarVisible(),
+    ...sizes,
     windows: BrowserWindow.getAllWindows().length,
     webPreferences: {
       ...Object.fromEntries(PREFERENCES.map((name) => [name, preferences[name]])),

@@ -1,6 +1,7 @@
 import { create, globals } from 'webgpu';
 
 import { GpuUnavailableError, openGpu, type GpuContext, type GpuProfile } from '../../core/runtime.ts';
+import { queryNvidiaSmi, withCardMemory } from './vram.ts';
 
 // runtime.md 1.5 rule 1: the object create() returns must stay reachable while its device is in use, or the
 // process hangs or crashes at the next asynchronous GPU callback. Keeping the adapter or the device does not help.
@@ -29,12 +30,15 @@ export async function createNodeGpu(opts?: { profile?: GpuProfile; adapter?: str
     for (const name of GLOBAL_NAMES) (globalThis as Record<string, unknown>)[name] = source[name];
     globalsAssigned = true;
   }
+  // runtime.md 1.3: asked while the device opens, and read once the adapter is known. It never rejects.
+  const cards = queryNvidiaSmi();
   let instance: GPU;
   let context: GpuContext;
   try {
     instance = create(adapter !== undefined ? [`adapter=${adapter}`] : []);
     instances.add(instance);
-    context = await openGpu(instance, { profile, log: process.env.OROGEN_GPU_LOG === '1' });
+    // The line of 1.3 is logged below, once caps holds what nvidia-smi said.
+    context = await openGpu(instance, { profile, log: false });
   } catch (thrown) {
     // The instance stays in the set: a device that failed the checks of 1.4 was destroyed, and its `lost` callback is still to come.
     alive = false;
@@ -43,12 +47,14 @@ export async function createNodeGpu(opts?: { profile?: GpuProfile; adapter?: str
     }
     throw thrown;
   }
+  const caps = withCardMemory(context.caps, await cards);
+  if (process.env.OROGEN_GPU_LOG === '1') console.info(`[orogen] gpu ${JSON.stringify(caps)}`);
 
   let destroyed = false;
   return {
     device: context.device,
     profile: context.profile,
-    caps: context.caps,
+    caps,
     get lost() { return context.lost; },
     get lostInfo() { return context.lostInfo; },
     onLost: (listener) => context.onLost(listener),

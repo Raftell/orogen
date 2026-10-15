@@ -42,6 +42,8 @@ export type { Catalog, CatalogEntry, CatalogGroup, PortInfo, PortKind, ProductCa
 export { createSearchIndex, matchText, PRIMARY_EXPORT, searchCatalog, titleRuns } from './node-search.ts';
 export type { MatchField, SearchHit, SearchIndex } from './node-search.ts';
 export { ADD_NODE_EVENT, addNodeType, NODE_DRAG_TYPE, requestAddNode, startNodeDrag } from './add-node.ts';
+// The name of a key, by the letter the user's layout types on it, for a panel's held keys (runtime.md 8.8 rule 2).
+export { keyNameOf } from './key-name.ts';
 export type { AddNodeDetail } from './add-node.ts';
 export { fromDisplay, fromHex, linearToSrgb, srgbToLinear, toDisplay, toHex } from './color.ts';
 export type { Rgb } from './color.ts';

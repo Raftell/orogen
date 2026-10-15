@@ -11,7 +11,7 @@ import { adapterName, baseName, failedNodes, formatBytes } from './format.ts';
 import { Gallery } from './Gallery.tsx';
 import { HelpDialog } from './Help.tsx';
 import { PreferencesDialog } from './Preferences.tsx';
-import { NO_DEVICE_TEXT, noGraphicsDevice, type Shell, type ShellDialog } from './shell.ts';
+import { NO_DEVICE_HELP, NO_DEVICE_TEXT, noGraphicsDevice, softwareRenderingChoice, type Shell, type ShellDialog } from './shell.ts';
 import { APPLICATION } from './version.ts';
 
 function Unsaved(props: { readonly shell: Shell; readonly dialog: Extract<ShellDialog, { kind: 'unsaved' }> }) {
@@ -175,7 +175,7 @@ function Problems(props: { readonly shell: Shell; readonly dialog: Extract<Shell
 
 function NoDevice(props: { readonly shell: Shell }) {
   const { shell } = props;
-  const software = shell.ctx.platform.softwareRendering;
+  const software = softwareRenderingChoice(shell.softwareRenderingOffered, shell.ctx.platform.softwareRendering);
   const message = useStore(shell.ctx.engineState, (state) => state.device.message);
   return (
     <Dialog
@@ -186,9 +186,9 @@ function NoDevice(props: { readonly shell: Shell }) {
       onClose={() => shell.closeDialog()}
       actions={
         <>
-          {software ? null : (
+          {software.restart ? (
             <Button className="og-dialog-actions-start" data-action="software" onClick={() => void shell.restartWithSoftwareRendering()}>Restart with Software Rendering</Button>
-          )}
+          ) : null}
           <Button data-action="close" onClick={() => shell.closeDialog()}>Close</Button>
           <Button variant="primary" data-action="retry" autoFocus onClick={() => { shell.closeDialog(); shell.runner.run('engine.retryDevice'); }}>Retry</Button>
         </>
@@ -196,7 +196,11 @@ function NoDevice(props: { readonly shell: Shell }) {
     >
       <p className="og-dialog-text" data-text="why">{NO_DEVICE_TEXT.why}</p>
       <p className="og-dialog-text" data-text="needs">{NO_DEVICE_TEXT.needs}</p>
-      <p className="og-dialog-text" data-text="software">{software ? NO_DEVICE_TEXT.onSoftware : NO_DEVICE_TEXT.software}</p>
+      <p className="og-dialog-text" data-text="software">{software.text}</p>
+      <p className="og-dialog-text" data-text="help">
+        <button type="button" className="og-dialog-link og-focusable" data-action="help" onClick={() => shell.showDialog({ kind: 'help', ...NO_DEVICE_HELP })}>{NO_DEVICE_TEXT.help}</button>
+        {NO_DEVICE_TEXT.helpAfter}
+      </p>
       {message ? <pre className="og-list-detail" data-text="message">{message}</pre> : null}
     </Dialog>
   );
@@ -321,7 +325,7 @@ export function Dialogs(props: { readonly shell: Shell }) {
     case 'building': return <Building shell={shell} dialog={dialog} />;
     case 'changed': return <Changed shell={shell} dialog={dialog} />;
     case 'recover': return <Recover shell={shell} dialog={dialog} />;
-    case 'help': return <HelpDialog shell={shell} page={dialog.page} />;
+    case 'help': return <HelpDialog shell={shell} page={dialog.page} anchor={dialog.anchor ?? null} />;
     case 'about': return <About shell={shell} />;
     case 'problems': return <Problems shell={shell} dialog={dialog} />;
     case 'failure': return <Failure shell={shell} dialog={dialog} />;

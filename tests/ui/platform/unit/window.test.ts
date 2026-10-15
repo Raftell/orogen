@@ -87,6 +87,16 @@ test('window: it is shown when its page is ready, and never when asked not to be
   assert.equal(visible.shown, 1);
 });
 
+test('window: the window of test mode, never shown, is sized by its page; the window the user sees by its frame', () => {
+  // testing.md 2.9: without useContentSize the frame of a Windows window takes its pixels from the page, and
+  // without autoHideMenuBar Electron gives the page the height of the hidden native menu bar besides.
+  const hidden = make(false, 'win32').options;
+  assert.deepEqual([hidden.useContentSize, hidden.autoHideMenuBar, hidden.width, hidden.height], [true, true, 1600, 1000]);
+  const shown = make(true, 'win32').options;
+  assert.deepEqual([shown.useContentSize, shown.autoHideMenuBar], [undefined, undefined], 'the user\'s window keeps its size and place as before (window-state.ts)');
+  assert.deepEqual([windowOptions('/app/dist/preload.cjs').useContentSize, windowOptions('/app/dist/preload.cjs', undefined, true).useContentSize], [undefined, true]);
+});
+
 test('window: the native menu is no bar inside the window, where the page draws its own', () => {
   // Windows and Linux put the application menu into the window; macOS shows it outside and is left alone.
   assert.deepEqual(make(true, 'win32').menuBar, [false]);

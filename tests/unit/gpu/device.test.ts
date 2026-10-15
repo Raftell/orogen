@@ -147,7 +147,7 @@ test('caps describe the adapter and the device, and are logged as one JSON line 
   assert.equal(caps.software, false);
   assert.deepEqual(caps.adapterFeatures, ['bgra8unorm-storage', 'texture-formats-tier1', 'timestamp-query'], 'sorted');
   assert.deepEqual(caps.wgslLanguageFeatures, LANGUAGE);
-  assert.equal(caps.vramBytes, null);
+  assert.deepEqual([caps.vramBytes, caps.vramSource], [null, null]);
   assert.equal(info.length, 1);
   assert.ok(info[0]!.startsWith('[orogen] gpu {') && !info[0]!.includes('\n'));
   assert.deepEqual(JSON.parse(info[0]!.slice('[orogen] gpu '.length)), caps);
@@ -198,8 +198,10 @@ test('vramBytes is the largest device-local heap, and backend what the platform 
   const heaps = [{ size: 10 * GiB, properties: 1 }, { size: 32 * GiB, properties: 2 }, { size: 0.25 * GiB, properties: 1 }];
   const gpu = await open(fakeGpu({ info: { memoryHeaps: heaps, backend: 'D3D12' } }), 'core');
   assert.equal(gpu.caps.vramBytes, 10 * GiB);
+  assert.equal(gpu.caps.vramSource, 'adapter', 'and says where it came from (runtime.md 1.3)');
   assert.equal(gpu.caps.adapter.backend, 'D3D12');
-  assert.equal((await open(fakeGpu({ info: { memoryHeaps: [{ size: 32 * GiB, properties: 2 }] } }), 'core')).caps.vramBytes, null, 'no device-local heap');
+  const none = (await open(fakeGpu({ info: { memoryHeaps: [{ size: 32 * GiB, properties: 2 }] } }), 'core')).caps;
+  assert.deepEqual([none.vramBytes, none.vramSource], [null, null], 'no device-local heap');
 });
 
 test('no adapter, no device and an unknown profile', async () => {

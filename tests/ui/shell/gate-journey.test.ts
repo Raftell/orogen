@@ -104,6 +104,21 @@ async function viewportPicture(app: AppDriver, file: string): Promise<ReturnType
   return cut(file, await boxOf(app, '[data-viewport="canvas"]'), await pageSize(app));
 }
 
+/**
+ * The share of the canvas that the terrain covers in the view from above, from its camera and the canvas's size:
+ * the canvas shows `span` of uv across and `span` × height / width of it down (src/viewport/camera.ts). It is no
+ * fixed number: it follows the panel's proportions. A fixed 0.3 failed on Windows with a whole picture (0.296), when
+ * the window's frame took its pixels from the page.
+ */
+async function topViewShare(app: AppDriver): Promise<number> {
+  const view = await camera(app);
+  assert.equal(view.kind, 'top');
+  if (view.kind !== 'top') return 0;
+  const box = await boxOf(app, '[data-viewport="canvas"]');
+  const covered = (center: number, extent: number): number => Math.max(0, Math.min(1, center + extent / 2) - Math.max(0, center - extent / 2)) / extent;
+  return covered(view.center[0], view.span) * covered(view.center[1], (view.span * box.height) / box.width);
+}
+
 test('gate journey: an example is opened, edited, built at 1009 and saved; a second application opens it and shows the same picture', async (t) => {
   const running: AppDriver[] = [];
   const launch = async (): Promise<AppDriver> => {
@@ -351,7 +366,11 @@ test('gate journey: an example is opened, edited, built at 1009 and saved; a sec
     await second.waitFor(`viewportTest.attr('data-mode') === 'top'`, PAGE_BACKSTOP_MS);
     const secondShown = await shot(second, '19-second-application');
     const [a, b] = [await viewportPicture(first, firstShown), await viewportPicture(second, secondShown)];
-    assert.ok(drawnShare(a) > 0.3, `the first application shows a terrain: ${drawnShare(a)}`);
+    // All of the terrain is drawn, but for a few pixels of a colour near the background's. What is drawn beside it
+    // (the readout over the canvas) adds about 0.012.
+    const framed = await topViewShare(first);
+    t.diagnostic(`from above the terrain covers ${framed.toFixed(3)} of the canvas; ${drawnShare(a).toFixed(3)} of it is not the background`);
+    assert.ok(drawnShare(a) > 0.95 * framed, `the first application shows a terrain: ${drawnShare(a)} of the canvas is drawn, where the terrain covers ${framed}`);
     const apart = difference(a, b);
     t.diagnostic(`the two pictures of the viewport: mean difference ${apart.mean.toFixed(3)} of 255, worst ${apart.worst}, ${(apart.differing * 100).toFixed(2)} % of the values differ by more than 8`);
     assert.ok(apart.mean < 1 && apart.differing < 0.01, `the second application shows the picture of the first: ${JSON.stringify(apart)}`);

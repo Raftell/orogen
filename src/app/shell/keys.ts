@@ -1,16 +1,23 @@
 // Keys (runtime.md 8.8 rules 2, 3 and 5): the notation, the key of a keyboard event, the keymap that the default
 // bindings and Preferences.keymap make together, and which command a key runs where. No DOM and no React: the
-// one key listener of the shell (key-listener.ts) calls this.
+// one key listener of the shell (dom.ts) calls this.
 
+import { KEY_NAME, keyName, keyNameOf, LATIN_LETTER, NOT_A_KEY } from '../ui/key-name.ts';
 import type { KeyBinding, PanelId } from '../ui/types.ts';
+
+export { keyName, keyNameOf };
 
 /** The members of a KeyboardEvent that say which key it is. */
 export interface KeyEventLike {
   readonly code: string;
+  /** The character the key types in the user's layout, or the name of one that types none (`Enter`, `Dead`, `F2`). */
+  readonly key: string;
   readonly ctrlKey: boolean;
   readonly metaKey: boolean;
   readonly altKey: boolean;
   readonly shiftKey: boolean;
+  /** KeyboardEvent's, for `AltGraph`: Linux reports AltGr as that, apart from Ctrl and Alt. */
+  getModifierState?(key: string): boolean;
 }
 
 /** `Mod` is Command on a Mac and Control everywhere else. */
@@ -22,28 +29,11 @@ export type KeyScope = PanelId | 'global';
 const MODIFIERS = ['Mod', 'Ctrl', 'Alt', 'Shift'] as const;
 type Modifier = (typeof MODIFIERS)[number];
 
-/** Codes that are a modifier or a lock by themselves: pressing one is no key of a binding. */
-const NOT_A_KEY: ReadonlySet<string> = new Set([
-  '', 'Unidentified', 'ShiftLeft', 'ShiftRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight',
-  'OSLeft', 'OSRight', 'CapsLock', 'NumLock', 'ScrollLock', 'Fn', 'FnLock', 'ContextMenu',
-]);
-
-const NAME = /^[A-Z][A-Za-z0-9]*$|^[0-9]$/;
 const FUNCTION_KEY = /^F([1-9]|1[0-9]|2[0-4])$/;
-
-/** The key name of a `KeyboardEvent.code`: `KeyB` is `B`, `Digit0` is `0`, every other code is its own name. Null: no key. */
-export function keyName(code: string): string | null {
-  if (NOT_A_KEY.has(code)) return null;
-  const letter = /^Key([A-Z])$/.exec(code);
-  if (letter) return letter[1]!;
-  const digit = /^Digit([0-9])$/.exec(code);
-  if (digit) return digit[1]!;
-  return NAME.test(code) ? code : null;
-}
 
 /** The key of a keyboard event in the notation of rule 2, or null when the event is a modifier alone. */
 export function keyOf(event: KeyEventLike, platform: KeyPlatform = 'other'): string | null {
-  const name = keyName(event.code);
+  const name = keyNameOf(event);
   if (name === null) return null;
   // Elsewhere than on a Mac the Meta key is the system's: a chord with it is not ours.
   if (platform === 'other' && event.metaKey) return null;
@@ -56,6 +46,17 @@ export function keyOf(event: KeyEventLike, platform: KeyPlatform = 'other'): str
   return [...MODIFIERS.filter((modifier) => held[modifier]), name].join('+');
 }
 
+/**
+ * Rule 3: whether the event types a character with AltGr. Windows reports AltGr as Ctrl and Alt held together, so
+ * AZERTY's € (AltGr+E) arrives as Ctrl+Alt+E: in a text field it is a character, and not the key Mod+Alt+E.
+ */
+export function typesWithAltGr(event: KeyEventLike): boolean {
+  if (event.metaKey) return false;
+  if (!(event.getModifierState?.('AltGraph') === true || (event.ctrlKey && event.altKey))) return false;
+  // Ctrl+Alt+Z on AZERTY, whose Z has no character on AltGr, still says z: that is a chord.
+  return event.key === 'Dead' || ([...event.key].length === 1 && event.key !== ' ' && !LATIN_LETTER.test(event.key));
+}
+
 interface ParsedKey { readonly modifiers: readonly Modifier[]; readonly name: string }
 
 function parse(key: string): ParsedKey | null {
@@ -63,7 +64,7 @@ function parse(key: string): ParsedKey | null {
   const parts = key.split('+');
   const name = parts.pop()!;
   // `KeyB` and `Digit0` are written `B` and `0`; a modifier is no key by itself.
-  if (!NAME.test(name) || /^Key[A-Z]$|^Digit[0-9]$/.test(name) || NOT_A_KEY.has(name) || MODIFIERS.some((m) => m === name)) return null;
+  if (!KEY_NAME.test(name) || /^Key[A-Z]$|^Digit[0-9]$/.test(name) || NOT_A_KEY.has(name) || MODIFIERS.some((m) => m === name)) return null;
   const modifiers: Modifier[] = [];
   for (const part of parts) {
     const modifier = MODIFIERS.find((m) => m === part);

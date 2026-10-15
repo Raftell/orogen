@@ -2,7 +2,8 @@
 // the pipeline, the manifest writer and the acceptance pattern call. Pure: no Node module, no GPU, no I/O.
 //
 // Every statement about Unreal behind these formulas carries its mark in the contract; the ones marked [U] are
-// unverified, and nothing here has been run in Unreal Engine (export-unreal.md section 11).
+// unverified, and those marked [T] were seen in the acceptance test's run on Unreal Engine 5.8 (export-unreal.md
+// section 11, 9.4).
 
 import { hashCell, hashU32, hashUnit } from '../core/api.ts';
 import type { HeightRange, LandscapeLayout } from '../core/runtime.ts';

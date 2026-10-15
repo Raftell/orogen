@@ -248,6 +248,8 @@ input, textarea { user-select: text; }
 /* ---- the shell's dialogs ---- */
 .og-dialog-text { margin: 0; user-select: text; }
 .og-dialog-text + .og-dialog-text { margin-top: var(--og-space-4); }
+.og-dialog-link { margin: 0; padding: 0; border: none; border-radius: var(--og-radius-small); background: none; color: var(--og-accent-text); font: inherit; cursor: pointer; }
+.og-dialog-link:hover { text-decoration: underline; }
 .og-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--og-space-2) var(--og-space-6); margin: 0; user-select: text; }
 .og-fact { display: contents; }
 .og-fact > dt { color: var(--og-text-secondary); }

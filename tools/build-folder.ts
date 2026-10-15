@@ -1,7 +1,10 @@
 // Where a build of the application is written, and how it gets into place (testing.md 8.2). A build takes its
 // time, and whoever starts the application meanwhile must find the application of before: so a build never
 // writes into the folder that is in use. It writes into a folder beside it, and that folder takes the other's
-// place by a rename when everything is in it. A build that fails leaves the folder in use as it was.
+// place by a rename when everything is in it. A build that fails leaves the folder in use as it was. Node has no
+// call that puts a folder in the place of one that holds files (a rename refuses that target on Linux and any
+// folder on Windows), so the folder is missing between two renames, and whoever starts the application waits
+// through that moment (`waitThroughSwap`, which launchApp of tests/helpers/app.ts calls).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -54,6 +57,28 @@ function filesOf(folder: string, prefix = ''): string[] {
     const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
     return entry.isDirectory() ? filesOf(folder, rel) : [rel];
   });
+}
+
+/**
+ * How long `waitThroughSwap` waits at the most: a backstop. The folder is missing for as long as the second
+ * rename takes: during one build on Windows 16 of 32 778 looks found it missing, on Linux none is seen.
+ */
+export const SWAP_WAIT_MS = 5_000;
+const SWAP_POLL_MS = 10;
+
+/**
+ * Which of `names`, paths relative to `folder`, are missing from it once a swap of `replaceFolder` that is under
+ * way has had the time to end: empty when all are there. Looks again every few milliseconds while one is missing,
+ * for `limitMs` at the most, so that whoever starts the application in the moment between the two renames finds
+ * the new build instead of no build.
+ */
+export async function waitThroughSwap(folder: string, names: readonly string[], limitMs: number = SWAP_WAIT_MS): Promise<string[]> {
+  const deadline = Date.now() + limitMs;
+  for (;;) {
+    const missing = names.filter((name) => !fs.existsSync(path.join(folder, name)));
+    if (missing.length === 0 || Date.now() >= deadline) return missing;
+    await new Promise<void>((resolve) => setTimeout(resolve, SWAP_POLL_MS));
+  }
 }
 
 /** What `replaceFolder` uses of the file system. A test hands in a rename that fails as it does for a folder in use. */

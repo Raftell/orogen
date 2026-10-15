@@ -10,6 +10,7 @@ import {
   type BuildEvent, type BuildProblem, type BuildResult, type Engine, type EvalEvent, type GpuContext, type GpuProfile, type GraphDoc,
 } from '../core/runtime.ts';
 import { NodeFileSink, NodeFileSource } from '../platform/node/files.ts';
+import { budgetLine } from '../platform/node/vram.ts';
 import { buildToFolder, intoFolder } from './folder.ts';
 import { checkMarker, isMarkerResolution, MARKER_DEFAULT_RES, MARKER_STEPS, writeMarkerBuild } from './unreal-test.ts';
 
@@ -160,16 +161,15 @@ async function build(args: readonly string[], signal: AbortSignal): Promise<numb
     process.stderr.write(`orogen build: ${thrown.message}\n`);
     return EXIT.noDevice;
   }
+  const budgetBytes = command.budgetBytes ?? budgetOf(gpu.caps, DEFAULT_PREFERENCES);
   let engine: Engine;
   try {
-    engine = await createEngine({
-      gpu, registry, files: NodeFileSource(path.dirname(command.project)), cpu: createNodeCpuRunner(),
-      budgetBytes: command.budgetBytes ?? budgetOf(gpu.caps, DEFAULT_PREFERENCES),
-    });
+    engine = await createEngine({ gpu, registry, files: NodeFileSource(path.dirname(command.project)), cpu: createNodeCpuRunner(), budgetBytes });
   } catch (thrown) {
     gpu.destroy();
     throw thrown;
   }
+  say(budgetLine(gpu.caps, budgetBytes, command.budgetBytes !== null));
 
   let lastTenth = -1;
   const started = performance.now();

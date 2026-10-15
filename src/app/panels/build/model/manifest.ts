@@ -311,7 +311,7 @@ export function importGroups(manifest: ManifestView, folder: string | null): Imp
     });
     groups.push({
       id: 'location', title: 'Location', step: '8',
-      note: 'This assumes that the panel\'s Location is the center of the landscape, which is unconfirmed; the check after the import settles it.',
+      note: 'The panel\'s Location is the center of the landscape (seen in Unreal Engine 5.8.3); the check after the import shows where the actor is.',
       rows: [
         { id: 'location-x', label: 'Location X', value: exact(transform.uiLocationCm.x), copy: exact(transform.uiLocationCm.x) },
         { id: 'location-y', label: 'Location Y', value: exact(transform.uiLocationCm.y), copy: exact(transform.uiLocationCm.y) },

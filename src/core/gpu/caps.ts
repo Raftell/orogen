@@ -22,8 +22,13 @@ export interface GpuCaps {
   readonly compactFormats: boolean;             // texture-formats-tier1 is enabled
   readonly timestampQuery: boolean;             // timestamp-query is enabled
   readonly formats: Readonly<Record<FieldKind, GPUTextureFormat>>;   // resolved once, engine.md 1.2
-  /** Largest device-local heap of adapter.info.memoryHeaps, in bytes; null when the platform does not expose it. */
+  /**
+   * The card's memory in bytes: the largest device-local heap of adapter.info.memoryHeaps, else, in Node, what
+   * nvidia-smi reports for this adapter's card (runtime.md 1.3); null when neither says.
+   */
   readonly vramBytes: number | null;
+  /** Where vramBytes came from; null when it is null. */
+  readonly vramSource: 'adapter' | 'nvidia-smi' | null;
 }
 
 const MAX_FEATURES: readonly GPUFeatureName[] = ['texture-formats-tier1', 'timestamp-query'];
@@ -120,6 +125,7 @@ export function probeCaps(gpu: GPU, adapter: GPUAdapter, device: GPUDevice): Gpu
       mask8: compactFormats ? 'r8unorm' : 'r32float',
     },
     vramBytes: heaps.length > 0 ? Math.max(...heaps) : null,
+    vramSource: heaps.length > 0 ? 'adapter' : null,
   };
 }
 

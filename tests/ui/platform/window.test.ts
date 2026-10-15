@@ -19,6 +19,10 @@ interface Facts {
   readonly visible: boolean;
   /** Whether the native menu is a bar inside the window. */
   readonly menuBarVisible: boolean;
+  /** win.getContentSize(), the page's innerWidth and innerHeight, and the work area of the window's screen. */
+  readonly contentSize: readonly [number, number];
+  readonly pageSize: readonly [number, number];
+  readonly workArea: { readonly width: number; readonly height: number };
   readonly windows: number;
   readonly webPreferences: Readonly<Record<string, unknown>>;
   readonly switches: Readonly<Record<string, string | null>>;
@@ -100,6 +104,20 @@ test('window: it opens hidden, with the preferences the contract fixes, on the p
   // 8.2 rule 7: the application has its native menu, and off macOS the window does not show it as a bar.
   if (process.platform !== 'darwin') assert.equal(facts.menuBarVisible, false, 'the page draws the one menu bar of the window');
   assert.deepEqual(facts.errors, []);
+});
+
+test('window: in test mode the page is 1600 × 1000 on every system, the frame on top of it', async (t) => {
+  // testing.md 2.9: on Windows the frame and the title bar were inside the window's size and took their pixels from
+  // the page, and three tests that depend on a panel's size failed there (8.5).
+  const facts = await mainFacts({});
+  t.diagnostic(`content ${facts.contentSize.join(' × ')}, page ${facts.pageSize.join(' × ')}, work area ${facts.workArea.width} × ${facts.workArea.height}`);
+  // A screen without room for the page and a frame cuts the window (the target machine's 1920 × 1080 has it).
+  if (facts.workArea.width < 1600 || facts.workArea.height < 1000) {
+    t.skip(`the screen's work area, ${facts.workArea.width} × ${facts.workArea.height}, has no room for a page of 1600 × 1000`);
+    return;
+  }
+  assert.deepEqual(facts.contentSize, [1600, 1000]);
+  assert.deepEqual(facts.pageSize, [1600, 1000], 'the page has all of it: no native menu bar takes a part');
 });
 
 test('window: an entry of the native menu reaches the page as its command', async () => {

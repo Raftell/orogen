@@ -1,7 +1,7 @@
 // The import guide the panel opens: the import by hand of docs/user/unreal-import.md, sections 1 to 4, word for
 // word (guide-text.ts holds the text, written by tests/ui/build/make-guide.ts), and which of a build's numbers
-// belong to which of its steps. Every statement about Unreal keeps the mark the documentation gives it: nothing
-// here has been run in Unreal Engine. No DOM and no React.
+// belong to which of its steps. Every statement about Unreal keeps the mark the documentation gives it: the
+// procedure has been run once, on Unreal Engine 5.8 (unreal-import.md 6.5). No DOM and no React.
 
 export interface GuideItem {
   readonly text: string;

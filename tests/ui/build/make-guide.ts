@@ -21,7 +21,7 @@ import type { GuideSection } from './guide.ts';
 
 export const GUIDE_DOCUMENT = ${literal(GUIDE_DOCUMENT)};
 
-/** How far a statement about Unreal has been checked, and that nobody has run the procedure. */
+/** How far a statement about Unreal has been checked, and how far the procedure has been run. */
 export const GUIDE_LEGEND: { readonly lead: string; readonly marks: readonly string[]; readonly warning: string } = ${literal(guide.legend)};
 
 export const GUIDE_SECTIONS: readonly GuideSection[] = ${literal(guide.sections)};

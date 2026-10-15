@@ -150,6 +150,7 @@ export async function render(command: RenderCommand, signal: AbortSignal): Promi
   const cli = await openEngine({ device: command.device, budgetBytes: command.budgetBytes, registry, files: source });
   let result: RenderResult;
   try {
+    process.stderr.write(`orogen render: ${cli.budgetLine}\n`);
     result = await renderPlan(cli, NodeFileSink(command.out), plan, { res, crop: command.crop, signal });
   } finally {
     await cli.close();

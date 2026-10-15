@@ -182,7 +182,7 @@ test('the build panel: its settings, and every command it registers', async (t) 
     await press(app, '[data-build-section="unreal"] [data-command="build.importGuide"]');
     await appears(app, '[data-ui="dialog"][data-dialog="import-guide"]');
     assert.deepEqual(await texts(app, '[data-dialog="import-guide"] h4'), ['1. Before you start', '2. Steps', '3. Importing a rebuilt terrain', '4. Known risks and workarounds']);
-    assert.match((await text(app, '[data-dialog="import-guide"] [data-build-note="guide-legend"]'))!, /^Nobody at Orogen has run this procedure in Unreal Engine\./);
+    assert.match((await text(app, '[data-dialog="import-guide"] [data-build-note="guide-legend"]'))!, /^This procedure has been run once, on one machine, with Unreal Engine 5\.8/, 'the guide says how far it was run (unreal-import.md 6.5)');
     assert.equal(await app.eval<number>(`document.querySelectorAll('[data-dialog="import-guide"] [data-build-guide="2"] > ol > li').length`), 17);
     // Step 7 holds the scale of this build, with a button that copies each digit.
     assert.equal(

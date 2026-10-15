@@ -85,7 +85,10 @@ test('caps are read from the adapter and the device', () => {
   assert.equal(256 % caps.limits.minUniformBufferOffsetAlignment, 0);
   assert.equal(caps.compactFormats, caps.features.includes('texture-formats-tier1'));
   assert.equal(caps.timestampQuery, caps.features.includes('timestamp-query'));
-  assert.equal(caps.vramBytes, null, 'Dawn in Node reports no memory heaps');
+  // Dawn in Node reports no memory heaps: the figure is nvidia-smi's, in whole MiB, or there is none (runtime.md 1.3).
+  assert.ok(caps.vramSource === null || caps.vramSource === 'nvidia-smi', `vramSource ${String(caps.vramSource)}`);
+  assert.equal(caps.vramBytes === null, caps.vramSource === null, `vramBytes ${caps.vramBytes} from ${String(caps.vramSource)}`);
+  if (caps.vramBytes !== null) assert.ok(caps.vramBytes > 0 && Number.isSafeInteger(caps.vramBytes / 2 ** 20), `vramBytes ${caps.vramBytes}`);
   assert.equal(caps.adapter.backend, null);
   assert.deepEqual(
     caps.formats,

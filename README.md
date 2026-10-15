@@ -15,20 +15,24 @@ written in TypeScript and WGSL. It is developed on Linux and is meant to run on 
 
 | | State |
 | --- | --- |
-| The engine, 86 nodes, the build with the Unreal manifest, the command-line program | Built. Tested on Linux on an NVIDIA GTX 1660 Ti, on Mesa's software adapter, and on Windows' software Direct3D 12 adapter in CI |
-| The desktop application: graph, viewport, inspector, library with six example projects, build panel | Built. Tested on Linux only, in a window that is never shown, with input sent by tests |
-| The Windows build | Packed by CI, unsigned. CI also starts it once, hidden, on a Windows machine without a graphics card |
+| The engine, 86 nodes, the build with the Unreal manifest, the command-line program | Built. Tested on Linux on an NVIDIA GTX 1660 Ti, on Mesa's software adapter, on Windows' software Direct3D 12 adapter in CI, and on the target machine's RTX 3080 |
+| The desktop application: graph, viewport, inspector, library with six example projects, build panel | Built. Tested on Linux in a window that is never shown, with input sent by tests. Used by hand once on Windows, on the target machine |
+| The Windows build | Packed by CI, unsigned. Started and used on the target machine (Windows 11, RTX 3080) on 2026-10-15 |
 
-**Not verified by anyone:**
+**Verified once, on one machine**
+([the first run](docs/user/first-run-on-windows.md#the-first-run-2026-10-15)): the Windows build on the RTX
+3080, by hand, with builds at 4033 and 8129; the GPU and Electron test suites there; and the import into Unreal
+Engine 5.8, where the acceptance test passed every check and a build of *Alpine Range* imported with its layers
+([results](docs/user/unreal-import.md#65-results-on-unreal-engine-58)).
 
-- **Windows hardware.** Nothing has run on a Windows machine with a graphics card: not the application, not a
-  build, not the tests. The target is an RTX 3080 with 10 GB.
-- **A visible window and a real mouse**, on any system. Every test drives a hidden window with synthesised input.
-  Resizing the window is the one thing known to end the graphics process in such a hidden window; what a visible
-  one does is unknown.
-- **The import into Unreal Engine.** The procedure is written from Epic's documentation. Nobody has imported a
-  file of Orogen's into Unreal Engine. An acceptance pattern exists to settle orientation, location and heights
-  in one import ([import guide](docs/user/unreal-import.md#6-the-acceptance-test)).
+**Not yet verified:**
+
+- **The fixes made after that run** for the UI tests that failed on Windows and for keyboard layouts: they have
+  run on Linux only.
+- **A visible window on Linux.** Every test drives a hidden window with synthesised input. Resizing the window is
+  the one thing known to end the graphics process in such a hidden window; on Windows a visible one held.
+- **Unreal beyond that run**: other versions of 5.8, and layers given on the New Landscape panel in a World
+  Partition level ([import guide](docs/user/unreal-import.md#8-what-is-still-unverified)).
 - **The Unreal plugin** (`unreal/OrogenBridge`): C++ source that has never been compiled.
 - **The newest CI steps.** The start of the packaged application on a Windows runner, the unit tests on Windows
   and the first-start step of the Electron job were added without a run to show for them. Read the run.

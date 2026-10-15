@@ -116,8 +116,8 @@ jobs:
           if-no-files-found: ignore
 
   # The Windows package, unsigned (testing.md 9.1): the application folder and the portable executable, each an
-  # artifact of the run under its own name, a start of the packaged application on the runner as it is, and one on
-  # the software adapter, which proves its engine worker.
+  # artifact of the run under its own name, a start of the packaged application on the runner as it is, and one that
+  # tries the software adapter (advisory: it does not work on Windows, testing.md 9.3).
   package-windows:
     runs-on: windows-latest
     timeout-minutes: 30
@@ -162,10 +162,11 @@ jobs:
       - name: Its engine opens a GPU device
         continue-on-error: true
         run: node .github/scripts/launch-check.mjs --read test-output/launch-check/packaged.json --require-device
-      # The engine path of the packaged application, on the software adapter a user restarts with (SwiftShader,
-      # runtime.md 1.6, 8.7 rule 16), as the electron-kernels job starts the application on Linux: the engine worker
-      # loads from the archive, opens a device and computes the start-up project. A regression there fails the job.
-      # Not required until it has passed here: on its first run Chromium gave WebGPU no adapter on this runner.
+      # The engine path of the packaged application on SwiftShader (runtime.md 1.6), as the electron-kernels job
+      # starts the application on Linux. Advisory: software mode gives WebGPU no adapter on Windows, here after three
+      # rounds of switches and beside a working RTX 3080 on the target machine (docs/ARCHITECTURE.md section 2), so
+      # the application offers it on Linux only (runtime.md 8.7 rule 16). It stays to say when a later Electron
+      # changes that; do not make it required on the strength of a single pass.
       - name: Its engine computes on the software adapter
         continue-on-error: true
         run: node .github/scripts/launch-check.mjs --app release/win-unpacked/Orogen.exe --result test-output/launch-check/packaged-software.json --require-evaluation --timeout 600

@@ -266,6 +266,18 @@ export function look(camera: OrbitCamera, dx: number, dy: number): OrbitCamera {
 
 export interface FlyKeys { readonly forward: number; readonly right: number; readonly up: number }
 
+/**
+ * Whether a key pressed on the picture brings the camera nearer (1), takes it away (-1) or neither (0). By the
+ * character the key types, as a shortcut's letter (runtime.md 8.8 rule 2), and not by its place as the fly keys:
+ * on AZERTY minus is the key of 6 and the US place of minus types `)`; on QWERTZ plus lies right of Ü. `=` and `_`
+ * count where they share the key of plus or of minus, as on a US keyboard; the keypad's two always do.
+ */
+export function zoomKey(event: { readonly code: string; readonly key: string }): 1 | -1 | 0 {
+  if (event.code === 'NumpadAdd' || event.key === '+' || (event.key === '=' && event.code === 'Equal')) return 1;
+  if (event.code === 'NumpadSubtract' || event.key === '-' || (event.key === '_' && event.code === 'Minus')) return -1;
+  return 0;
+}
+
 /** The movement the held keys ask for, by KeyboardEvent.code: W and S along the view, A and D across it, E and Q up and down. */
 export function flyKeys(held: ReadonlySet<string>): FlyKeys {
   const axis = (plus: string, minus: string): number => (held.has(plus) ? 1 : 0) - (held.has(minus) ? 1 : 0);

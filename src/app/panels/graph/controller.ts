@@ -9,7 +9,7 @@ import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, Pointe
 import { inputsOf, newId, portLabel, validateConnection, type GraphDoc } from '../../../core/runtime.ts';
 import type { DocState } from '../../state/doc-store.ts';
 import { selectNodes, setSelection } from '../../state/ui-store.ts';
-import { ADD_NODE_EVENT, addNodeType, commandItems, NODE_DRAG_TYPE, type AppServices, type CommandContext, type MenuItemSpec } from '../../ui/index.ts';
+import { ADD_NODE_EVENT, addNodeType, commandItems, keyNameOf, NODE_DRAG_TYPE, type AppServices, type CommandContext, type MenuItemSpec } from '../../ui/index.ts';
 import {
   addNodeAt, addNodeNow, commitMove, connectPorts, copyText, cutText, disconnectEdges, pasteText, reconnectEdge, saveViewport, selectedGroups, selectedNodes, setGroupColor, viewsOf,
 } from './actions.ts';
@@ -763,7 +763,8 @@ export function createController(app: AppServices, flow: ReactFlowInstance, libr
           }
           return;
         }
-        if (event.code !== 'KeyY' && event.code !== 'Space') return;
+        // Y is the key that types Y, as the keys of the keymap are: on QWERTZ it lies where QWERTY has Z.
+        if (keyNameOf(event) !== 'Y' && event.code !== 'Space') return;
         const held = event.type === 'keydown' && !event.ctrlKey && !event.metaKey && !event.altKey
           && !isTextField(event.target) && ctx.ui.getState().focusedPanel === 'graph' && graphStore.getState().palette === null;
         if (event.code === 'Space') {

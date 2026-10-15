@@ -272,6 +272,8 @@ export function createRig(options: {
   readonly testMode?: boolean;
   /** The run was started with software rendering (PlatformApi.softwareRendering). */
   readonly softwareRendering?: boolean;
+  /** navigator.platform of the page; default "Linux x86_64", whatever system the test runs on. */
+  readonly system?: string;
   readonly panels?: PanelDef[];
   readonly preferences?: Partial<Preferences>;
   /** How long a build that was told to stop is waited for; default the shell's own. */
@@ -300,6 +302,7 @@ export function createRig(options: {
       closeWindow: () => { rig.closed++; },
       restartEngine: () => { rig.restarts++; },
     },
+    system: options.system ?? 'Linux x86_64',
     now: () => 1_000,
     ...(options.buildStopBackstopMs === undefined ? {} : { buildStopBackstopMs: options.buildStopBackstopMs }),
     ...(options.recoveryDelayMs === undefined ? {} : { recoveryDelayMs: options.recoveryDelayMs }),

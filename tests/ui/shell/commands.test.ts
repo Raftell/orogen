@@ -357,6 +357,64 @@ test('commands: keys run commands through the keymap, and undo and redo follow i
   });
 });
 
+test('commands: a letter is the one the layout types on the key, so Ctrl+Z undoes on AZERTY and QWERTZ, and a character typed with AltGr stays in its field', async () => {
+  await withApp({}, async (app) => {
+    await ready(app);
+    await docked(app);
+    await settled(app);
+    const past = (): Promise<number> => app.eval<number>(`orogenTest.ctx.doc.getState().past.length`);
+    const future = (): Promise<number> => app.eval<number>(`orogenTest.ctx.doc.getState().future.length`);
+    /** The key on the focused element; true when nothing took it. */
+    const typed = (code: string, mods: { ctrl?: boolean; shift?: boolean; alt?: boolean; key: string }, target?: string): Promise<boolean> =>
+      app.eval<boolean>(`shellTest.key(${quote(code)}, ${quote(mods)}${target === undefined ? '' : `, ${quote(target)}`})`);
+    await setSeed(app, 1);
+    await setSeed(app, 2);
+    const steps = await past();
+    assert.ok(steps >= 1);
+
+    // AZERTY: Z lies in QWERTY's W place. The user's report: Ctrl with the key marked Z did nothing, Ctrl+W undid.
+    assert.equal(await typed('KeyW', { ctrl: true, key: 'z' }), false, 'AZERTY Ctrl+Z is taken');
+    assert.deepEqual([await past(), await future()], [steps - 1, 1], 'and undoes');
+    assert.equal(await typed('KeyZ', { ctrl: true, key: 'w' }), true, 'AZERTY Ctrl+W is bound to nothing');
+    assert.deepEqual([await past(), await future()], [steps - 1, 1]);
+    assert.equal(await typed('KeyW', { ctrl: true, shift: true, key: 'Z' }), false);
+    assert.deepEqual([await past(), await future()], [steps, 0], 'AZERTY Ctrl+Shift+Z redoes');
+    // QWERTZ: Z lies in QWERTY's Y place, and Y in its Z place.
+    await typed('KeyY', { ctrl: true, key: 'z' });
+    assert.deepEqual([await past(), await future()], [steps - 1, 1], 'QWERTZ Ctrl+Z undoes');
+    await typed('KeyZ', { ctrl: true, key: 'y' });
+    assert.deepEqual([await past(), await future()], [steps, 0], 'QWERTZ Ctrl+Y redoes');
+    // QWERTY, as before.
+    await key(app, 'KeyZ', { ctrl: true });
+    assert.deepEqual([await past(), await future()], [steps - 1, 1], 'QWERTY Ctrl+Z undoes');
+    await key(app, 'KeyY', { ctrl: true });
+    assert.deepEqual([await past(), await future()], [steps, 0], 'QWERTY Ctrl+Y redoes');
+    // Russian: no Latin letter on the key, which keeps its QWERTY place.
+    await typed('KeyZ', { ctrl: true, key: 'я' });
+    assert.deepEqual([await past(), await future()], [steps - 1, 1], 'Russian Ctrl+я undoes');
+    await key(app, 'KeyY', { ctrl: true });
+
+    // AltGr, which Windows reports as Ctrl and Alt: on AZERTY AltGr+E types €. Bound to a command, the chord runs
+    // it outside a text field and leaves the character to a field.
+    await app.eval(`void orogenTest.shell.state.setState({ preferences: { ...orogenTest.shell.state.getState().preferences, keymap: { 'engine.togglePause': 'Mod+Alt+E' } } })`);
+    const paused = (): Promise<boolean> => app.eval<boolean>(`orogenTest.shell.state.getState().paused`);
+    await app.eval(`void (() => {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.id = 'altgr-field';
+      document.querySelector('[data-panel="inspector"]').append(input);
+      shellTest.focus(input);
+    })()`);
+    assert.equal(await typed('KeyE', { ctrl: true, alt: true, key: '€' }, '#altgr-field'), true, 'the field has its €');
+    assert.equal(await paused(), false);
+    await app.eval(`void document.querySelector('#altgr-field').remove()`);
+    assert.equal(await typed('KeyE', { ctrl: true, alt: true, key: '€' }, 'body'), false);
+    assert.equal(await paused(), true, 'outside a field it is the chord');
+    await typed('KeyE', { ctrl: true, alt: true, key: '€' }, 'body');
+    assert.equal(await paused(), false);
+  });
+});
+
 test('commands: the Help menu opens the pages of the user documentation, and About says the version and the graphics adapter', async (t) => {
   await withApp({}, async (app) => {
     const caps = await ready(app);

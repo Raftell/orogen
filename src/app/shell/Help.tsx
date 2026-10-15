@@ -2,7 +2,7 @@
 // Markdown. A link to another page opens that page here, a link into a page goes to its heading, and a web
 // address is handed to the system's browser. Nothing of a page becomes HTML but through the elements made here.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { Button, Dialog } from '../ui/index.ts';
 import { linkTarget, parseMarkdown, plainText, type Block, type Inline } from './help/markdown.ts';
@@ -80,22 +80,25 @@ function Blocks(props: { readonly blocks: readonly Block[]; readonly go: (href: 
   });
 }
 
-export function HelpDialog(props: { readonly shell: Shell; readonly page: string }) {
+export function HelpDialog(props: { readonly shell: Shell; readonly page: string; readonly anchor: string | null }) {
   const { shell } = props;
-  const [trail, setTrail] = useState<readonly Place[]>([{ page: props.page, anchor: null }]);
+  const [trail, setTrail] = useState<readonly Place[]>([{ page: props.page, anchor: props.anchor }]);
   const place = trail[trail.length - 1]!;
-  const body = useRef<HTMLDivElement>(null);
+  // State, not a ref: the dialog mounts its content in a portal after this component's first effect, and the
+  // place the reader opens at (`anchor`) is shown only once the text is there.
+  const [body, setBody] = useState<HTMLDivElement | null>(null);
   const text = Object.hasOwn(HELP_TEXTS, place.page) ? HELP_TEXTS[place.page]! : null;
   const blocks = useMemo(() => (text === null ? [] : parseMarkdown(text)), [text]);
   const titles = useMemo(() => PAGES.map((page) => ({ page, title: titleOf(page, parseMarkdown(HELP_TEXTS[page]!.slice(0, 2000))) })), []);
 
   // A new place: its heading at the top of what is shown, or the top of the page.
   useEffect(() => {
-    const scroller = body.current?.closest('.og-dialog-body') ?? body.current;
-    const target = place.anchor === null ? null : body.current?.querySelector(`[data-help-anchor="${CSS.escape(place.anchor)}"]`);
+    if (body === null) return;
+    const scroller = body.closest('.og-dialog-body') ?? body;
+    const target = place.anchor === null ? null : body.querySelector(`[data-help-anchor="${CSS.escape(place.anchor)}"]`);
     if (target) target.scrollIntoView({ block: 'start' });
-    else scroller?.scrollTo({ top: 0 });
-  }, [place]);
+    else scroller.scrollTo({ top: 0 });
+  }, [place, body]);
 
   function go(href: string): void {
     const target = linkTarget(href, place.page, PAGES);
@@ -142,7 +145,7 @@ export function HelpDialog(props: { readonly shell: Shell; readonly page: string
             </a>
           ))}
         </nav>
-        <div className="og-help-text" ref={body} data-help="text">
+        <div className="og-help-text" ref={setBody} data-help="text">
           {text === null ? <p>The page {place.page} is not part of this build of Orogen.</p> : <Blocks blocks={blocks} go={go} />}
         </div>
       </div>

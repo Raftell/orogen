@@ -127,9 +127,15 @@ test('a drag is exact and stops with the pointer; with Ctrl it is a fine one; an
     await app.eval(`void viewportTest.hostKey('ArrowLeft')`);
     const turned = await camera(app) as Orbit;
     assert.ok(turned.yaw !== settledCamera.yaw, 'an arrow key turns the camera while the picture has the focus');
-    await app.eval(`void viewportTest.hostKey('Equal')`);
+    await app.eval(`void viewportTest.hostKey('Equal', { key: '=' })`);
     const nearer = await camera(app) as Orbit;
     assert.ok(nearer.distance < turned.distance, 'and plus brings it nearer');
+    // Plus and minus are the keys that type them (runtime.md 8.8 rule 2): on AZERTY minus is the key of 6, and the
+    // US place of minus types ")" there.
+    await app.eval(`void viewportTest.hostKey('Minus', { key: ')' })`);
+    assert.equal((await camera(app) as Orbit).distance, nearer.distance, 'AZERTY ) is no minus');
+    await app.eval(`void viewportTest.hostKey('Digit6', { key: '-' })`);
+    assert.ok((await camera(app) as Orbit).distance > nearer.distance, 'AZERTY - takes the camera away');
 
     // ---- and a text field's while one has it: the entry of the vertical scale, in the panel's own toolbar ----
     await app.eval(`void (shellTest.focus('[data-viewport="toolbar"] [aria-label="Vertical scale"]'), shellTest.key('Enter', {}, '[data-viewport="toolbar"] [aria-label="Vertical scale"]'))`);

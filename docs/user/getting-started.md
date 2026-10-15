@@ -7,10 +7,11 @@ from source, the command-line program, the example projects and the tests. There
 **What has and has not been run on Windows.** Orogen is developed on Linux with an NVIDIA GTX 1660 Ti. On
 Windows, the project's automated checks run the engine's tests on Windows' software graphics adapter (WARP,
 "Microsoft Basic Render Driver"), which proves that the shaders compile and compute correctly through Direct3D
-12, and they pack the application and start it once, hidden, on a machine without a graphics card. **Nothing has
-been run on a Windows machine with a graphics card, and nobody has seen the application's window on Windows.**
-Expect to be the first; [First run on Windows](first-run-on-windows.md) is the list of what to try, in order, and
-what to send back.
+12, and they pack the application and start it once, hidden, on a machine without a graphics card. On
+2026-10-15 the application, builds and the test suites ran on one Windows machine with a graphics card, the
+target machine with its RTX 3080: [First run on Windows](first-run-on-windows.md#the-first-run-2026-10-15)
+records what each step showed, and is the list of what to try, in order, on another machine, and what to send
+back.
 
 ## 1. The Windows build, without installing anything
 
@@ -95,7 +96,7 @@ This prints what Orogen sees of the graphics device, as JSON. Look at the first 
 | You see | Meaning | Do this |
 | --- | --- | --- |
 | your card, `"software": false` | Orogen computes on the card | carry on |
-| `microsoft-basic-render-driver`, `"software": true` | Orogen chose Windows' software adapter | name your card, for example `node src/cli/main.ts probe --adapter NVIDIA`. `--adapter` takes any part of the adapter's name, with the same capitals: on the development machine `NVIDIA` and `GTX` select the card and `nvidia` selects nothing. Which adapter a Windows machine with a card picks by default, and what its card is called there, is not known: this has not been run on one |
+| `microsoft-basic-render-driver`, `"software": true` | Orogen chose Windows' software adapter | name your card, for example `node src/cli/main.ts probe --adapter NVIDIA`. `--adapter` takes any part of the adapter's name, with the same capitals: on the development machine `NVIDIA` and `GTX` select the card and `nvidia` selects nothing. On the target machine the default was the card, `nvidia-geforce-rtx-3080`, without `--adapter` |
 | `No WebGPU adapter is available`, exit code 3 | no usable device | update the graphics driver |
 
 Two lines that begin `Warning: maxDynamicUniformBuffersPerPipelineLayout` may appear before the output on
@@ -177,7 +178,9 @@ and at the right the inspector, with the node library and the build panel as two
 
 1. **Read the status bar** at the foot of the window: `Ready` and the name of your graphics card. `Software
    adapter: everything is slow` means Orogen is not on the card. `Graphics device failed` has a **Retry** button.
-   `No graphics device` means Windows offered Orogen no card it can use: a window says why, and what helps.
+   `No graphics device` means Windows offered Orogen no card it can use: a window says why, and links to
+   [troubleshooting the graphics device](application.md#troubleshooting-the-graphics-device). On Windows Orogen
+   cannot run without the card: there is no software rendering to fall back on.
 2. **Open an example.** In the **Library** panel, at the lower right: **Examples**, **Open** on *First Terrain*
    (three nodes) or *Alpine Range* (twenty-one).
 3. **Look.** Drag in the viewport to turn the camera, turn the wheel to come nearer, `F6` for the view from

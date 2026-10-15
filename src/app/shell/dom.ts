@@ -8,7 +8,7 @@ import type { UiState } from '../state/ui-store.ts';
 import type { PanelId } from '../ui/types.ts';
 import type { EditAction, EditHost } from './app-commands.ts';
 import { PANEL_IDS } from './commands.ts';
-import { keyOf } from './keys.ts';
+import { keyOf, typesWithAltGr } from './keys.ts';
 import type { Shell, ShellHost } from './shell.ts';
 
 /** Elements that open above the page (menus, lists, popovers, dialogs, the palette) carry this attribute. */
@@ -118,7 +118,9 @@ export function createShellDom(ui: StoreApi<UiState>): ShellDom {
         if (dialog !== null || palette !== null || inChrome(event.target)) return;
         const key = keyOf(event, shell.keyPlatform);
         if (key === null) return;
-        const command = shell.keymap().resolve(key, { focusedPanel: ui.getState().focusedPanel, textField: isTextField(event.target), typing: holdsText(event.target) });
+        const textField = isTextField(event.target);
+        if (textField && typesWithAltGr(event)) return;
+        const command = shell.keymap().resolve(key, { focusedPanel: ui.getState().focusedPanel, textField, typing: holdsText(event.target) });
         if (command === null) return;
         event.preventDefault();
         event.stopPropagation();

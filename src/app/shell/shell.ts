@@ -27,15 +27,15 @@ export type ShellDialog =
   | { readonly kind: 'changed'; readonly file: string }
   /** A run before this one kept a project with unsaved changes: `project` is its name, `savedAt` when it was kept. */
   | { readonly kind: 'recover'; readonly project: string; readonly savedAt: number }
-  /** A page of the user documentation, shown in the application: its name in docs/user. */
-  | { readonly kind: 'help'; readonly page: string }
+  /** A page of the user documentation, shown in the application: its name in docs/user, and a heading or an anchor of it to show first. */
+  | { readonly kind: 'help'; readonly page: string; readonly anchor?: string }
   | { readonly kind: 'about' }
   | { readonly kind: 'preferences' }
   | { readonly kind: 'errors' }
   | { readonly kind: 'gallery' }
   | { readonly kind: 'problems'; readonly file: string; readonly problems: readonly DocProblem[] }
   | { readonly kind: 'failure'; readonly title: string; readonly message: string }
-  /** The engine found no graphics device at all: why, what helps, and software rendering (8.7 rule 16). */
+  /** The engine found no graphics device at all: why, what helps, and, where the system has it, software rendering (8.7 rule 16). */
   | { readonly kind: 'noDevice' };
 
 export interface ShownNotice extends Notice {
@@ -71,22 +71,46 @@ export const DEVICE_LOST_NOTICE = 'The graphics device was lost and is being rec
 export const DEVICE_BACK_NOTICE = 'The graphics device is back';
 /** Said when the engine has a software adapter after it had the graphics card: everything still works, a hundred times slower. */
 export const SOFTWARE_ADAPTER_NOTICE = 'The engine is now on a software adapter, without the graphics card: previews and builds are many times slower. Restart Orogen to get the graphics card back';
-/** The words of 8.7 rule 16: what WebGPU needs, what helps, and what software rendering is for. */
+/** The words of 8.7 rule 16: what WebGPU needs, what helps, and what software rendering is for where the system has it. */
 export const NO_DEVICE_TEXT = {
   title: 'Orogen found no graphics device it can use',
   why: 'Orogen computes and draws terrains on the graphics card, through WebGPU, and the system offered it none.',
   needs: 'On Windows, WebGPU needs a graphics card with DirectX 12 and a current driver from its maker (NVIDIA, AMD or Intel). A remote desktop session or a virtual machine often has none. Install or update the driver, then choose Retry.',
   software: 'Orogen can also restart with software rendering: the processor does the graphics card\'s work, many times slower. It is for opening and checking a project, not for builds. It lasts until Orogen is closed; the next start uses the graphics card again.',
   onSoftware: 'This run already uses software rendering, and no software adapter was offered either.',
+  unoffered: 'On Windows Orogen cannot work without the graphics card: there is no software rendering to fall back on, because Chromium, which Orogen runs in, gives WebGPU no software adapter there.',
+  /** The words of the link to NO_DEVICE_HELP; the sentence goes on with `helpAfter`. */
+  help: 'Troubleshooting the graphics device',
+  helpAfter: ', in the User Guide, lists what to check and what to send when it does not help.',
 } as const;
+
+/** Where the User Guide says what to check when there is no graphics device: a page of docs/user and a heading of it. */
+export const NO_DEVICE_HELP = { page: 'application.md', anchor: 'troubleshooting-the-graphics-device' } as const;
 
 /** Said when the main process has taken the request to restart with software rendering (8.7 rule 16). */
 export const SOFTWARE_RESTART_NOTICE = 'Orogen is restarting with software rendering';
 
 /**
+ * Whether Restart with Software Rendering is offered on this system (8.7 rule 16). `system` is navigator.platform
+ * as the page has it ("Win32" on every Windows, "Linux x86_64") or Node's process.platform ("win32", "linux"):
+ * both name Windows with the letters "win" first. Not on Windows: there Electron 44 gave WebGPU no adapter in
+ * software mode, on a runner without a GPU and on a machine with a working RTX 3080 (ARCHITECTURE.md section 2).
+ */
+export const offersSoftwareRendering = (system: string): boolean => !/^win/i.test(system);
+
+/**
+ * What the explanation of 8.7 rule 16 says of software rendering, and whether it offers the restart: `offered`
+ * is offersSoftwareRendering of the system, `running` whether this run already has it (PlatformApi.softwareRendering).
+ */
+export function softwareRenderingChoice(offered: boolean, running: boolean): { readonly restart: boolean; readonly text: string } {
+  if (!offered) return { restart: false, text: NO_DEVICE_TEXT.unoffered };
+  return running ? { restart: false, text: NO_DEVICE_TEXT.onSoftware } : { restart: true, text: NO_DEVICE_TEXT.software };
+}
+
+/**
  * Whether the engine stopped because the platform offers it no graphics device at all, and never had one: the case
- * the shell explains and offers software rendering for (8.7 rule 16). A device that was found and failed, and a
- * recovery that failed after a device was ready, are others: Retry is for them.
+ * the shell explains, and offers software rendering for where the system has it (8.7 rule 16). A device that was
+ * found and failed, and a recovery that failed after a device was ready, are others: Retry is for them.
  */
 export const noGraphicsDevice = (device: EngineState['device']): boolean => device.state === 'failed' && device.caps === null && foundNoAdapter(device.message);
 
@@ -121,6 +145,8 @@ export interface ShellOptions {
   readonly preferences: Preferences;
   readonly host: ShellHost;
   readonly keyPlatform?: KeyPlatform;
+  /** The system the page runs on, as offersSoftwareRendering reads it; default navigator.platform. */
+  readonly system?: string;
   readonly now?: () => number;
   /** Default BUILD_STOP_BACKSTOP_MS. */
   readonly buildStopBackstopMs?: number;
@@ -138,6 +164,8 @@ export interface Shell {
   /** What panel components get through `useApp()`. */
   readonly services: AppServices;
   readonly keyPlatform: KeyPlatform;
+  /** Whether this system has Restart with Software Rendering (offersSoftwareRendering): not on Windows. */
+  readonly softwareRenderingOffered: boolean;
   /** The bindings in force: the defaults with Preferences.keymap applied. The same object until the keymap changes. */
   keymap(): Keymap;
   menus(): MenuModel[];
@@ -163,6 +191,7 @@ export interface Shell {
   /**
    * The user chose software rendering (8.7 rule 16): the questions of leaving the project are asked, and when the
    * project may be left the main process ends this run and starts another that opens it. Resolves with whether it was asked to.
+   * Where the system does not offer it (`softwareRenderingOffered`), nothing is asked and it resolves false.
    */
   restartWithSoftwareRendering(): Promise<boolean>;
   resetLayout(): void;
@@ -180,6 +209,7 @@ const messageOf = (thrown: unknown): string => (thrown instanceof Error ? thrown
 export function createShell(options: ShellOptions): Shell {
   const { doc, engineState, ui, engine, platform, panels, host } = options;
   const keyPlatform = options.keyPlatform ?? 'other';
+  const softwareRenderingOffered = offersSoftwareRendering(options.system ?? globalThis.navigator.platform);
   const now = options.now ?? (() => Date.now());
 
   const state = createStore<ShellState>()(() => ({
@@ -486,6 +516,7 @@ export function createShell(options: ShellOptions): Shell {
     project,
     services,
     keyPlatform,
+    softwareRenderingOffered,
     keymap: currentKeymap,
     menus: () => buildMenus(commands, currentKeymap()),
     notify: (notice) => { notify(notice); },
@@ -512,6 +543,7 @@ export function createShell(options: ShellOptions): Shell {
     answerChanged,
     answerRecover,
     async restartWithSoftwareRendering() {
+      if (!softwareRenderingOffered) return false;
       if (state.getState().dialog?.kind === 'noDevice') state.setState({ dialog: null });
       try {
         // As for closing the window: the project is left with the user's consent, and nothing is kept of it.

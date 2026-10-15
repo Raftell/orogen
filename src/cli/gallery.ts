@@ -82,6 +82,7 @@ export async function gallery(command: GalleryCommand, signal: AbortSignal): Pro
     const { openEngine } = await import('./engine.ts');
     const cli = await openEngine({ device: command.device, budgetBytes: command.budgetBytes, registry, files: NodeFileSource(process.cwd()) });
     try {
+      process.stderr.write(`orogen gallery: ${cli.budgetLine}\n`);
       const { caps } = cli.gpu;
       device = { adapter: caps.adapter.description || caps.adapter.device, software: caps.software, profile: cli.gpu.profile };
       for (const [i, def] of defs.entries()) {

@@ -13,7 +13,7 @@ import { EmptyState, useApp } from '../../ui/index.ts';
 import { frameTerrain, terrainOf } from './commands.ts';
 import {
   centerOrbit, centerTop, dollyDrag, dolly, dragKind, dragScale, dragSun, fly, flyKeys, flySpeed, isBlank, look, metres, orbit, outputTitle, pan, panTop,
-  HINT_WHILE_BUILDING, pinchFactor, STATUS_HINT, STATUS_TEXT, viewStatus, wheelFactor, wheelKind, wheelStep, zoomTop,
+  HINT_WHILE_BUILDING, pinchFactor, STATUS_HINT, STATUS_TEXT, viewStatus, wheelFactor, wheelKind, wheelStep, zoomKey, zoomTop,
   type DragKind, type NodeState, type ViewStatus, type WheelStream,
 } from './model.ts';
 import { keepViewport } from './persist.ts';
@@ -23,6 +23,7 @@ import styles from './viewport.module.css';
 
 /** How often the camera moves while it flies. A timer, not an animation frame: the page's fire once a second in a window that is not shown. */
 const FLY_INTERVAL_MS = 16;
+// By place and not by letter, as in games: on AZERTY these are Z, Q, S, D, A and E (runtime.md 8.8 rule 2).
 const FLY_CODES: ReadonlySet<string> = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE']);
 
 interface Drag {
@@ -379,7 +380,8 @@ export function ViewportPanel() {
       const step = event.shiftKey ? 15 : 5;
       const arrows: Readonly<Record<string, readonly [number, number]>> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
       const arrow = arrows[event.code];
-      const zoom = event.code === 'Equal' || event.code === 'NumpadAdd' ? 1 / 1.2 : event.code === 'Minus' || event.code === 'NumpadSubtract' ? 1.2 : 0;
+      const zoomed = zoomKey(event);
+      const zoom = zoomed === 1 ? 1 / 1.2 : zoomed === -1 ? 1.2 : 0;
       if (!arrow && zoom === 0) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       event.preventDefault();
@@ -513,7 +515,11 @@ export function ViewportPanel() {
             Sun {Math.round(display.sunAzimuth)}° · {Math.round(display.sunElevation)}° above the horizon
           </div>
         ) : null}
-        {dragging === 'fly' ? <div className={styles.note} data-viewport="note">W A S D to move · Q E down and up · wheel for speed</div> : null}
+        {dragging === 'fly' ? (
+          <div className={styles.note} data-viewport="note">
+            The keys in the W, A, S, D positions to move (Z, Q, S, D on AZERTY) · Q, E down and up (A, E on AZERTY) · wheel for speed
+          </div>
+        ) : null}
       </div>
     </div>
   );

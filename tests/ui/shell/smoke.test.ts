@@ -8,6 +8,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 
 import type { GraphDoc } from '../../../src/core/runtime.ts';
+import { offersSoftwareRendering } from '../../../src/app/shell/shell.ts';
 import { launchApp } from '../../helpers/index.ts';
 import { capture, docked, install, ready, settled, withApp } from './rig.ts';
 
@@ -81,7 +82,10 @@ test('smoke: acceptance graph 01 opens from the command line and is shown', asyn
   });
 });
 
-test('smoke: a software adapter is said in the status bar for as long as it is one', async (t) => {
+const SOFTWARE_SKIP = offersSoftwareRendering(process.platform) ? false
+  : 'software mode gives WebGPU no adapter on Windows: measured with Electron 44 on windows-latest and beside a working RTX 3080 (ARCHITECTURE.md section 2)';
+
+test('smoke: a software adapter is said in the status bar for as long as it is one', { skip: SOFTWARE_SKIP }, async (t) => {
   // runtime.md 1.3. On the software adapter the first evaluation takes its time; this test does not wait for it.
   const app = await launchApp({ profile: 'core', gpu: 'software' });
   try {

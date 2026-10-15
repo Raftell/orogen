@@ -11,6 +11,7 @@ import { test } from 'node:test';
 
 import { nodes } from '../../../src/core/nodes/index.ts';
 import { addNode, createRegistry, newDoc, serializeDoc, setSettings, type DocDraft } from '../../../src/core/runtime.ts';
+import { PANEL_MIN } from '../../../src/app/shell/layout.ts';
 import type { AppDriver } from '../../helpers/index.ts';
 import {
   added, appears, attr, capture, click, docked, docOf, drag, focusGraph, graphBox, graphSettled, history, key, near, nodeBox, nodeSelector, OUTPUT, PAGE_BACKSTOP_MS,
@@ -438,8 +439,10 @@ test('awkward: a narrow panel and a wide one hold the graph, its toolbar and its
     assert.equal(Object.keys((await docOf(app)).nodes).length, 5);
 
     // ---- wide: nearly the whole window ----
-    // As wide as the dock lets the column be: the side column keeps its least width (runtime.md 8.7 rule 7).
-    await widen(1370);
+    // As wide as the dock lets the column be: the side column keeps its least width (runtime.md 8.7 rule 7). That
+    // follows the window: a fixed 1370 was more than the dock allowed on Windows when the window's frame took its
+    // pixels from the page.
+    await widen((await app.eval<number>(`orogenTest.shell.layout().dock.grid.width`)) - PANEL_MIN.width);
     await key(app, 'Home');
     await app.waitFor(`graphTest.drawn().zoom > 0.9`, PAGE_BACKSTOP_MS);
     const zoom = await app.eval<number>(`graphTest.drawn().zoom`);

@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 
-import { removeStale, replaceFolder, STALE_MS, stagingFolder } from '../../../../tools/build-folder.ts';
+import { removeStale, replaceFolder, STALE_MS, stagingFolder, waitThroughSwap } from '../../../../tools/build-folder.ts';
 
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'orogen-build-folder-'));
 after(() => fs.rmSync(ROOT, { recursive: true, force: true }));
@@ -115,4 +115,28 @@ test('build folder: what interrupted builds left is deleted after an hour, and a
   assert.deepEqual(fs.readdirSync(parent).sort(), ['dist', 'dist.partial-333', 'distribution']);
   assert.deepEqual([held(target), held(underWay), held(other)], [OLD, NEW, NEW]);
   assert.deepEqual(removeStale(path.join(ROOT, 'no-such-parent', 'dist')), []);
+});
+
+test('build folder: whoever looks for the application between the two renames finds the new one when the second is made', async () => {
+  const parent = path.join(ROOT, `case-${++cases}`);
+  const target = folder(path.join(parent, 'dist'), OLD);
+  const staging = folder(stagingFolder(target), NEW);
+  const names = ['index.html', 'main.cjs'];
+  assert.deepEqual(await waitThroughSwap(target, names), [], 'a folder in place is found at once');
+  // The swap of replaceFolder, with time between its two renames, as a slow file system leaves. A look that does
+  // not wait finds no application then.
+  fs.renameSync(target, `${target}.previous-test`);
+  assert.deepEqual(await waitThroughSwap(target, names, 0), names);
+  const found = waitThroughSwap(target, names);
+  setTimeout(() => fs.renameSync(staging, target), 40);
+  assert.deepEqual(await found, []);
+  assert.deepEqual(held(target), NEW, 'and it is the new build');
+});
+
+test('build folder: a folder that does not come is said missing, file by file, once the wait is over', async () => {
+  const parent = path.join(ROOT, `case-${++cases}`);
+  const target = path.join(parent, 'dist');
+  assert.deepEqual(await waitThroughSwap(target, ['main.cjs', 'index.html'], 30), ['main.cjs', 'index.html']);
+  folder(target, { 'main.cjs': 'a build without its page' });
+  assert.deepEqual(await waitThroughSwap(target, ['main.cjs', 'index.html'], 30), ['index.html']);
 });

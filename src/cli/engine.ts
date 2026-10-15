@@ -7,9 +7,13 @@ import {
 } from '../core/runtime.ts';
 import { createNodeCpuRunner } from '../platform/node/cpu.ts';
 import { createNodeGpu } from '../platform/node/gpu.ts';
+import { budgetLine } from '../platform/node/vram.ts';
 import type { DeviceOptions } from './args.ts';
 
-/** runtime.md 2.4 with default preferences: 60 % of the video memory, taken as 4 GiB where the platform does not tell. */
+/**
+ * runtime.md 2.4 with default preferences: 60 % of the video memory, taken as 4 GiB where neither the adapter nor
+ * nvidia-smi tells (caps.vramSource, 1.3).
+ */
 export function defaultBudgetBytes(caps: GpuCaps): number {
   return budgetOf(caps, DEFAULT_PREFERENCES);
 }
@@ -34,6 +38,8 @@ export interface CliEngine {
   readonly gpu: GpuContext;
   readonly engine: Engine;
   readonly budgetBytes: number;
+  /** What the command prints of the budget and of where the card's memory figure came from, without its name. */
+  readonly budgetLine: string;
   /** A request id greater than every one handed out before (runtime.md 5.2). */
   nextRequestId(): number;
   /** Starts recording; the returned function stops it and gives the record. */
@@ -76,6 +82,7 @@ export async function openEngine(opts: {
   let closed = false;
   return {
     gpu, engine, budgetBytes,
+    budgetLine: budgetLine(gpu.caps, budgetBytes, opts.budgetBytes !== null),
     nextRequestId: () => ++requestId,
     record() {
       const mine: NonNullable<typeof log> = { slices: 0, longest: null, engineErrors: [] };

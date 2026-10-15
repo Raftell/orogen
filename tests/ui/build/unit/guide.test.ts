@@ -40,13 +40,15 @@ test('the guide holds the whole import by hand: every line of sections 1 to 4 of
 });
 
 test('nothing in the guide claims more than the documentation: the marks and the warning are there', () => {
-  assert.match(GUIDE_LEGEND.warning, /^Nobody at Orogen has run this procedure in Unreal Engine\./);
+  // One run on one machine (unreal-import.md 6.5): the warning says so and still sends the reader to the test.
+  assert.match(GUIDE_LEGEND.warning, /^This procedure has been run once, on one machine, .*Run the acceptance test \(section 6\) once on your engine version before you trust an import\.$/);
   assert.deepEqual(GUIDE_LEGEND.marks.map((mark) => /^\*\*([a-z ]+)\*\*/.exec(mark)![1]), ['confirmed', 'third party', 'derived', 'unconfirmed']);
   const steps = GUIDE_SECTIONS.find((section) => section.number === STEPS_SECTION)!;
   // The statements the import depends on carry their mark in the step itself.
-  assert.match(steps.items[7]!.text, /^Location: .*which is unconfirmed; step 13 checks it/);
+  assert.match(steps.items[7]!.text, /^Location: .*\(confirmed, seen on 5\.8\.3: check 1 of the acceptance test/);
   assert.match(steps.items[6]!.text, /^Scale: .*\(derived\)\.$/);
-  assert.match(steps.items[13]!.text, /unconfirmed; the acceptance test checks it/);
+  assert.match(steps.items[13]!.text, /\(confirmed, seen on 5\.8\.3: checks 3 to 5 of the acceptance test\)/);
+  assert.match(steps.items[13]!.text, /that every Top viewport is drawn so is unconfirmed/);
 });
 
 test('the values of a build stand under the steps that ask for them', () => {
@@ -70,6 +72,11 @@ test('the values of a build stand under the steps that ask for them', () => {
     // The group itself names the step it stands under.
     for (const id of ids) assert.ok(groups.find((group) => group.id === id)!.step.split(' ')[0] === step, `${id} names step ${step}`);
   }
+  // The note above the Location claims what the step does: seen on 5.8.3, as the first run showed (unreal-import.md 6.5).
+  const location = groups.find((group) => group.id === 'location')!;
+  assert.match(steps.items[7]!.text, /confirmed, seen on 5\.8/);
+  assert.match(location.note, /^The panel's Location is the center of the landscape \(seen in Unreal Engine 5\.8\.3\)/);
+  assert.doesNotMatch(location.note, /unconfirmed/);
 });
 
 test('the inline marks of the text: code and strong, and nothing else is touched', () => {

@@ -17,10 +17,10 @@ Read this table before you plan around Orogen.
 | --- | --- |
 | The engine and the nodes | Built and tested. The [node reference](nodes.md) lists the 86 nodes of the product, and the 10 reference nodes the engine itself ships with, which the application does not offer |
 | The command-line program `orogen` | Built: it probes the graphics card, draws nodes to pictures, builds a project and writes the acceptance pattern for Unreal ([command line](command-line.md)) |
-| Building and exporting | Built and tested on Linux, on a graphics card and on a software adapter, and on Windows' software adapter in the automated checks. **Not yet run on a Windows machine with a graphics card** ([building](building.md)) |
-| The desktop application (graph editor, 3D viewport, inspector, node library, build panel) | Built: a project is made, edited, looked at, built and saved in one window, and six example projects open from its library. Tested on Linux in a window that is never shown, with input sent by tests; **never seen on Windows, and never driven with a real mouse** ([the desktop application](application.md)) |
-| The Windows build | Packed by the automated checks, unsigned, and started there once, hidden, on a machine without a graphics card. **Nobody has started it on a desktop** ([getting started](getting-started.md), [first run on Windows](first-run-on-windows.md)) |
-| Importing into Unreal Engine | Written from Epic's documentation. **Nobody at Orogen has carried it out in Unreal Engine.** Every statement about Unreal in [the import guide](unreal-import.md) says how far it has been checked |
+| Building and exporting | Built and tested on Linux, on a graphics card and on a software adapter, and on Windows' software adapter in the automated checks. Run on one Windows machine with a graphics card, the RTX 3080, at 4033 and 8129 ([building](building.md)) |
+| The desktop application (graph editor, 3D viewport, inspector, node library, build panel) | Built: a project is made, edited, looked at, built and saved in one window, and six example projects open from its library. Tested on Linux in a window that is never shown, with input sent by tests; used by hand once, on Windows with the RTX 3080 ([the desktop application](application.md), [the first run](first-run-on-windows.md#the-first-run-2026-10-15)) |
+| The Windows build | Packed by the automated checks, unsigned, and started there once, hidden, on a machine without a graphics card. Started and used on one Windows desktop, on 2026-10-15 ([getting started](getting-started.md), [first run on Windows](first-run-on-windows.md)) |
+| Importing into Unreal Engine | Written from Epic's documentation, and carried out once, on Unreal Engine 5.8, where the acceptance test passed every check. Every statement about Unreal in [the import guide](unreal-import.md) says how far it has been checked |
 | The Unreal editor plugin | Experimental C++ source that **has never been compiled or run** ([plugin](../../unreal/OrogenBridge/README.md)) |
 
 A project is made in the desktop application. It is also a text file that can be written by hand, and the
@@ -30,8 +30,8 @@ command-line program looks at one and builds it without a window.
 
 1. [Getting started](getting-started.md): the Windows build, running from the repository, and the first ten
    minutes in the application.
-2. [First run on Windows](first-run-on-windows.md): what to try first on a machine nobody has run Orogen on, in
-   order, and what to send back.
+2. [First run on Windows](first-run-on-windows.md): what to try first on a new Windows machine, in order, what to
+   send back, and what the first run showed.
 3. [Concepts](concepts.md): the graph, the unit box, project settings, the project file.
 4. [The command-line program](command-line.md): every subcommand and option.
 5. [The desktop application](application.md): its panels, gestures and keys, and what is not there yet.

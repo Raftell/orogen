@@ -37,7 +37,10 @@ const PAGE = `(() => {
     pointerId: 1, pointerType: 'mouse', isPrimary: true, ...centre(element), ...init,
   }));
   const KEYS = { Enter: 'Enter', Escape: 'Escape', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown',
-    ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight', Backquote: '\`', Comma: ',', Space: ' ', Home: 'Home', End: 'End' };
+    ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight', Backquote: '\`', Comma: ',', Space: ' ', Home: 'Home', End: 'End',
+    // What a US layout types on them: the viewport's plus and minus go by the character (runtime.md 8.8 rule 2).
+    Equal: '=', Minus: '-', Period: '.', Slash: '/', Semicolon: ';', Quote: "'", BracketLeft: '[', BracketRight: ']', Backslash: '\\\\',
+    NumpadAdd: '+', NumpadSubtract: '-' };
   const api = {
     el,
     exists: (selector) => document.querySelector(selector) !== null,
@@ -76,12 +79,15 @@ const PAGE = `(() => {
       const element = el(target);
       for (const type of ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointermove', 'mousemove']) mouse(element, type, { bubbles: !type.endsWith('enter'), buttons: 0 });
     },
-    /** A key by its KeyboardEvent.code, with the modifiers named, on the element that has the focus or the one given. */
+    /**
+     * A key by its KeyboardEvent.code, with the modifiers named, on the element that has the focus or the one given.
+     * mods.key is the character the layout types on it; without it, the one of a US layout.
+     */
     key(code, mods = {}, target) {
       const element = target ? el(target) : (document.activeElement ?? document.body);
       const letter = /^Key([A-Z])$/.exec(code);
       const digit = /^Digit([0-9])$/.exec(code);
-      const key = letter ? (mods.shift ? letter[1] : letter[1].toLowerCase()) : digit ? digit[1] : KEYS[code] ?? code;
+      const key = mods.key ?? (letter ? (mods.shift ? letter[1] : letter[1].toLowerCase()) : digit ? digit[1] : KEYS[code] ?? code);
       const init = { code, key, bubbles: true, cancelable: true, composed: true, ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, altKey: !!mods.alt, metaKey: !!mods.meta };
       const went = element.dispatchEvent(new KeyboardEvent('keydown', init));
       element.dispatchEvent(new KeyboardEvent('keyup', init));
@@ -226,7 +232,7 @@ export async function closeMenu(app: AppDriver): Promise<void> {
 }
 
 /** A key on the page, as the keyboard gives it to whatever has the focus. */
-export const key = (app: AppDriver, code: string, mods: { ctrl?: boolean; shift?: boolean; alt?: boolean } = {}, target?: string): Promise<void> =>
+export const key = (app: AppDriver, code: string, mods: { ctrl?: boolean; shift?: boolean; alt?: boolean; key?: string } = {}, target?: string): Promise<void> =>
   app.eval<void>(`void shellTest.key(${quote(code)}, ${quote(mods)}${target === undefined ? '' : `, ${quote(target)}`})`);
 
 /** A change of the document that can be undone and that the engine computes: another seed. */

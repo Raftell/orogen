@@ -10,7 +10,7 @@ import { addNode, createRegistry, newDoc, setNodeFlags, type DocDraft } from '..
 import {
   axes, cameraOf, centerOrbit, centerTop, DEFAULT_DISPLAY, dolly, dollyDrag, dragKind, dragSun, eyeOf, fly, flyKeys, flySpeed, frameOrbit, frameTop, initialModel,
   dragScale, FINE, HINT_WHILE_BUILDING, isBlank, look, metres, orbit, outputTitle, pan, panTop, pinchFactor, PITCH_MAX, PITCH_MIN, STATUS_HINT, STATUS_TEXT, STATUS_WORD,
-  topUv, viewStatus, WHEEL_NOTCH_PX, WHEEL_STREAM_MS, wheelFactor, wheelKind, wheelStep, zoomTop,
+  topUv, viewStatus, WHEEL_NOTCH_PX, WHEEL_STREAM_MS, wheelFactor, wheelKind, wheelStep, zoomKey, zoomTop,
   type OrbitCamera, type ViewFacts, type ViewStatus, type WheelKind, type WheelLike, type WheelStream,
 } from '../../../../src/app/panels/viewport/model.ts';
 import { orbitEye, project, viewOf } from '../../../../src/viewport/camera.ts';
@@ -345,4 +345,17 @@ test('framing takes in a sea that stands above the terrain, as far as a picture 
 test('lengths are written as a person reads them', () => {
   assert.deepEqual([metres(0), metres(3.14159), metres(42.42), metres(512.3), metres(12345.6), metres(-250.4)], ['0 m', '3.14 m', '42.4 m', '512 m', '12 346 m', '-250 m']);
   assert.equal(metres(Number.NaN), '');
+});
+
+test('plus and minus zoom by the character the key types, on every layout; the keypad\'s by place', () => {
+  const cases: readonly (readonly [string, string, string, 1 | -1 | 0])[] = [
+    ['US =', 'Equal', '=', 1], ['US +', 'Equal', '+', 1], ['US -', 'Minus', '-', -1], ['US _', 'Minus', '_', -1],
+    ['keypad +', 'NumpadAdd', '+', 1], ['keypad -', 'NumpadSubtract', '-', -1],
+    // AZERTY: minus is the key of 6, and the US place of minus types ) and °; its _ is the key of 8.
+    ['AZERTY -', 'Digit6', '-', -1], ['AZERTY )', 'Minus', ')', 0], ['AZERTY =', 'Equal', '=', 1], ['AZERTY +', 'Equal', '+', 1], ['AZERTY _', 'Digit8', '_', 0],
+    // QWERTZ: plus is right of Ü, minus right of the period; = is Shift with 0, and the US place of minus types ß.
+    ['QWERTZ +', 'BracketRight', '+', 1], ['QWERTZ -', 'Slash', '-', -1], ['QWERTZ =', 'Digit0', '=', 0], ['QWERTZ ß', 'Minus', 'ß', 0],
+    ['a letter', 'KeyZ', 'z', 0], ['a dead key', 'Equal', 'Dead', 0],
+  ];
+  for (const [what, code, key, expected] of cases) assert.equal(zoomKey({ code, key }), expected, `${what} (${code}, ${JSON.stringify(key)})`);
 });

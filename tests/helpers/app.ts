@@ -11,6 +11,7 @@ import path from 'node:path';
 import { after } from 'node:test';
 
 import type { GpuProfile } from '../../src/core/runtime.ts';
+import { waitThroughSwap } from '../../tools/build-folder.ts';
 import { outputFolder, REPOSITORY } from './engine.ts';
 
 export interface AppDriver {
@@ -148,7 +149,8 @@ export async function launchApp(opts?: {
   readonly profile?: GpuProfile;                 // default: OROGEN_GPU_PROFILE, else 'core'
   readonly gpu?: 'hardware' | 'software';        // default: OROGEN_ELECTRON_GPU, else 'hardware'
 }): Promise<AppDriver> {
-  const missing = BUILT.filter((file) => !fs.existsSync(path.join(REPOSITORY, file)));
+  // A build that ends now puts its folder in place by two renames, between which dist/ is missing.
+  const missing = await waitThroughSwap(REPOSITORY, BUILT);
   if (missing.length > 0) {
     throw new Error(`The application is not built: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} missing. Run "npm run build" first`);
   }

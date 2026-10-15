@@ -6,10 +6,10 @@ a finished build without the command line.
 
 **What it has and has not been run on.** Everything on this page was checked on Linux (GTX 1660 Ti), in a
 window that is never shown, with input that the tests send to the page. On Windows the automated checks pack it
-and start it once, hidden, on a machine without a graphics card. **Nobody has seen its window on Windows, no
-test has looked at it in a visible window, and no real mouse has driven it.** Where a sentence below rests on
-something else than such a test, it says so. [First run on Windows](first-run-on-windows.md) is the list of what
-to try first on such a machine.
+and start it once, hidden, on a machine without a graphics card, and it was used by hand once, on the target
+machine with its RTX 3080 ([the first run](first-run-on-windows.md#the-first-run-2026-10-15)). No test looks at it in a
+visible window. Where a sentence below rests on something else than such a test, it says so. [First run on
+Windows](first-run-on-windows.md) is the list of what to try first on another machine.
 
 ![The application with the Alpine Range example open](images/application.png)
 
@@ -99,7 +99,7 @@ Things to know:
 | turn the camera | drag with the left or the middle button; the arrow keys turn it in steps. `Ctrl` with any drag moves a quarter as far, for fine work |
 | pan | `Alt` or `Shift` with the middle button; on a trackpad, two fingers |
 | come nearer | the wheel, towards the point under the pointer; `Alt` with the right button; `+` and `-`; on a trackpad a pinch, and with a mouse `Ctrl` and the wheel |
-| fly | hold the right button and use `W` `A` `S` `D`, `Q` and `E` for down and up; the wheel changes the speed |
+| fly | hold the right button and use the keys in the W, A, S, D positions (Z, Q, S, D on AZERTY) to move, and those in the Q and E positions (A and E on AZERTY) for down and up; the wheel changes the speed. These keys go by their place on the keyboard, as in games, and not by the letter printed on them |
 | centre a point | double-click it |
 | see the whole terrain | `F` frames it and keeps the direction; `Home` also returns to the direction a new session looks from |
 | look from above | `F6`, or **Top** in the toolbar: the heightmap's first row is at the top, +X to the right and +Y down the screen, as Unreal lays it out |
@@ -220,18 +220,19 @@ restarting Orogen brings the card back.
 **A graphics device that was not found is said too.** When the engine finds no adapter as it starts, it asks
 again after one second and after five. If there is still none, a window explains it: Orogen works through
 WebGPU, which on Windows needs a graphics card with DirectX 12 and a current driver from its maker; a remote
-desktop session or a virtual machine often has none. The status bar then says *No graphics device*, with
-**Retry**, which starts the engine anew (after the driver was installed, say), and **Details…**, which shows the
-window again. A device that was found and failed says *Graphics device failed* with **Retry**.
+desktop session or a virtual machine often has none. Its link *Troubleshooting the graphics device* opens
+[the list of what to check](#troubleshooting-the-graphics-device), below. The status bar then says *No graphics
+device*, with **Retry**, which starts the engine anew (after the driver was installed, say), and **Details…**,
+which shows the window again. A device that was found and failed says *Graphics device failed* with **Retry**.
 
-**Software rendering** is offered in that window: **Restart with Software Rendering** asks what closing asks
-about unsaved changes, then ends Orogen and starts it again on Chromium's software adapter, with the project
-that was open. Everything works there and everything is slow, many times slower than on a graphics card: it is
-for opening and checking a project, not for builds. On Windows this is unverified: on a test machine without a
-graphics card, Chromium still offered WebGPU no adapter in software mode. It lasts until Orogen is closed; the next start is on the
-graphics card again. (The window and the question are tested; the restart itself is tested on Linux only, and
-whether Chromium gives the software adapter on a Windows machine without a usable card is what the CI's
-Windows package check says.)
+**Software rendering is for Linux only.** On Linux that window also offers **Restart with Software Rendering**:
+it asks what closing asks about unsaved changes, then ends Orogen and starts it again on Chromium's software
+adapter, with the project that was open. Everything works there and everything is slow, many times slower than
+on a graphics card: it is for opening and checking a project, not for builds. It lasts until Orogen is closed;
+the next start is on the graphics card again. On Windows the window does not offer it, because it does not work
+there: in software mode Chromium gave WebGPU no adapter at all, on a test machine without a graphics card and on
+a machine with a working RTX 3080. (The window and the question are tested; the restart itself is tested on
+Linux.)
 
 **Unsaved work is kept for a run that ends badly.** A project with changes that are not saved is kept, in the
 application's own folder, three seconds after a change and at once when a build starts. If Orogen then ends
@@ -246,11 +247,54 @@ reload and the question are tested on Linux by killing that process; the dialog 
 of the project opened elsewhere, has saved the file since Orogen opened or last saved it, **Save** asks first:
 *Overwrite*, *Save As…* or *Cancel*.
 
+## Troubleshooting the graphics device
+
+Orogen computes and draws everything on the graphics card. When the status bar, at the left of the window's
+foot, does not say `Ready` and the name of your card, work down this list.
+
+1. **Read the status bar.** *No graphics device*: the system offered Orogen no graphics card at all.
+   *Graphics device failed*: a card was found and could not be opened; hold the pointer over the words for the
+   reason. *Software adapter: everything is slow*: Orogen runs without the card. **View → Show Errors** lists the
+   same with the engine's own words.
+2. **Press Retry** in the status bar. It starts the engine anew; press it again after each step below.
+3. **Install or update the graphics driver** from the card's maker (NVIDIA, AMD or Intel). On Windows, WebGPU
+   needs a card with DirectX 12. If **Retry** does not find the card after the update, close Orogen and start it
+   again.
+4. **Start Orogen on the machine itself**, not through a remote desktop session or in a virtual machine: those
+   often give programs no graphics card, only Windows' own software adapter (*Microsoft Basic Render Driver*),
+   which Orogen's window cannot use.
+5. **Ask what the engine sees outside the window**, if the repository is checked out:
+   `node src/cli/main.ts probe` prints the adapter as JSON ([getting started](getting-started.md#first-run)).
+   When it names your card and the window still finds none, the card works and the problem is between Chromium
+   and the driver.
+6. **Send** the log file `%APPDATA%\orogen\logs\orogen.log`, the text of **View → Show Errors** and the output of
+   `probe`; [first run on Windows](first-run-on-windows.md#what-to-send-back-in-one-place) says how to get each.
+
+**On Windows there is no way around the card.** Software rendering, which on Linux lets Orogen open and check a
+project without one, is not offered there: Chromium, which Orogen runs in, gives WebGPU no software adapter on
+Windows ([what holds everywhere](#what-holds-everywhere), above).
+
 ## Keys
 
 The defaults; **Edit → Preferences… → Keys** changes them. `Mod` is Ctrl on Windows and Linux. A key of a panel
 works while that panel has the focus, which a press in it gives. While text is being typed, letters are
-letters.
+letters, and so is a character typed with `AltGr`.
+
+**A letter is the letter printed on your key**, whatever the layout of your keyboard: on AZERTY and QWERTZ,
+`Mod+Z` is Ctrl with the key marked Z, and the menus, the tooltips and the command palette show that letter.
+The other keys keep their place on a US keyboard, and are shown with what a US keyboard prints on them:
+
+- the digits are those of the row above the letters, with or without Shift: on AZERTY `Mod+0` is Ctrl with the
+  key marked `à` and `0`;
+- `Mod+,` is Ctrl with the key right of M on a US keyboard, which types `;` on AZERTY;
+- a key that types punctuation where a US keyboard has a letter counts as that letter: on AZERTY the key that
+  types `,` is M, so in the graph it also shows and hides the minimap;
+- `` ` `` is the key left of 1, marked `²` on AZERTY and `^` on QWERTZ;
+- on a keyboard without Latin letters (Cyrillic, Greek) every letter is the one in its place on a US keyboard:
+  Ctrl with `я` undoes.
+
+The fly keys of the viewport go by place too, as in games: the keys in the W, A, S, D positions (Z, Q, S, D on
+AZERTY). Its `+` and `-` are the keys that type them: on AZERTY `-` is the key of 6.
 
 | Key | Does | Where |
 | --- | --- | --- |
@@ -314,14 +358,15 @@ and kept beside it as `preferences.json.bad`.
 
 ## Known gaps
 
-- Not run on a Windows desktop, on Direct3D 12 hardware, on the RTX 3080, or in a visible window. The packed
-  Windows build is started once by the automated checks, hidden, on a machine without a graphics card.
-- Resizing the *window* has not been tested: in a window that is never shown it ends the graphics process, and
-  whether a visible window does the same is unknown. Dragging the dividers between panels is tested and harmless.
+- Run on one Windows desktop only, the target machine with its RTX 3080, by hand. The changes made after that
+  run (keys by the letter on the key, the UI tests' fixes for Windows) have run on Linux only.
+- Resizing the *window* is not tested: in a window that is never shown it ends the graphics process. On the
+  target machine a visible window was resized, maximised and restored by hand and kept its picture. Dragging the
+  dividers between panels is tested and harmless.
 - No custom build resolution in the interface, no reroute nodes.
-- The export to Unreal Engine has not been imported into Unreal Engine by anybody: the Build panel and the
-  import guide say so where it matters, and [first run on Windows](first-run-on-windows.md) asks for exactly
-  that test.
+- The export to Unreal Engine was imported into Unreal Engine 5.8 once, on the target machine, and passed the
+  acceptance test ([results](unreal-import.md#65-results-on-unreal-engine-58)); another version is checked by
+  running that test again.
 - An import node that has no file yet is shown as a failed node (*No file selected*, in red), not as an
   unfinished one.
 - After a build at the preview's own resolution the preview is computed once more, although nothing changed.

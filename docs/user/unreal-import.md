@@ -8,48 +8,50 @@ a Landscape.
 copied from the manifest. An experimental editor plugin can do the same in one call, but its source has
 never been compiled (section 7).
 
-**Read this before you trust anything here.** Unreal Engine's source is not public, and nothing of Orogen's
-has been run in Unreal Engine: not this procedure, not the plugin, not a single file. The steps were written
-from Epic's documentation for 5.8 and from other people's reports. The acceptance test of section 6 settles,
-on your engine, the unconfirmed statements that matter.
+**Read this before you trust anything here.** Unreal Engine's source is not public. The steps were written
+from Epic's documentation for 5.8 and from other people's reports, and then run once: on 2026-10-15 a user
+imported the acceptance pattern of section 6 and a real build at 4033 into Unreal Engine 5.8 on Windows 11,
+and every check of the acceptance test passed (section 6.5). That run settled the statements that matter most:
+which way round the landscape lies, how a stored value becomes a height, what the panel's Location means, and
+how layers and textures lie. Every other statement keeps its mark. The plugin has still never been compiled.
 
 | Section | |
 | --- | --- |
 | 1 to 3 | the import by hand |
 | 4 | known problems of Unreal Engine and their workarounds |
 | 5 | a worked example with the numbers of a real build |
-| 6 | the acceptance test |
+| 6 | the acceptance test, and its results on Unreal Engine 5.8 |
 | 7 | the experimental plugin |
-| 8 | everything that is still unverified, in one list |
+| 8 | what was unverified, what the run on 5.8 settled, and what is still open |
 
 Each statement about Unreal says how far it has been checked:
 
-- **confirmed**: read in Epic's documentation or API reference for 5.8.
+- **confirmed**: read in Epic's documentation or API reference for 5.8; or, where the statement says "seen on 5.8.3", seen in Unreal Engine 5.8.3 in the run of section 6.5.
 - **third party**: confirmed only by someone other than Epic.
 - **derived**: computed from confirmed facts.
-- **unconfirmed**: recalled, inferred, or reported by users; not confirmed for 5.8. The wording of menus and panels in the steps below was not checked item by item and is unconfirmed unless a step says otherwise.
+- **unconfirmed**: recalled, inferred, or reported by users; not confirmed for 5.8. The wording of menus and panels in the steps below was not checked item by item, and the run of section 6.5 was made in a French editor: it is unconfirmed unless a step says otherwise.
 
-Nobody at Orogen has run this procedure in Unreal Engine. Run the acceptance
-test (section 6) once on your engine version before you trust an import.
+This procedure has been run once, on one machine, with Unreal Engine 5.8.3 (section 6.5). Run the acceptance test (section 6) once on your engine version before you trust an
+import.
 
 ## 1. Before you start
 
 1. Build the project in Orogen into a folder of its own. The folder belongs to Orogen: each build replaces everything in it, and Orogen refuses to build into a folder that holds anything but an earlier build, so keep the project file and your own files elsewhere. You need `<Name>.orogen.json` (the manifest), `<Name>Height.png`, one `Layer<X>.png` per layer, and the `T_*.png` textures.
 2. Do not rename the heightmap or layer files and do not copy other images into the folder. Their names are letters only on purpose (section 4, item 3).
 3. Use Unreal Engine 5.8.3 or later. 5.8.2 fixed a crash when editing landscape layers in Landscape Mode (confirmed, hotfix notes). Earlier 5.8 versions have the material problem of section 4, item 2; whether 5.8.3 is free of it is unconfirmed.
-4. Open the manifest in a text editor. Every number below is copied from it with all its digits. A horizontal scale shortened to two decimals moves the far edge of an 8 km terrain by about 40 cm (derived).
+4. Open the manifest in a text editor. Every number below is copied from it with all its digits. A horizontal scale shortened to two decimals moves the far edge of an 8 km terrain by about 40 cm (derived). Orogen writes numbers with a decimal point, and they arrive whole in an editor whose language writes a decimal comma: in a French editor the numbers of Orogen's Build panel showed in the actor's Transform with a comma and the same digits, to the six decimals the field displays (confirmed, seen on 5.8.3).
 5. Make the landscape material first if you import layers. Target layers take their names from the layer names used in the landscape material (confirmed); names are case-insensitive and must equal the `name` values under `landscape.layers`. Whether the import panel offers a layer that the material does not name is unconfirmed.
 
 ## 2. Steps
 
-1. Open or create the level. If the level uses World Partition and the landscape is 8129 × 8129, read section 4, item 1 first.
+1. Open or create the level. If the level uses World Partition, give the layers on the New Landscape panel, as step 10 says, and at 8129 × 8129 read section 4, item 1 first.
 2. Open Landscape Mode, the Manage tab, New, and choose Import from File.
 3. Heightmap File: choose `<Name>Height.png`. Unreal imports 16-bit greyscale PNG and 16-bit `.r16` heightmaps (confirmed). The `.r16` file holds the same data; that Unreal reads it as little-endian is third party, so prefer the PNG.
 4. Leave Flip Y Axis off. The option exists (confirmed); what it does to a single file is unconfirmed.
 5. If Unreal asks whether to use the tiled image path, answer No. Unreal asks this when it considers the heightmap tiled (confirmed); an Orogen build is one file.
 6. Compare the layout the panel shows with `landscape.layout` in the manifest and correct the panel if it differs: Section Size = `quadsPerSection`, Sections Per Component = 1x1 or 2x2 for `sectionsPerComponent` 1 or 2, Number of Components = `components`, Overall Resolution = `resolution`. As an example, a build at 8129 has 127x127 quads, 32 x 32 components and 8129 x 8129; your build has the values of its own manifest. These values are confirmed for the four sizes Orogen offers; that the panel fills them in by itself is unconfirmed.
 7. Scale: type `landscape.transform.scaleCm` x, y and z (derived).
-8. Location: type `landscape.transform.uiLocationCm`. This assumes the panel's Location is the centre of the landscape in X and Y, which is unconfirmed; step 13 checks it. Leave Rotation at 0.
+8. Location: type `landscape.transform.uiLocationCm`. The panel's Location is the centre of the landscape in X and Y (confirmed, seen on 5.8.3: check 1 of the acceptance test, and a build at 4033); step 13 shows the result. Leave Rotation at 0.
 9. Material: choose your landscape material.
 10. Layers. For each entry of `landscape.layers`, in the row of the target layer with the same name:
     - create its layer info with the "+" button: Weight-Blended Layer when `blend` is `advanced` or `final`, Non Weight-Blended Layer when it is `none` (confirmed: every layer needs its own layer info asset, and these are the two choices);
@@ -57,12 +59,14 @@ test (section 6) once on your engine version before you trust an import.
     - choose the layer's `png` file. Each layer's file is chosen by hand; nothing found in Epic's pages assigns files by name (unconfirmed, an absence).
 
     Set Layer Alphamap Type to Additive (confirmed: Additive means the blended layers' maps total 1, which is how Orogen writes them). A layer file must have exactly the landscape's resolution or Unreal refuses it (confirmed); Orogen's always have.
-11. World Partition levels only: set World Partition Grid Size and World Partition Region Size to `landscape.worldPartition.gridSize` and `regionSize`. Both options exist with ranges 1 to 16 and 4 to 64 (confirmed). Grid Size is the number of components per streaming proxy along one side; Epic's import page describes it the other way round, and the API reference is followed here. The panel's own default values are unconfirmed.
+
+    In a World Partition level, give the layers here, while the landscape is created. Importing them later onto the landscape, from the Paint tab, counts only the part of the landscape that is loaded: a French editor answered a layer file of 4033 × 4033 with "La taille de l'importation (4033x4033) ne correspond pas à l'étendue actuelle du paysage (2x2), si vous continuez, elle sera complétée/coupée pour s'adapter", in English "the import size (4033x4033) does not match the landscape's current extent (2x2); if you continue, it will be padded or cropped to fit" (seen on 5.8.3; the English editor's own words were not seen). Do not continue: the layer would be padded or cropped to the loaded part (derived). Dragging a selection in the World Partition window, to load the whole landscape first, highlighted no region there (seen on 5.8.3), so whether a loaded landscape takes such an import whole is unconfirmed. Layers given on this panel imported whole on 5.8, five of them at 4033, in a level that kept the landscape in one piece; that they do the same in a World Partition level is unconfirmed.
+11. World Partition levels only: set World Partition Grid Size and World Partition Region Size to `landscape.worldPartition.gridSize` and `regionSize`, here: a landscape whose level is converted to World Partition afterwards keeps the grid size the conversion gives it (section 4, item 1). Both options exist with ranges 1 to 16 and 4 to 64 (confirmed). Grid Size is the number of components per streaming proxy along one side, as the API reference says; Epic's import page describes it the other way round (confirmed, seen on 5.8.3: Grid Size 4 split a landscape of 32 x 32 components into 8 x 8 streaming proxies). The panel's own default values are unconfirmed.
 12. Click Import.
-13. Select the Landscape actor. Its Transform must show Location = `landscape.transform.actorLocationCm` and Scale = `scaleCm`. If the Location shows `uiLocationCm` instead, the panel did not centre the landscape: type `actorLocationCm` into the actor's Location (derived).
-14. Look at the terrain. Seen from above with +X pointing to the right of the screen, +Y points down the screen and the terrain looks like `<Name>Height.png` as an image viewer shows it (unconfirmed; the acceptance test checks it). Unreal's Top viewport shows it turned a quarter turn counter-clockwise; that is how the viewport is drawn, not an error (unconfirmed). If the terrain is mirrored or turned in any other way, stop and run the acceptance test.
+13. Select the Landscape actor. Its Transform must show Location = `landscape.transform.actorLocationCm` and Scale = `scaleCm` (confirmed, seen on 5.8.3). If the Location shows `uiLocationCm` instead, the panel did not centre the landscape: type `actorLocationCm` into the actor's Location (derived).
+14. Look at the terrain. Seen from above with +X pointing to the right of the screen, +Y points down the screen and the terrain looks like `<Name>Height.png` as an image viewer shows it (confirmed, seen on 5.8.3: checks 3 to 5 of the acceptance test). Unreal's Top viewport shows it turned a quarter turn; that is how the viewport is drawn, not an error. On 5.8 the Top viewport's axis indicator showed +X down the screen and +Y to the left, which turns the terrain a quarter turn clockwise against the image (seen on 5.8.3, in one editor; that every Top viewport is drawn so is unconfirmed). If the terrain is mirrored, or turned in a way the axis indicator does not explain, stop and run the acceptance test.
 15. Nanite, if you want it: on the Landscape actor's Details panel, Nanite, tick Enable Nanite and press Build Data, or use Build, Build Landscape (confirmed). Nanite and non-Nanite data are both kept, and about twice the data is streamed (confirmed).
-16. Textures: import the `T_*.png` files as ordinary textures. Switch sRGB off for every texture whose manifest entry says `"srgb": false`. Sample them in the landscape material with `U = (WorldX − actorLocationCm.x) / extent`, `V = (WorldY − actorLocationCm.y) / extent`, where `extent` is `terrain.sizeM × 100` (derived). Unreal shades a landscape from the heightmap without any normal map (confirmed); `T_Normal` is an optional macro normal, and whether its green channel needs flipping is unconfirmed.
+16. Textures: import the `T_*.png` files as ordinary textures. Switch sRGB off for every texture whose manifest entry says `"srgb": false`: a mask, a normal texture, and a Color Texture whose Content is Data. Sample them in the landscape material with `U = (WorldX − actorLocationCm.x) / extent`, `V = (WorldY − actorLocationCm.y) / extent`, where `extent` is `terrain.sizeM × 100` (derived; confirmed, seen on 5.8.3: check 12 of the acceptance test). Unreal shades a landscape from the heightmap without any normal map (confirmed); `T_Normal` is an optional macro normal, and whether its green channel needs flipping is unconfirmed.
 17. Save the level and the layer info assets.
 
 Sculpt in a new edit layer above the imported one, not in the imported one. All
@@ -75,11 +79,11 @@ There is no tested procedure for replacing the heights of a landscape that
 already exists. Two facts bear on it:
 
 - With Height range set to Measured, the scale and location in the manifest change with every build. Replacing only the heightmap of an existing landscape would then be wrong, and changing the actor's scale rescales everything sculpted on it. Set Height range to Fixed before the first import if you intend to re-import (derived).
-- The editor can import into an existing landscape (confirmed); the steps are unconfirmed.
+- The editor can import into an existing landscape (confirmed); the steps are unconfirmed. In a World Partition level such an import counts only the part of the landscape that is loaded (seen on 5.8.3: section 2, step 10).
 
 ## 4. Known risks and workarounds
 
-1. **Repeated tiles after importing 8129 × 8129 into a World Partition level.** One user reports that importing a single 8129 × 8129 16-bit PNG into a World Partition level shows one part of the heightmap repeated 4 × 4 or 16 × 16 times, with a correct wireframe and wrong shading, on 5.7.0, 5.7.4 and 5.8.0; it worked on 5.5.4 and 5.6.1. Epic has not replied and there is no ticket (forum report of 2026-08-24; confirmed as a report, not reproduced by Orogen; the state on 5.8.3 is unknown). This is exactly an Orogen build at its largest size. The reporter's workaround: import into a level without World Partition, then convert the level to World Partition. Check with the acceptance test at 8129 before you rely on a World Partition import.
+1. **Repeated tiles after importing 8129 × 8129 into a World Partition level.** One user reports that importing a single 8129 × 8129 16-bit PNG into a World Partition level shows one part of the heightmap repeated 4 × 4 or 16 × 16 times, with a correct wireframe and wrong shading, on 5.7.0, 5.7.4 and 5.8.0; it worked on 5.5.4 and 5.6.1. Epic has not replied and there is no ticket (forum report of 2026-08-24; confirmed as a report, not reproduced by Orogen). This is exactly an Orogen build at its largest size. It did not happen in the run of section 6.5: the acceptance pattern at 8129, one 16-bit PNG imported directly into a World Partition level with Grid Size 4 and Region Size 32, showed one tower, one pit and one unbroken ramp (seen on 5.8.3). The report is about 5.7.0 to 5.8.0 and the run was on 5.8.3, so the fault looks fixed in 5.8.3 for this import; that rests on one run on one machine. The reporter's workaround: import into a level without World Partition, then convert the level to World Partition. It costs the grid size: on 5.8 the World Partition grid size of the landscape could not be changed after the conversion, so the landscape keeps the grid size the conversion gives it, not the manifest's `gridSize` (seen on 5.8.3). Check with the acceptance test at 8129, on your engine version, before you rely on a World Partition import.
 2. **Wrong output of the Landscape Layer Blend material node.** The node gave washed-out or wrong specular, and in some cases a grey Nanite landscape, on 5.8.0 to 5.8.2 (first report 2026-06-26, Epic ticket UE-386355). The ticket was closed as fixed; a user reported on 2026-08-26 that 5.8.2 did not fix it; Epic staff said on 2026-08-27 it would be reopened and on 2026-09-07 that it would be addressed in 5.8.3. The 5.8.3 notes do not mention it, so whether 5.8.3 fixes it is unconfirmed. Two workarounds reported by users on early 5.8, both unconfirmed: feed single attributes such as Specular through the blend node instead of Material Attributes; or use Final Weight Blending (Legacy) instead of Advanced Weight Blending. For the second, set Layer blend method to Final on Orogen's Unreal Landscape node and build again: the manifest then says `"blend": "final"`.
 3. **Heightmap file names.** Users have met the import error `doesn't have proper pattern(ex: _x0_y0.png)` on ordinary single files and reported that it went away after removing digits from the file name, avoiding spaces and special characters, removing similarly named PNG files from the same folder, deleting temporary copies left by an image editor, or deleting the stale asset and importing again (forum threads about UE 5.0, posts from 2022 to 2024). The cause is unconfirmed, and none of it has been reproduced on 5.8. Orogen's file names and its rule of one folder per build are a precaution against it.
 4. **Too many layers on a component.** A report for 5.8 says that merging edit layers makes each component inherit its left and top neighbours' layers, so that with about ten or more layers a component exceeds Direct3D 12's limit of 64 shader resources and silently falls back to the default material (forum report of 2026-08-12, no reply from Epic; unconfirmed). Keep the number of layers low: aim for at most 8, and Orogen warns above 12.
@@ -136,7 +140,8 @@ location Z    world height of level 0 (0 cm) + 256 × scale Z           = 18741.
 ```
 
 What the landscape should then look like. These follow from the manifest and the heightmap of this build by
-the formulas of section 6 (derived); that Unreal agrees is what section 6 tests (unconfirmed):
+the formulas of section 6 (derived). The acceptance test confirmed those formulas on 5.8 (section 6.5); this
+example itself has not been imported:
 
 - It spans X and Y from -100000 to +100000 cm.
 - Its level ground lies at Z = 0 and its highest point at Z = 37481.52 cm, 374.8 m above it.
@@ -157,10 +162,10 @@ Three things this example shows:
 
 ## 6. The acceptance test
 
-The test settles the unconfirmed statements that an import depends on: which way round the landscape lies,
-how a stored value becomes a height, what the panel's Location means, whether layers lie like the heights,
-and whether the repeated-tile problem of section 4 affects you. Run it once per engine version, and again at
-8129 before you trust an import into a World Partition level.
+The test settles the statements that an import depends on: which way round the landscape lies, how a stored
+value becomes a height, what the panel's Location means, whether layers lie like the heights, and whether the
+repeated-tile problem of section 4 affects you. Run it once per engine version, and again at 8129 before you
+trust an import into a World Partition level. Section 6.5 holds its first run, on Unreal Engine 5.8.
 
 ### 6.1 The pattern
 
@@ -197,8 +202,8 @@ Import the build as in section 2 (or with the plugin), then check in the editor,
 position or with an actor you place. Checks 10 to 12 need a way to see the layers and the texture: a
 landscape material that names the layers `Base`, `Left` and `Top` and samples `T_Marker_1024.png`.
 
-Heights follow this formula (derived from two statements of Epic's documentation; that the engine's own
-constants have these values is unconfirmed):
+Heights follow this formula (derived from two statements of Epic's documentation; confirmed, seen on 5.8.3:
+checks 6 to 9 gave these heights):
 
 ```
 world Z = actor Z + (stored value − 32768) / 128 × scale Z
@@ -234,7 +239,8 @@ node src/cli/main.ts unreal-test --check D:\Build\Exported.png
 
 It decodes the file, makes the pattern again and prints how many samples differ and the largest difference.
 Exit code 0 means every sample is identical. The pattern's resolution is taken from the size of the file.
-That an unmodified import exports identical values is the expectation under test (unconfirmed).
+That an unmodified import exports identical values is the expectation under test (unconfirmed: the run of
+section 6.5 did not include the round trip).
 
 To settle how Unreal reads `.r16` (statement 4 of section 8), import the pattern once more from
 `MarkerHeight.r16` instead of the PNG, export that landscape's heightmap as a PNG, and check the PNG. A PNG
@@ -248,7 +254,49 @@ states its own byte order, so a pass means that Unreal read the `.r16` as little
   conventions: the table says which one, and the fix belongs in Orogen's export, not in a node of your graph.
   Report it with the engine version and the number of the check.
 
-Either way the result belongs in this page, in place of the word "unconfirmed" on the statements it settles.
+Either way the result belongs in this page, in place of the word "unconfirmed" on the statements it settles,
+as the first run's is in 6.5.
+
+### 6.5 Results on Unreal Engine 5.8
+
+Run on 2026-10-15 by a user, with the files of `orogen unreal-test` and of the desktop application's Build
+panel, on Windows 11 with an RTX 3080 and a French Unreal Editor.
+
+**Engine version: Unreal Engine 5.8.3.**
+
+| # | Result |
+| --- | --- |
+| 1 to 12 | Passed, at 1009: the actor at (0, 0, 0) with the scale (100, 100, 100) after the panel was given `uiLocationCm` (50400, 50400, 0), so the panel's Location was the centre; the extent; the tower, the pit and the ramp where the table puts them; the heights of the plain, the tower, the pit and the ramp; the layers `Left` and `Top`; the red and green quarters of the texture |
+| 13 | Passed, at 8129, imported directly into a World Partition level with Grid Size 4 and Region Size 32: one tower, one pit, one unbroken ramp, no repeated tiles. The landscape had its 1024 components in 65 landscape proxies, the Landscape actor and 8 × 8 streaming proxies. Far away the shadows on the ramp's steep side were jagged, while the wireframe was an even grid: that is Unreal's level of detail and shadowing at a distance, not the data |
+| Round trip (6.3) | Not run: the byte order of `.r16` and an identical export are still open |
+
+**A real build.** The example *Alpine Range* built at 4033, with its five weight-blended layers `Soil`,
+`Grass`, `Rock`, `Scree` and `Snow` (Advanced Weight Blending) given on the New Landscape panel, imported as one
+landscape of 4033 × 4033 vertices in 32 × 32 components. Orogen's Build panel gave Location 0, 0,
+45495.47015059974 and Scale 100, 100, 165.15255988067116; afterwards the actor showed Location −201600,
+−201600, 45495,470151 and Scale 100, 100, 165,15256. So the panel's Location was the centre, and numbers
+written with a point arrived whole in an editor that writes a comma, to the six decimals it shows. The terrain
+and its layers lay as in Orogen's view from above (`F6`), turned a quarter turn by the Top viewport (section 2,
+step 14). That level kept the landscape in one piece, one landscape proxy holding all 1024 components: it did
+not split it for World Partition.
+
+**What went wrong on the way in a World Partition level, and what worked:**
+
+- Layers imported onto the existing landscape from the Paint tab: the editor offered to pad or crop them to
+  the landscape's current extent, 2 × 2, because only the loaded part counts. Section 2, step 10, quotes the
+  message.
+- Dragging a selection in the World Partition window, to load the landscape, highlighted no region.
+- The workaround of section 4, item 1, importing without World Partition and converting afterwards: the
+  landscape's World Partition grid size could not be changed after the conversion.
+- What worked: giving the layers on the New Landscape panel when the landscape is created (section 2, step 10).
+  It was seen in the level of the real build above, which did not split the landscape; in a World Partition
+  level it is the way to take, and not yet seen.
+
+**What this run settled** on Unreal Engine 5.8: statements 1, 2, 3 and 5 of section 8, and statement 7 for the
+version tested; in section 2, what the panel's Location (step 8) and Grid Size (step 11) mean, the transform
+after the import (step 13), the orientation (step 14) and the texture coordinates (step 16); and that numbers
+arrive whole in an editor that writes a decimal comma (section 1, item 4). Everything else in this guide keeps
+its mark.
 
 ## 7. The experimental plugin
 
@@ -268,9 +316,11 @@ plugin, and it does not replace anything on this page:
   file names and with the byte order of `.r16` does not concern it.
 - It does not import textures, enable Nanite, re-import into an existing landscape, or import region by
   region.
-- Whether it avoids the repeated-tile problem of section 4, item 1 is unconfirmed.
-- Everything in section 8 about orientation, location and heights applies to it as it does to the import by
-  hand. Run the acceptance test with it first.
+- Whether it avoids the repeated-tile problem of section 4, item 1 is unconfirmed; the import by hand did not
+  show it on 5.8 (section 6.5).
+- The acceptance test confirmed orientation, location and heights for the import by hand on 5.8. The plugin
+  hands the same data to the engine by another path and places the actor itself, so none of that is confirmed
+  for it. Run the acceptance test with it first.
 
 Its own page, [`unreal/OrogenBridge/README.md`](../../unreal/OrogenBridge/README.md), says how to install it,
 how to call it from Python or an Editor Utility Widget, what to expect on the first compile, and which
@@ -278,24 +328,27 @@ questions only a run answers.
 
 ## 8. What is still unverified
 
-These are the unconfirmed statements an import depends on, and what settles each.
+These are the statements an import depends on that were unconfirmed when this guide was written, what settles
+each, and where each stands after the run on Unreal Engine 5.8.3 of section 6.5. A statement that is confirmed there holds on that version; on another version, the acceptance test
+says whether it still holds.
 
-| # | Statement | Used for | Settled by |
-| --- | --- | --- | --- |
-| 1 | Image columns run along +X and image rows along +Y, with pixel (0, 0) at the actor's origin and nothing mirrored | every file | section 6.2, checks 3 to 5 |
-| 2 | The actor's location is vertex (0, 0) at the stored value 32768, and one stored step is 1/128 of the Z scale | scale and location | section 6.2, checks 6 to 9 |
-| 3 | The New Landscape panel's Location is the landscape's centre | `uiLocationCm`, section 2, step 8 | section 6.2, check 1 |
-| 4 | `.r16` is little-endian | the `.r16` file | section 6.3 with an `.r16` |
-| 5 | Layer files are oriented like the heightmap | layers | section 6.2, checks 10 and 11 |
-| 6 | Unreal's normal-map convention matches the way Orogen stores normals | the normal texture | a lighting check in your material |
-| 7 | A single 8129 × 8129 import into a World Partition level works on your engine version | the largest size | section 6.2, check 13 |
-| 8 | An unmodified import exports identical heights | importing again later | section 6.3 |
-| 9 | Regular textures must be a power of two, and 8192 is safe as a regular texture | textures | importing a `T_*_8192.png` |
-| 10 | The plugin's sequence of calls compiles and works on 5.8.3 | section 7 | compiling and running it |
-| 11 | The plain file names are needed, or enough | file names | not testable by one check; kept as a precaution |
-| 12 | The defaults of World Partition Grid Size and Region Size; what Region Size 4 does on 5.8; what Flip Y Axis does to a single file | section 2 | watching the import |
+| # | Statement | Used for | Settled by | On 5.8 |
+| --- | --- | --- | --- | --- |
+| 1 | Image columns run along +X and image rows along +Y, with pixel (0, 0) at the actor's origin and nothing mirrored | every file | section 6.2, checks 3 to 5 | **confirmed** |
+| 2 | The actor's location is vertex (0, 0) at the stored value 32768, and one stored step is 1/128 of the Z scale | scale and location | section 6.2, checks 6 to 9 | **confirmed** |
+| 3 | The New Landscape panel's Location is the landscape's centre | `uiLocationCm`, section 2, step 8 | section 6.2, check 1 | **confirmed**, by the test and by a build at 4033 |
+| 4 | `.r16` is little-endian | the `.r16` file | section 6.3 with an `.r16` | open: not run |
+| 5 | Layer files are oriented like the heightmap | layers | section 6.2, checks 10 and 11 | **confirmed**, by the test and by the five layers of a build at 4033 |
+| 6 | Unreal's normal-map convention matches the way Orogen stores normals | the normal texture | a lighting check in your material | open |
+| 7 | A single 8129 × 8129 import into a World Partition level works on your engine version | the largest size | section 6.2, check 13 | **confirmed** for the version tested, with Grid Size 4 and Region Size 32; the report of section 4, item 1 stays open for other versions |
+| 8 | An unmodified import exports identical heights | importing again later | section 6.3 | open: not run |
+| 9 | Regular textures must be a power of two, and 8192 is safe as a regular texture | textures | importing a `T_*_8192.png` | open |
+| 10 | The plugin's sequence of calls compiles and works on 5.8.3 | section 7 | compiling and running it | open: never compiled |
+| 11 | The plain file names are needed, or enough | file names | not testable by one check; kept as a precaution | open; no file-name error was met |
+| 12 | The defaults of World Partition Grid Size and Region Size; what Region Size 4 does on 5.8; what Flip Y Axis does to a single file | section 2 | watching the import | open. What Grid Size means is confirmed (section 2, step 11) |
+| 13 | Layers given on the New Landscape panel import whole into a World Partition level | section 2, step 10 | an import with layers into a World Partition level | open: seen only in a level that did not split the landscape |
 
-Also unverified, because Orogen itself has not been run there: building on Windows with a graphics card
-([Getting started](getting-started.md)), and whether a number copied from Orogen arrives whole in a field of
-Unreal's panel on a Windows whose regional format uses a decimal comma. Orogen writes every number with a
-point. [First run on Windows](first-run-on-windows.md) lists both among the first things to try.
+Two more things were open because Orogen itself had not been run on Windows, and the first run settled both on
+2026-10-15: Orogen builds on Windows with a graphics card ([time and memory](building.md#time-and-memory)), and
+a number copied from Orogen arrives whole in Unreal's fields on a Windows whose language writes a decimal comma
+(section 6.5). Orogen writes every number with a point.

@@ -69,7 +69,8 @@ test('orogen build writes the build into the folder, prints the path of the mani
   assert.equal(done.out, `${path.join(out, 'Cli.orogen.json')}\n`, 'standard output carries the path of the manifest and nothing else');
   assert.deepEqual(list(out), [...FILES, 'Cli.report.json'].sort());
   assert.deepEqual([fs.existsSync(`${out}.partial`), fs.existsSync(`${out}.previous`)], [false, false]);
-  // Progress on standard error: the plan, the targets, the end.
+  // Progress on standard error: the budget first (runtime.md 2.4: where the card's memory came from), the plan, the targets, the end.
+  assert.match(done.err.split('\n').find((line) => line.startsWith('orogen build: ')) ?? '', /^orogen build: GPU memory budget \d+ MiB(: 60 % of the card's \d+ MiB, which (the adapter|nvidia-smi) reports|: the default for a card whose memory neither the adapter nor nvidia-smi reports; --budget-mb sets another)$/);
   assert.match(done.err, new RegExp(`^orogen build: 8 files at 241 x 241 into ${out.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
   assert.match(done.err, /^orogen build: \[1\/3\] Unreal Landscape: CliHeight\.png$/m);
   assert.match(done.err, /^orogen build: done in [\d.]+ s: 8 files, [\d.]+ [MG]B; peak GPU pool [\d.]+ [MG]B, peak process memory [\d.]+ [MG]B$/m);

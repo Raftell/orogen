@@ -133,11 +133,18 @@ unverified as the import itself.
 
 1. Does `Import` with no import layers create the default edit layer by itself? Look for the warning above.
 2. Does the repeated-tile fault that users report for 8129 × 8129 imports into World Partition levels (item 1
-   of the known risks in the import guide) appear through this path?
+   of the known risks in the import guide) appear through this path? The import by hand did not show it on the
+   user's Unreal Engine 5.8.3.
 3. Is the sequence of calls complete? It follows Gaea2Unreal, and nothing readable says that plugin's calls
    work unchanged on 5.8.
-4. Are orientation, location and height right? These rest on the same unverified assumptions as the import by
-   hand.
+4. Are orientation, location and height right? For the import by hand the acceptance test confirmed them on
+   5.8: image columns along +X and rows along +Y from the actor's origin, the heights, and layers that lie like
+   the heights ([its results](../../docs/user/unreal-import.md#65-results-on-unreal-engine-58)). The plugin
+   assumes the same layout of the height and layer arrays, `X + Y · SizeX`, but hands them to `Import` itself
+   and places the actor itself, so for this path they are still unconfirmed.
+5. Does step 7 give the landscape the manifest's grid size? In the editor, the grid size of a landscape could
+   not be changed after its level was converted to World Partition; whether `ChangeGridSize` after `Import`
+   can is not known.
 
 Answer them with the acceptance test, which needs no project and no GPU:
 

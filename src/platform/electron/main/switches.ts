@@ -6,8 +6,8 @@ export interface LaunchSwitch { readonly name: string; readonly value?: string }
 /**
  * The switches for one platform. `software` is OROGEN_ELECTRON_GPU=software, or a run the user restarted with
  * software rendering: on Linux the Vulkan feature is then left out, which leaves Chromium on SwiftShader
- * (testing.md 9.3); on Windows WebGPU is asked to take SwiftShader, which Chromium does not offer it by itself
- * where there is no graphics card (measured on windows-latest: "webgpu": "unavailable_software").
+ * (testing.md 9.3); on Windows WebGPU is asked to take SwiftShader, which Chromium does not give it there
+ * (measured on windows-latest and on the target machine: no adapter).
  */
 export function launchSwitches(platform: string, software: boolean): LaunchSwitch[] {
   const switches: LaunchSwitch[] = [
@@ -34,7 +34,9 @@ export function launchSwitches(platform: string, software: boolean): LaunchSwitc
     // Microsoft's Basic Render Driver and "gpu_compositing" is "disabled_software"; lifting the blocklist and
     // putting ANGLE on SwiftShader enabled compositing, WebGL and rasterization, but "webgpu" stayed
     // "unavailable_software". Dawn's SwiftShader adapter is a Vulkan one, so the Vulkan backend is asked for too.
-    // Whether that is enough is the launch check's to say (testing.md 9.1, 9.3).
+    // That is not enough either: WebGPU still had no adapter on the runner, nor on the target machine beside a
+    // working RTX 3080 (ARCHITECTURE.md section 2). The page therefore offers no software rendering on Windows
+    // (runtime.md 8.7 rule 16); these stay for the advisory CI step that tries them (testing.md 9.3).
     if (software) {
       switches.push(
         { name: 'enable-unsafe-webgpu' }, { name: 'enable-unsafe-swiftshader' }, { name: 'use-webgpu-adapter', value: 'swiftshader' },

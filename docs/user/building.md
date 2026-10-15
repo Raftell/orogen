@@ -6,9 +6,10 @@ imports. This page says what decides the files, where they go, what is in them, 
 
 The build pipeline is built and tested on Linux, on an NVIDIA card and on a software adapter, and its tests
 pass on Windows' software adapter in the project's automated checks, the swap of the output folder included.
-It has not been run on a Windows machine with a graphics card, nor beside the programs such a machine runs.
-What the files do in Unreal Engine has not been tried by anyone at Orogen: wherever this page says what Unreal
-will do with a file, the import guide says how far that has been checked.
+On 2026-10-15 it ran on a Windows machine with an RTX 3080: builds at 4033 and 8129 finished, and a second
+build into the same folder replaced the first ([time and memory](#time-and-memory)). The same day the files of
+a build went into Unreal Engine 5.8 and the acceptance test passed; wherever this page says what Unreal will do
+with a file, the import guide says how far that has been checked.
 
 ## 1. Export nodes decide what is written
 
@@ -72,8 +73,9 @@ Give every project a build folder of its own, and keep nothing else in it.
   after an import. Orogen does not try again. Build into a folder that is not synchronised: on Windows 11 the
   folders *Documents* and *Desktop* often are, by OneDrive. The build then ends with `E_COMMIT_FAILED`, the complete build stays in `<dir>.partial`,
   and the old one is put back; close the other program and build again. A file that cannot be given its name
-  while the build writes ends it with `E_WRITE_FAILED`. Neither has been seen on Windows: nobody has built there
-  with other programs open.
+  while the build writes ends it with `E_WRITE_FAILED`. Neither has been seen on Windows: on the RTX 3080
+  machine a second build into the same folder replaced it in 14 s; whether another program held the folder then
+  was not reported.
 
 ## 3. What a build writes
 
@@ -142,8 +144,10 @@ location          = the corner of the first row and column, at the middle level 
 ```
 
 The arithmetic is checked by Orogen's tests. That Unreal places a landscape by its first corner at the middle
-level, and reads one level as 1/128 of the Z scale, comes from Epic's documentation only in part (statements
-2 and 3 in [the list of what is unverified](unreal-import.md#8-what-is-still-unverified)).
+level, reads one level as 1/128 of the Z scale, and takes the import panel's Location as the terrain's centre
+came from Epic's documentation only in part; Unreal Engine 5.8 did exactly that with the acceptance pattern
+and with a real build (statements 2 and 3 in [the list of what was unverified](unreal-import.md#8-what-is-still-unverified),
+confirmed on 5.8).
 
 For exactly 100 cm per quad, set the terrain size to the resolution minus one, in metres: 8128 m at 8129.
 
@@ -151,7 +155,10 @@ For exactly 100 cm per quad, set the terrain size to the resolution minus one, i
 
 A **Landscape Layer** node writes one target layer. Its **Layer name** must equal the layer name used in your
 landscape material; names are letters, digits and underscores, begin with a letter, and must differ in more
-than capitals.
+than capitals. Layer files lie like the heightmap: in Unreal Engine 5.8 the acceptance pattern's layers, and
+the five weight-blended layers of the example *Alpine Range* built at 4033, lay where Orogen shows them
+([the results on 5.8](unreal-import.md#65-results-on-unreal-engine-58)). In a World Partition level, give the
+layers when the landscape is created ([the import guide](unreal-import.md#2-steps), step 10).
 
 - **Weight-blended** layers (the default) share the weight of every point. The build adds one more layer, the
   **base layer** (named `Base`; the Unreal Landscape node's **Base layer** changes the name), which receives
@@ -179,7 +186,8 @@ minus one, from 1024 to 8192 (1024 for a build at 1009, 4096 at 4033, 8192 at 81
 
 - A texture covers the landscape from its first to its last vertex. A material samples it with
   `U = (WorldX − location X) / extent`, `V = (WorldY − location Y) / extent`, where the location is the
-  manifest's `actorLocationCm` and the extent the terrain size in centimetres.
+  manifest's `actorLocationCm` and the extent the terrain size in centimetres. The acceptance pattern's texture
+  lay so in Unreal Engine 5.8.
 - A colour texture holds sRGB colour; a mask or a normal texture holds data. The manifest says which
   (`srgb`), and you switch sRGB off in Unreal for the data textures.
 - **Content** of a Color Texture says what its three channels are. **Color**, the default, is a colouring:
@@ -293,9 +301,23 @@ count, without the report: the folder holds one file more.
 | `docs/user/examples/ridge.orogen` with `--res 4033` | 4033 | 4.59 s | 8 files, 87.7 MB | 213.1 MB | 523.8 MB |
 | a mountain range with one layer (measured by the pipeline's authors) | 8129 | 12.0 s | 7 files, 305.3 MB | 836.8 MB | 631.4 MB |
 
-These graphs are small: a generator and a mask. A graph with erosion takes much longer, and the largest
-simulations at 8129 need more graphics memory than the command line's default budget allows; pass
-`--budget-mb` ([command line](command-line.md#options-that-several-subcommands-share)).
+These graphs are small: a generator and a mask. A graph with erosion takes much longer. The command line's
+default budget is 60 % of the card's memory, which it learns from `nvidia-smi` on an NVIDIA card; where it
+learns nothing it is 2457 MiB, and the largest simulations at 8129 need more graphics memory than that: pass
+`--budget-mb` ([command line](command-line.md#options-that-several-subcommands-share)). A build prints its
+budget first.
+
+**On a Windows machine with an RTX 3080.** Measured by a user on 2026-10-15 with the Windows build of the
+desktop application: Windows 11, RTX 3080 with 10 GB, 32 GB of memory. The project is the example *Alpine
+Range*, a graph with erosion, snow and five layers; the times are those the Build panel stated.
+
+| Project | Resolution | Time | Files | Peak graphics memory | Peak process memory |
+| --- | --- | --- | --- | --- | --- |
+| *Alpine Range* | 4033 | 15 s; 14 s for a second build into the same folder | 14 files, 146 MB | about 1.3 GB, the peak of Task Manager's *Dedicated GPU memory* | not measured |
+| *Alpine Range* | 8129 | 51 s | not reported | 4.9 GB, given as the graphics memory most held at once | about 2 GB, Orogen's processes together |
+
+The window stayed usable during the build at 8129, and the graphics device was not lost. On the development
+machine the build at 4033 takes 52 s and writes the same 14 files.
 
 At 8129 one field is 264 MB on the card and one colour map 529 MB. Each weight-blended layer is also held in
 main memory, 132 MB, until all of them have been written together at the end of the build.
